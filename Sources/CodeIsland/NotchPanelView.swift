@@ -722,7 +722,15 @@ private struct CompactToolStatus: View {
                     .truncationMode(.tail)
                 }
             } else if displayStatus == .processing {
-                TypingIndicator(fontSize: 11, label: "thinking", bright: true)
+                let thinkingLabel: String = {
+                    guard let intent = displaySession?.lastToolIntent, !intent.isEmpty else {
+                        return "🧠 thinking"
+                    }
+                    let maxLen = 48
+                    let clipped = intent.count > maxLen ? String(intent.prefix(maxLen)) + "…" : intent
+                    return "🧠 \(clipped)"
+                }()
+                TypingIndicator(fontSize: 11, label: thinkingLabel, bright: true)
                     .id("thinking-\(appState.rotatingSessionId ?? "")")
             }
         }
@@ -2555,14 +2563,25 @@ private struct SessionCard: View {
                                 .font(.system(size: fontSize, weight: .bold, design: .monospaced))
                                 .foregroundStyle(Color(red: 0.85, green: 0.47, blue: 0.34))
                             if let tool = session.currentTool {
-                                MorphText(
-                                    text: session.toolDescription ?? tool,
-                                    font: .system(size: fontSize, design: .monospaced),
-                                    color: .white.opacity(0.75)
-                                )
-                                .truncationMode(.tail)
+                                let toolLabel: String = {
+                                    let raw = session.toolDescription ?? tool
+                                    let maxLen = 60
+                                    return raw.count > maxLen ? String(raw.prefix(maxLen)) + "…" : raw
+                                }()
+                                // Active-tool status shimmers (dimmed) like omp, but
+                                // carries no brain emoji: a running tool is not the
+                                // model thinking.
+                                TypingIndicator(fontSize: fontSize, label: toolLabel)
                             } else {
-                                TypingIndicator(fontSize: fontSize, label: "thinking")
+                                let thinkingLabel: String = {
+                                    guard let intent = session.lastToolIntent, !intent.isEmpty else {
+                                        return "🧠 thinking"
+                                    }
+                                    let maxLen = 60
+                                    let clipped = intent.count > maxLen ? String(intent.prefix(maxLen)) + "…" : intent
+                                    return "🧠 \(clipped)"
+                                }()
+                                TypingIndicator(fontSize: fontSize, label: thinkingLabel)
                             }
                         }
                     }
@@ -3135,7 +3154,8 @@ private struct TypingIndicator: View {
     var label: String? = nil
     var bright: Bool = false
     var color: Color? = nil
-    @State private var phase: CGFloat = -60
+    @State private var phase: CGFloat = 0
+    @State private var animating = false
 
     var body: some View {
         if let label {
@@ -3145,38 +3165,57 @@ private struct TypingIndicator: View {
             let midOpacity: Double = bright ? 0.5 : 0.3
             let bandWidth: CGFloat = bright ? 80 : 60
             let duration: Double = 2.5
-            let endPhase: CGFloat = bright ? 100 : 80
-            let startPhase: CGFloat = bright ? -80 : -60
+            let font = Font.system(size: fontSize, design: .monospaced)
 
             Text(label)
-                .font(.system(size: fontSize, design: .monospaced))
+                .font(font)
                 .foregroundStyle(baseColor.opacity(baseOpacity))
                 .overlay(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .clear, location: 0),
-                            .init(color: .white.opacity(midOpacity), location: bright ? 0.35 : 0.4),
-                            .init(color: .white.opacity(peakOpacity), location: 0.5),
-                            .init(color: .white.opacity(midOpacity), location: bright ? 0.65 : 0.6),
-                            .init(color: .clear, location: 1),
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                    .frame(width: bandWidth)
-                    .offset(x: phase)
+                    // Measure the rendered label so the highlight band sweeps the
+                    // full width edge to edge. The band is masked by the whole
+                    // label below, so a negative offset (band still off the left
+                    // edge) is clipped to the glyphs and never spills over the
+                    // "$"/emoji prefix drawn to the left.
+                    GeometryReader { geo in
+                        let width = geo.size.width
+                        LinearGradient(
+                            stops: [
+                                .init(color: .clear, location: 0),
+                                .init(color: .white.opacity(midOpacity), location: bright ? 0.35 : 0.4),
+                                .init(color: .white.opacity(peakOpacity), location: 0.5),
+                                .init(color: .white.opacity(midOpacity), location: bright ? 0.65 : 0.6),
+                                .init(color: .clear, location: 1),
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                        .frame(width: bandWidth)
+                        .offset(x: phase)
+                        .onAppear {
+                            guard width > 0, !animating else { return }
+                            animating = true
+                            phase = -bandWidth
+                            withAnimation(.easeInOut(duration: duration).repeatForever(autoreverses: false)) {
+                                phase = width
+                            }
+                        }
+                        .onChange(of: width) { _, newWidth in
+                            // Label text changed length (e.g. new tool intent);
+                            // restart the sweep across the new width.
+                            guard newWidth > 0 else { return }
+                            phase = -bandWidth
+                            withAnimation(.easeInOut(duration: duration).repeatForever(autoreverses: false)) {
+                                phase = newWidth
+                            }
+                        }
+                    }
                     .mask(
                         Text(label)
-                            .font(.system(size: fontSize, design: .monospaced))
+                            .font(font)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     )
                 )
-                .onAppear {
-                    phase = startPhase
-                    withAnimation(.easeInOut(duration: duration).repeatForever(autoreverses: false)) {
-                        phase = endPhase
-                    }
-                }
-                .onDisappear { phase = startPhase }
+                .onDisappear { animating = false }
         }
     }
 }

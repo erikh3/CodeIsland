@@ -107,4 +107,75 @@ final class PiAgentEventFlowTests: XCTestCase {
         ])
         XCTAssertTrue(stopEffects.contains(.enqueueCompletion(sessionId: sessionId)))
     }
+
+    func testPiToolCallIntentSurfacesAsToolDescription() throws {
+        // The omp bridge emits PreToolUse from `tool_execution_start`, which
+        // carries the tool's `intent` (the model's per-call `i` summary) as a
+        // top-level field. The reducer must expose that intent as the session's
+        // live tool description — the status text omp shows — and it changes on
+        // every tool call.
+        let sessionId = "pi-intent"
+        var sessions: [String: SessionSnapshot] = [:]
+        let base: [String: Any] = [
+            "session_id": sessionId,
+            "_source": "pi",
+            "cwd": "/Users/dev/project",
+        ]
+
+        _ = try apply(base.merging(["hook_event_name": "SessionStart"]) { _, new in new }, to: &sessions)
+        // `read .` carries no file_path/AbsolutePath field the generic derivation
+        // could latch onto, so the top-level intent is the only description signal.
+        _ = try apply(base.merging([
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Read",
+            "tool_input": ["path": "."],
+            "intent": "List directory contents",
+        ]) { _, new in new }, to: &sessions)
+
+        let afterRead = try XCTUnwrap(sessions[sessionId])
+        XCTAssertEqual(afterRead.currentTool, "Read")
+        XCTAssertEqual(afterRead.toolDescription, "List directory contents")
+
+        // PostToolUse clears the live tool chrome, but `lastToolIntent` must
+        // survive the think gap so the card keeps showing the intent instead of
+        // blanking back to bare "thinking".
+        _ = try apply(base.merging(["hook_event_name": "PostToolUse"]) { _, new in new }, to: &sessions)
+        let afterPost = try XCTUnwrap(sessions[sessionId])
+        XCTAssertNil(afterPost.currentTool)
+        XCTAssertNil(afterPost.toolDescription)
+        XCTAssertEqual(afterPost.lastToolIntent, "List directory contents")
+
+        // The next tool call swaps in its own intent — the intent tracks the most
+        // recent call, not a frozen earlier value. This one carries the intent as
+        // an `i` argument inside `tool_input`, the other shape the reducer accepts.
+        _ = try apply(base.merging([
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": ["command": "find . -name '*.swift' | wc -l", "i": "Count Swift files"],
+        ]) { _, new in new }, to: &sessions)
+
+        let afterBash = try XCTUnwrap(sessions[sessionId])
+        XCTAssertEqual(afterBash.currentTool, "Bash")
+        XCTAssertEqual(afterBash.toolDescription, "Count Swift files")
+        XCTAssertEqual(afterBash.lastToolIntent, "Count Swift files")
+
+        // A turn end (Stop) does NOT clear the persisted intent: omp keeps the
+        // last tool's intent visible through the next turn's opening generation
+        // gap, so the card never blanks to "thinking" before the first tool.
+        _ = try apply(base.merging([
+            "hook_event_name": "Stop",
+            "last_assistant_message": "5 Swift files.",
+        ]) { _, new in new }, to: &sessions)
+        XCTAssertEqual(sessions[sessionId]?.lastToolIntent, "Count Swift files")
+        XCTAssertEqual(sessions[sessionId]?.status, .idle)
+
+        // A new prompt also keeps the prior intent until the next tool overwrites
+        // it — the generation gap shows the last known intent, matching omp.
+        _ = try apply(base.merging([
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "now count the TypeScript files",
+        ]) { _, new in new }, to: &sessions)
+        XCTAssertEqual(sessions[sessionId]?.lastToolIntent, "Count Swift files")
+        XCTAssertEqual(sessions[sessionId]?.status, .processing)
+    }
 }
