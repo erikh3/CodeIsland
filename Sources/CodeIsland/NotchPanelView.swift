@@ -2692,6 +2692,15 @@ func approvalInlineSummary(tool: String, toolDescription: String?, toolInput: [S
     return nil
 }
 
+func questionInlineSummary(_ question: QuestionPayload) -> String? {
+    let text = question.question.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return nil }
+
+    let header = question.header?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let header, !header.isEmpty, header != text else { return text }
+    return "\(header): \(text)"
+}
+
 private struct SessionCard: View {
     var appState: AppState
     let sessionId: String
@@ -2718,6 +2727,10 @@ private struct SessionCard: View {
     /// a display-only wait with no in-panel answer flow.
     private var showsExternalCursorQuestion: Bool {
         session.status == .waitingQuestion && session.cursorPendingQuestion != nil
+    }
+
+    private var queuedQuestionSummary: String? {
+        appState.pendingQuestion(forSession: sessionId).flatMap { questionInlineSummary($0.question) }
     }
     private var statusNameColor: Color {
         if session.status == .idle && session.interrupted {
@@ -2903,6 +2916,22 @@ private struct SessionCard: View {
                     }
                 }
 
+                // A native Ask request is still in the question queue while the
+                // session-list card is visible. Put the actual prompt on the card
+                // instead of reducing it to the generic `Ask` tool name.
+                if let question = queuedQuestionSummary {
+                    HStack(alignment: .top, spacing: 5) {
+                        Text("?")
+                            .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color(red: 1.0, green: 0.6, blue: 0.2))
+                        Text(question)
+                            .font(.system(size: fontSize, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.85))
+                            .lineLimit(2)
+                            .truncationMode(.tail)
+                    }
+                }
+
                 // Cursor asked a question in its own UI (#265). There is no hook
                 // channel to answer from here, so show the question plus a hint
                 // instead of an endless "thinking" indicator.
@@ -2992,7 +3021,7 @@ private struct SessionCard: View {
                     // Working indicator: show what AI is doing right now.
                     // Suppressed while a Cursor-side question is pending — the
                     // question block above already explains the wait (#265).
-                    if session.status != .idle && !showsExternalCursorQuestion {
+                    if session.status != .idle && !showsExternalCursorQuestion && queuedQuestionSummary == nil {
                         HStack(spacing: 4) {
                             Text("$")
                                 .font(.system(size: fontSize, weight: .bold, design: .monospaced))
