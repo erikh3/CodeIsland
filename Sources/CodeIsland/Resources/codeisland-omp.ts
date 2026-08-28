@@ -1,5 +1,5 @@
 // CodeIsland pi extension
-// version: v8
+// version: v9
 // OMP-compatible install
 
 /**
@@ -907,18 +907,46 @@ export default function codeislandExtension(pi: ExtensionAPI) {
       // Approved — fall through to normal PreToolUse event below.
     }
 
-    // Non-blocking PreToolUse for all other tool calls.
-    if (!pendingPermissionSessions.has(sid)) {
-      await sendToSocket(
-        base(sessionId, ctx.cwd, {
-          hook_event_name: "PreToolUse",
-          tool_name: toolName,
-          tool_input: toolInput,
-        }, tty),
-      );
+    // The non-blocking PreToolUse is emitted from `tool_execution_start` instead
+    // (see below): that event carries the tool's `intent` — the short status
+    // text omp shows while working — which the `tool_call` event's
+    // schema-validated `input` has already had stripped. Emitting it here as
+    // well would blank the intent.
+    return undefined;
+  });
+
+  // Fires after `tool_call`, just before the tool executes. Unlike `tool_call`,
+  // this event exposes `intent` (the model's per-call `i` summary), so it is the
+  // source of the live status text CodeIsland shows while the agent works.
+  pi.on("tool_execution_start", async (event, ctx) => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    const sid = `pi-${sessionId}`;
+    await ensureSessionStarted(sessionId, ctx.cwd);
+
+    // A blocking permission request is mid-flight on this session — the
+    // PermissionRequest already conveys the tool, so skip the status update.
+    if (pendingPermissionSessions.has(sid)) return;
+
+    const toolName = displayToolName(event.toolName);
+    const args = (event.args ?? {}) as Record<string, unknown>;
+    const toolInput: Record<string, unknown> = { ...args };
+    if (event.toolName === "bash") {
+      const command = args.command as string | undefined;
+      if (command) toolInput.patterns = [command];
+    }
+    if (event.toolName === "edit" || event.toolName === "write") {
+      const path = args.path as string | undefined;
+      if (path) toolInput.file_path = path;
     }
 
-    return undefined;
+    await sendToSocket(
+      base(sessionId, ctx.cwd, {
+        hook_event_name: "PreToolUse",
+        tool_name: toolName,
+        tool_input: toolInput,
+        ...(event.intent ? { intent: event.intent } : {}),
+      }, tty),
+    );
   });
 
   pi.on("tool_result", async (_event, ctx) => {
