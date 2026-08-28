@@ -79,6 +79,12 @@ public struct SessionSnapshot: Sendable {
     public var status: AgentStatus = .idle
     public var currentTool: String?
     public var toolDescription: String?
+    /// The most recent tool's human-readable intent (the omp `i`/`intent`
+    /// argument). Unlike ``toolDescription``, this is NOT cleared on
+    /// `PostToolUse`, so the intent omp shows stays visible during the think gap
+    /// between a tool result and the next tool call. Cleared only when a turn
+    /// actually ends (Stop / idle sweep).
+    public var lastToolIntent: String?
     public var lastActivity: Date = Date()
     public var cwd: String?
     public var model: String?
@@ -1006,6 +1012,10 @@ public func reduceEvent(
         sessions[sessionId]?.status = .processing
         sessions[sessionId]?.currentTool = nil
         sessions[sessionId]?.toolDescription = nil
+        // `lastToolIntent` is intentionally NOT cleared here. omp keeps the last
+        // tool's intent visible through the model-generation gap at the start of
+        // a turn (it shows "Working…" beside the prior summary, never a blank).
+        // The first PreToolUse of the new turn overwrites it.
         // Separate-mode Cursor Task Stop self-tombstones; a new prompt means relaunch.
         if let source = sessions[sessionId]?.source,
            source == "cursor" || source == "cursor-cli" {
@@ -1034,6 +1044,9 @@ public func reduceEvent(
             sessions[sessionId]?.status = .running
             sessions[sessionId]?.currentTool = event.toolName
             sessions[sessionId]?.toolDescription = event.toolDescription
+            if let intent = event.toolIntent {
+                sessions[sessionId]?.lastToolIntent = intent
+            }
         }
     case "PostToolUse":
         if let tool = sessions[sessionId]?.currentTool {
@@ -1213,6 +1226,9 @@ public func reduceEvent(
             sessions[sessionId]?.status = .idle
             sessions[sessionId]?.currentTool = nil
             sessions[sessionId]?.toolDescription = nil
+            // `lastToolIntent` persists past turn end so the next turn's opening
+            // generation gap shows the last intent (matching omp) until its first
+            // tool overwrites it. The idle card shows the reply, not this field.
             effects.append(.enqueueCompletion(sessionId: sessionId))
         }
     case "SessionStart":

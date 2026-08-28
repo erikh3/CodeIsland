@@ -219,7 +219,25 @@ public struct HookEvent {
         self.rawJSON = json
     }
 
+    /// Oh My Pi / OMP's per-tool-call intent (the `i` argument, surfaced
+    /// top-level as `intent`). This is the short status text omp shows while
+    /// working. `nil` for agents that don't emit it.
+    public var toolIntent: String? {
+        if let input = toolInput,
+           let intent = HookEvent.normalizedMultilineString(input["i"] ?? input["intent"]) {
+            return intent
+        }
+        return HookEvent.normalizedMultilineString(rawJSON["intent"])
+    }
+
     public var toolDescription: String? {
+        // Oh My Pi / OMP attaches a human-readable intent to every tool call (the
+        // `i` argument, surfaced as a top-level `intent`). It is the short status
+        // text omp shows while working, so prefer it over any tool-specific field
+        // derivation below.
+        if let intent = toolIntent {
+            return intent
+        }
         if let input = toolInput {
             switch toolName {
             case "Bash", "execute_command", "run_command":

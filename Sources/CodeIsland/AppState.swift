@@ -1060,9 +1060,10 @@ final class AppState {
         Task.detached(priority: .utility) {
             var cache = cacheCopy
             let snapshot = ClaudeUsageScanner.scan(cache: &cache)
+            let updatedCache = cache
             await MainActor.run { [weak self] in
                 self?.claudeUsage = snapshot
-                self?.usageFileCache = cache
+                self?.usageFileCache = updatedCache
                 self?.usageScanInFlight = false
             }
         }
