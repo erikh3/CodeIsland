@@ -638,6 +638,26 @@ final class AppStateQuestionFlowTests: XCTestCase {
         XCTAssertEqual(fallback, .bashCommand("echo 2"))
     }
 
+    func testQuestionInlineSummaryIncludesHeaderAndQuestion() {
+        let summary = questionInlineSummary(
+            QuestionPayload(
+                question: "What are you defending against?",
+                options: nil,
+                header: "Threat model"
+            )
+        )
+
+        XCTAssertEqual(summary, "Threat model: What are you defending against?")
+    }
+
+    func testQuestionInlineSummaryAvoidsDuplicateHeader() {
+        let summary = questionInlineSummary(
+            QuestionPayload(question: "Clarify scope before research dispatch", options: nil, header: "Clarify scope before research dispatch")
+        )
+
+        XCTAssertEqual(summary, "Clarify scope before research dispatch")
+    }
+
     // MARK: - Qoder strict schema
 
     func testQoderAnswerOmitsScalarAnswerKey() async throws {
