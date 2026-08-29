@@ -11,7 +11,8 @@
 
 import { execFile, execFileSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { getuid } from "node:process";
@@ -377,9 +378,134 @@ export function classifyCodeIslandAskResponse(
   };
 }
 
+// ── Child identity resolution ────────────────────────────────────────────────
+
+/**
+ * Discriminated union for OMP session identity.
+ *
+ * - `root`: top-level OMP session
+ * - `subagent`: confirmed task child with lineage
+ * - `unresolved`: path hints at a child but `session_init.agent` is not yet available
+ */
+export type OmpSessionIdentity =
+  | { kind: "root"; sessionId: string }
+  | { kind: "subagent"; sessionId: string; parentSessionId: string; agentId: string; agentType: string }
+  | { kind: "unresolved" };
+
+/**
+ * Reads the provider ID from the first valid `type: session` record in a
+ * bounded prefix of a root transcript.  Returns `null` when no valid record
+ * exists within the first `maxLines` or when the file cannot be read.
+ *
+ * OMP 18.0.10 emits `{ type:"session", version:3, id:"<uuid>" }`.
+ * Older transcripts use `{ type:"session", session:"<id>" }` instead.
+ * `id` takes precedence; `session` is accepted as a fallback — both only on
+ * `type:"session"` records so arbitrary records cannot supply lineage.
+ *
+ * Exported as a test seam; injecting `readFileSyncFn` avoids touching the
+ * real filesystem in unit tests.
+ */
+export function readRootSessionId(
+  rootPath: string,
+  maxLines = 20,
+  readFileSyncFn: (path: string) => string = (p) => readFileSync(p, "utf8"),
+): string | null {
+  try {
+    const text = readFileSyncFn(rootPath);
+    const lines = text.split("\n");
+    const limit = Math.min(lines.length, maxLines);
+    for (let i = 0; i < limit; i++) {
+      const line = lines[i]?.trim();
+      if (!line) continue;
+      try {
+        const record = JSON.parse(line) as Record<string, unknown>;
+        if (record.type !== "session") continue;
+        // OMP 18.0.10: prefer `id`
+        if (typeof record.id === "string" && record.id.length > 0) {
+          return record.id;
+        }
+        // Legacy: fall back to `session`
+        if (typeof record.session === "string" && record.session.length > 0) {
+          return record.session;
+        }
+      } catch {
+        // skip malformed lines
+      }
+    }
+  } catch {
+    // file unreadable
+  }
+  return null;
+}
+
+/**
+ * Resolves OMP session identity from the extension context.
+ *
+ * Classification:
+ * 1. `sessionFile` must be an absolute `.jsonl` path whose parent directory
+ *    is itself a `.jsonl` root transcript that is a regular file on disk.
+ * 2. `entries` must contain a `session_init` record with a non-empty `agent`.
+ *
+ * Returns `{ kind: "unresolved" }` when the root transcript exists but
+ * `session_init.agent` is not yet in entries — the caller should retry at
+ * `before_agent_start`.  Malformed or non-child lineage falls back to root.
+ *
+ * Exported as a test seam.
+ */
+export function resolveOmpIdentity(
+  sessionId: string,
+  sessionFile: string | null,
+  entries: readonly Record<string, unknown>[],
+  isRegularFileFn: (path: string) => boolean = (p) => { try { return statSync(p).isFile(); } catch { return false; } },
+  readRootIdFn: (path: string) => string | null = readRootSessionId,
+): OmpSessionIdentity {
+  if (!sessionFile || !sessionFile.startsWith("/") || !sessionFile.endsWith(".jsonl")) {
+    return { kind: "root", sessionId };
+  }
+
+  const parentDir = dirname(sessionFile);
+  const rootTranscript = parentDir + ".jsonl";
+
+  if (!isRegularFileFn(rootTranscript)) {
+    return { kind: "root", sessionId };
+  }
+
+  let agentType: string | undefined;
+  for (const entry of entries) {
+    if (
+      entry?.type === "session_init"
+      && typeof entry.agent === "string"
+      && entry.agent.length > 0
+    ) {
+      agentType = entry.agent;
+      break;
+    }
+  }
+
+  if (!agentType) {
+    return { kind: "unresolved" };
+  }
+
+  const rootSessionId = readRootIdFn(rootTranscript);
+  if (!rootSessionId) {
+    return { kind: "root", sessionId };
+  }
+
+  return {
+    kind: "subagent",
+    sessionId,
+    parentSessionId: rootSessionId,
+    agentId: basename(sessionFile, ".jsonl"),
+    agentType,
+  };
+}
+
 // ── Extension ─────────────────────────────────────────────────────────────────
 
-export default function codeislandExtension(pi: ExtensionAPI) {
+export default function codeislandExtension(
+  pi: ExtensionAPI,
+  sendFn: (payload: object) => Promise<boolean> = sendToSocket,
+) {
   const askToolRenderer = pi.pi.askToolRenderer;
 
   class ToolAbortError extends Error {
@@ -394,20 +520,71 @@ export default function codeislandExtension(pi: ExtensionAPI) {
    * "answered externally" heuristic from auto-denying while the card is visible.
    */
   const pendingPermissionSessions = new Set<string>();
-  /** Sessions for which CodeIsland has already received SessionStart. */
+  /** Sessions for which CodeIsland has already received SessionStart/SubagentStart. */
   const startedSessions = new Set<string>();
+  /** Confirmed subagent identities, keyed by raw provider session ID. */
+  const identityCache = new Map<string, OmpSessionIdentity & { kind: "subagent" }>();
 
-  async function ensureSessionStarted(sessionId: string, cwd: string): Promise<void> {
-    const sid = `pi-${sessionId}`;
+  /**
+   * Builds the complete event payload for CodeIsland.
+   *
+   * For confirmed subagents, stamps child metadata and `session_title` on every
+   * event so HookServer can route it.  Root events carry no child markers.
+   */
+  function buildEvent(
+    identity: OmpSessionIdentity,
+    cwd: string,
+    extra: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const rawId = identity.kind !== "unresolved" ? identity.sessionId : "";
+    const payload = base(rawId, cwd, extra, tty);
+    if (identity.kind === "subagent") {
+      payload._omp_subagent = true;
+      payload._omp_parent_session_id = `pi-${identity.parentSessionId}`;
+      payload._omp_agent_id = identity.agentId;
+      payload._omp_agent_type = identity.agentType;
+      payload.session_title = `Subagent \u00B7 ${identity.agentId}`;
+    }
+    return payload;
+  }
+
+  function resolveIdentityFromCtx(ctx: { sessionManager: { getSessionId(): string; getSessionFile(): string | null; getEntries(): readonly Record<string, unknown>[] } }): OmpSessionIdentity {
+    const sessionId = ctx.sessionManager.getSessionId();
+    const cached = identityCache.get(sessionId);
+    if (cached) return cached;
+    const resolved = resolveOmpIdentity(
+      sessionId,
+      ctx.sessionManager.getSessionFile(),
+      ctx.sessionManager.getEntries(),
+    );
+    if (resolved.kind === "subagent") {
+      identityCache.set(sessionId, resolved);
+    }
+    return resolved;
+  }
+
+  async function ensureSessionStarted(
+    identity: OmpSessionIdentity,
+    cwd: string,
+  ): Promise<void> {
+    if (identity.kind === "unresolved") return;
+    const rawId = identity.sessionId;
+    const sid = `pi-${rawId}`;
     if (startedSessions.has(sid)) return;
 
-    const sessionName = pi.getSessionName();
-    await sendToSocket(
-      base(sessionId, cwd, {
-        hook_event_name: "SessionStart",
-        ...(sessionName ? { session_title: sessionName } : {}),
-      }, tty),
-    );
+    if (identity.kind === "subagent") {
+      await sendFn(
+        buildEvent(identity, cwd, { hook_event_name: "SubagentStart" }),
+      );
+    } else {
+      const sessionName = pi.getSessionName();
+      await sendFn(
+        buildEvent(identity, cwd, {
+          hook_event_name: "SessionStart",
+          ...(sessionName ? { session_title: sessionName } : {}),
+        }),
+      );
+    }
     startedSessions.add(sid);
   }
 
@@ -615,7 +792,7 @@ export default function codeislandExtension(pi: ExtensionAPI) {
   const reservedAskOptionLabels: Record<string, true> = {
     "Other (type your own)": true,
     "Chat about this": true,
-    "Next →": true,
+    "Next \u2192": true,
   };
 
   // Keep the v3 input additions for OMP 16.3.x, whose native Ask schema does
@@ -675,6 +852,7 @@ export default function codeislandExtension(pi: ExtensionAPI) {
         throw new ToolAbortError("Ask tool requires interactive mode");
       }
 
+      const identity = resolveIdentityFromCtx(ctx);
       const islandQuestions = mapAskQuestionsToCodeIsland(questions);
       const answerKeys = computeAnswerKeys(questions);
 
@@ -682,13 +860,13 @@ export default function codeislandExtension(pi: ExtensionAPI) {
       const race = createAskRaceSettlement<GateOutcome>();
 
       const islandBridge = sendAndWaitResponseCancellable(
-        base(sessionId, ctx.cwd, {
+        buildEvent(identity, ctx.cwd, {
           hook_event_name: "PermissionRequest",
           tool_name: "AskUserQuestion",
           tool_input: { questions: islandQuestions },
           _pi_tool_call_id: toolCallId,
           _codeisland_native_ask_racing: true,
-        }, tty),
+        }),
         86_400_000,
       );
 
@@ -795,14 +973,37 @@ export default function codeislandExtension(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
-    await ensureSessionStarted(sessionId, ctx.cwd);
+    const identity = resolveOmpIdentity(
+      sessionId,
+      ctx.sessionManager.getSessionFile(),
+      ctx.sessionManager.getEntries(),
+    );
+    if (identity.kind === "subagent") {
+      identityCache.set(sessionId, identity);
+    }
+    await ensureSessionStarted(identity, ctx.cwd);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
-    await sendToSocket(
-      base(sessionId, ctx.cwd, { hook_event_name: "SessionEnd" }, tty),
+    const isChild = identityCache.has(sessionId);
+    if (isChild) {
+      // Child shutdown: clear local caches only; no SessionEnd event.
+      identityCache.delete(sessionId);
+      startedSessions.delete(`pi-${sessionId}`);
+      return;
+    }
+    // Root shutdown: emit SessionEnd and clear.
+    const identity: OmpSessionIdentity = { kind: "root", sessionId };
+    await sendFn(
+      buildEvent(identity, ctx.cwd, { hook_event_name: "SessionEnd" }),
     );
+    startedSessions.delete(`pi-${sessionId}`);
+  });
+
+  pi.on("session_switch", (_event, ctx) => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    identityCache.delete(sessionId);
     startedSessions.delete(`pi-${sessionId}`);
   });
 
@@ -811,35 +1012,57 @@ export default function codeislandExtension(pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
     const sid = `pi-${sessionId}`;
-    await ensureSessionStarted(sessionId, ctx.cwd);
+
+    // Retry identity resolution if unresolved from session_start.
+    let identity = resolveIdentityFromCtx(ctx);
+    if (identity.kind === "unresolved") {
+      // Re-resolve now that entries may include session_init.
+      identity = resolveOmpIdentity(
+        sessionId,
+        ctx.sessionManager.getSessionFile(),
+        ctx.sessionManager.getEntries(),
+      );
+      if (identity.kind === "subagent") {
+        identityCache.set(sessionId, identity);
+      }
+    }
+    if (identity.kind === "unresolved") return;
+
+    await ensureSessionStarted(identity, ctx.cwd);
 
     if (pendingPermissionSessions.has(sid)) return;
 
     const prompt = event.prompt ?? "";
-    await sendToSocket(
-      base(sessionId, ctx.cwd, {
+    await sendFn(
+      buildEvent(identity, ctx.cwd, {
         hook_event_name: "UserPromptSubmit",
         prompt,
-      }, tty),
+      }),
     );
   });
 
   pi.on("agent_end", async (event, ctx) => {
+    // Non-terminal turns: OMP already scheduled more work; suppress Stop.
+    if ((event as Record<string, unknown>).willContinue === true) return;
+
     const sessionId = ctx.sessionManager.getSessionId();
     const sid = `pi-${sessionId}`;
-    await ensureSessionStarted(sessionId, ctx.cwd);
+    const identity = resolveIdentityFromCtx(ctx);
+    if (identity.kind === "unresolved") return;
+
+    await ensureSessionStarted(identity, ctx.cwd);
 
     if (pendingPermissionSessions.has(sid)) return;
 
     const lastAssistantMessage = extractLastAssistantText(event.messages);
     const sessionName = pi.getSessionName();
 
-    await sendToSocket(
-      base(sessionId, ctx.cwd, {
+    await sendFn(
+      buildEvent(identity, ctx.cwd, {
         hook_event_name: "Stop",
         last_assistant_message: lastAssistantMessage || undefined,
-        ...(sessionName ? { session_title: sessionName } : {}),
-      }, tty),
+        ...(identity.kind === "root" && sessionName ? { session_title: sessionName } : {}),
+      }),
     );
   });
 
@@ -848,7 +1071,9 @@ export default function codeislandExtension(pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
     const sid = `pi-${sessionId}`;
-    await ensureSessionStarted(sessionId, ctx.cwd);
+    const identity = resolveIdentityFromCtx(ctx);
+    if (identity.kind === "unresolved") return;
+    await ensureSessionStarted(identity, ctx.cwd);
     const toolName = displayToolName(event.toolName);
 
     // Build a tool_input object appropriate for the tool type.
@@ -870,12 +1095,12 @@ export default function codeislandExtension(pi: ExtensionAPI) {
     ) {
       pendingPermissionSessions.add(sid);
 
-      const payload = base(sessionId, ctx.cwd, {
+      const payload = buildEvent(identity, ctx.cwd, {
         hook_event_name: "PermissionRequest",
         tool_name: toolName,
         tool_input: toolInput,
         _pi_tool_call_id: event.toolCallId,
-      }, tty);
+      });
 
       let response: Record<string, unknown> | null = null;
       try {
@@ -940,30 +1165,34 @@ export default function codeislandExtension(pi: ExtensionAPI) {
   pi.on("tool_result", async (_event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
     const sid = `pi-${sessionId}`;
-    await ensureSessionStarted(sessionId, ctx.cwd);
+    const identity = resolveIdentityFromCtx(ctx);
+    if (identity.kind === "unresolved") return;
+    await ensureSessionStarted(identity, ctx.cwd);
 
     if (pendingPermissionSessions.has(sid)) return;
 
-    await sendToSocket(
-      base(sessionId, ctx.cwd, { hook_event_name: "PostToolUse" }, tty),
+    await sendFn(
+      buildEvent(identity, ctx.cwd, { hook_event_name: "PostToolUse" }),
     );
   });
 
   // ── Compaction ─────────────────────────────────────────────────────────────
 
   pi.on("session_before_compact", async (_event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    await ensureSessionStarted(sessionId, ctx.cwd);
-    await sendToSocket(
-      base(sessionId, ctx.cwd, { hook_event_name: "PreCompact" }, tty),
+    const identity = resolveIdentityFromCtx(ctx);
+    if (identity.kind === "unresolved") return;
+    await ensureSessionStarted(identity, ctx.cwd);
+    await sendFn(
+      buildEvent(identity, ctx.cwd, { hook_event_name: "PreCompact" }),
     );
   });
 
   pi.on("session_compact", async (_event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    await ensureSessionStarted(sessionId, ctx.cwd);
-    await sendToSocket(
-      base(sessionId, ctx.cwd, { hook_event_name: "PostCompact" }, tty),
+    const identity = resolveIdentityFromCtx(ctx);
+    if (identity.kind === "unresolved") return;
+    await ensureSessionStarted(identity, ctx.cwd);
+    await sendFn(
+      buildEvent(identity, ctx.cwd, { hook_event_name: "PostCompact" }),
     );
   });
 }

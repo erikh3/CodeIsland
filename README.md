@@ -149,6 +149,18 @@ CodeIsland provides a 7-tab settings panel:
 - **Hooks** — View CLI installation status, reinstall or uninstall hooks
 - **About** — Version info and links
 
+## OMP task children (Agent Sub-Sessions)
+
+Oh My Pi spawns sub-agents as child tasks of a root session. CodeIsland groups these under the **Agent Sub-Sessions** setting, which has three modes:
+
+- **Separate** — each child gets its own card, labelled with the child's name. Finished cards stay readable so you can review what each sub-agent did.
+- **Merge** — children are folded under the root card. Approval requests and questions from any child still surface as interactive cards so you can act on them.
+- **Hide** — child sessions are suppressed entirely; only the root card is shown.
+
+The completion indicator (green dot or panel expansion, depending on your completion setting) fires only when the root session finishes, not for individual children.
+
+The bundled OMP extension ships as version 8. If you update CodeIsland while OMP is already running, reload the extension by restarting the OMP process — the new extension is not picked up until OMP restarts.
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action | Default |

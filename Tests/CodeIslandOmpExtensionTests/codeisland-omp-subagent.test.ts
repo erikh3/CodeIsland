@@ -1,0 +1,683 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+import { describe, expect, test } from "bun:test";
+
+// The module reads HOME while loading; dynamic import isolates the no-bridge boundary.
+const originalHome = process.env.HOME;
+process.env.HOME = "/tmp/codeisland-omp-extension-tests-no-bridge";
+const {
+  default: codeislandExtension,
+  readRootSessionId,
+  resolveOmpIdentity,
+} = await import("../../Sources/CodeIsland/Resources/codeisland-omp?subagent-tests");
+if (originalHome === undefined) {
+  delete process.env.HOME;
+} else {
+  process.env.HOME = originalHome;
+}
+
+// ── readRootSessionId ─────────────────────────────────────────────────────────
+
+describe("readRootSessionId", () => {
+  test("returns the first session value from a valid transcript", () => {
+    const transcript = [
+      '{"type":"header","version":1}',
+      '{"type":"session","session":"root-session-abc"}',
+      '{"type":"session_init","agent":"task"}',
+    ].join("\n");
+    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("root-session-abc");
+  });
+
+  test("skips malformed lines before a valid record", () => {
+    const transcript = [
+      "not-json",
+      "{broken",
+      '{"type":"session","session":"good-session"}',
+    ].join("\n");
+    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("good-session");
+  });
+
+  test("returns null when no session record exists within maxLines", () => {
+    const lines = Array.from({ length: 25 }, (_, i) =>
+      JSON.stringify({ type: "message", index: i }),
+    );
+    const transcript = lines.join("\n");
+    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBeNull();
+  });
+
+  test("respects the maxLines bound", () => {
+    const transcript = [
+      '{"type":"header"}',
+      '{"type":"session","session":"too-late"}',
+    ].join("\n");
+    // maxLines=1 means only the first line is checked
+    expect(readRootSessionId("/fake/root.jsonl", 1, () => transcript)).toBeNull();
+  });
+
+  test("returns null when the file cannot be read", () => {
+    expect(readRootSessionId("/nonexistent/path.jsonl", 20, () => {
+      throw new Error("ENOENT");
+    })).toBeNull();
+  });
+
+  test("skips session records with empty string value", () => {
+    const transcript = [
+      '{"type":"session","session":""}',
+      '{"type":"session","session":"valid"}',
+    ].join("\n");
+    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("valid");
+  });
+
+  test("skips records with session field but wrong type", () => {
+    const transcript = [
+      '{"type":"header","session":"should-be-ignored"}',
+      '{"type":"session_init","session":"also-ignored"}',
+      '{"type":"session","session":"correct"}',
+    ].join("\n");
+    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("correct");
+  });
+
+  // ── OMP 18.0.10 regression: id field on type=session records ─────────────
+
+  test("OMP 18.0.10: reads id from {type:session,version:3,id}", () => {
+    const transcript = JSON.stringify({
+      type: "session",
+      version: 3,
+      id: "01a04d4e-f1b2-4c3d-8e5f-a6b7c8d9e0f1",
+    });
+    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe(
+      "01a04d4e-f1b2-4c3d-8e5f-a6b7c8d9e0f1",
+    );
+  });
+
+  test("id takes precedence over session when both are present on type=session", () => {
+    const transcript = JSON.stringify({
+      type: "session",
+      id: "id-wins",
+      session: "session-loses",
+    });
+    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("id-wins");
+  });
+
+  test("id on a non-session type record is ignored; real session below is returned", () => {
+    const transcript = [
+      JSON.stringify({ type: "header", id: "bad-id", version: 3 }),
+      JSON.stringify({ type: "session_init", id: "also-bad" }),
+      JSON.stringify({ type: "session", id: "correct-id" }),
+    ].join("\n");
+    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("correct-id");
+  });
+
+  test("empty id falls through to legacy session field", () => {
+    const transcript = JSON.stringify({
+      type: "session",
+      id: "",
+      session: "legacy-fallback",
+    });
+    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("legacy-fallback");
+  });
+
+  test("both id and session empty on type=session: skips to next record", () => {
+    const transcript = [
+      JSON.stringify({ type: "session", id: "", session: "" }),
+      JSON.stringify({ type: "session", id: "second-id" }),
+    ].join("\n");
+    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("second-id");
+  });
+});
+// ── resolveOmpIdentity ────────────────────────────────────────────────────────
+
+describe("resolveOmpIdentity", () => {
+  const rootTranscript = (sid: string) =>
+    JSON.stringify({ type: "session", session: sid });
+
+  test("root transcript: null sessionFile returns root identity", () => {
+    expect(resolveOmpIdentity("sess-1", null, [])).toEqual({
+      kind: "root",
+      sessionId: "sess-1",
+    });
+  });
+
+  test("root transcript: relative path returns root identity", () => {
+    expect(resolveOmpIdentity("sess-2", "relative/path.jsonl", [])).toEqual({
+      kind: "root",
+      sessionId: "sess-2",
+    });
+  });
+
+  test("root transcript: in-memory path (no leading slash) returns root identity", () => {
+    expect(resolveOmpIdentity("sess-3", "memory://session.jsonl", [])).toEqual({
+      kind: "root",
+      sessionId: "sess-3",
+    });
+  });
+
+  test("root transcript: path not ending in .jsonl returns root identity", () => {
+    expect(resolveOmpIdentity("sess-4", "/home/user/.omp/sessions/foo", [])).toEqual({
+      kind: "root",
+      sessionId: "sess-4",
+    });
+  });
+
+  test("root transcript: parent dir has no matching .jsonl returns root identity", () => {
+    const exists = (_p: string) => false;
+    expect(resolveOmpIdentity(
+      "sess-5",
+      "/home/user/.omp/sessions/Child/Scout.jsonl",
+      [],
+      exists,
+    )).toEqual({ kind: "root", sessionId: "sess-5" });
+  });
+
+  test("first-level child: classifies correctly", () => {
+    const entries = [{ type: "session_init", agent: "task" }];
+    const exists = (p: string) => p === "/home/user/.omp/sessions/Scout.jsonl";
+    const readId = (p: string) => (p === "/home/user/.omp/sessions/Scout.jsonl" ? "root-sid" : null);
+    expect(resolveOmpIdentity(
+      "child-sid",
+      "/home/user/.omp/sessions/Scout/Scout.jsonl",
+      entries,
+      exists,
+      readId,
+    )).toEqual({
+      kind: "subagent",
+      sessionId: "child-sid",
+      parentSessionId: "root-sid",
+      agentId: "Scout",
+      agentType: "task",
+    });
+  });
+
+  test("flat dotted nested child: agentId is the full dotted filename without extension", () => {
+    const entries = [{ type: "session_init", agent: "reviewer" }];
+    const exists = (p: string) => p === "/home/user/.omp/sessions/ParentScout.jsonl";
+    const readId = (_p: string) => "root-parent";
+    expect(resolveOmpIdentity(
+      "nested-sid",
+      "/home/user/.omp/sessions/ParentScout/ParentScout.ChildReviewer.jsonl",
+      entries,
+      exists,
+      readId,
+    )).toEqual({
+      kind: "subagent",
+      sessionId: "nested-sid",
+      parentSessionId: "root-parent",
+      agentId: "ParentScout.ChildReviewer",
+      agentType: "reviewer",
+    });
+  });
+
+  test("malformed root prefix followed by a valid header: uses the valid session record", () => {
+    const badThenGood = "bad-json\n" + rootTranscript("real-root");
+    const entries = [{ type: "session_init", agent: "scout" }];
+    const exists = (p: string) => p === "/sessions/Parent.jsonl";
+    const readId = (p: string) => readRootSessionId(p, 20, () => badThenGood);
+    expect(resolveOmpIdentity(
+      "child-sid",
+      "/sessions/Parent/Scout.jsonl",
+      entries,
+      exists,
+      readId,
+    )).toEqual({
+      kind: "subagent",
+      sessionId: "child-sid",
+      parentSessionId: "real-root",
+      agentId: "Scout",
+      agentType: "scout",
+    });
+  });
+
+  test("missing session_init.agent returns unresolved", () => {
+    const exists = (p: string) => p === "/sessions/Root.jsonl";
+    const readId = (_p: string) => "root-sid";
+    expect(resolveOmpIdentity(
+      "child-sid",
+      "/sessions/Root/Child.jsonl",
+      [],
+      exists,
+      readId,
+    )).toEqual({ kind: "unresolved" });
+  });
+
+  test("missing session_init.agent with empty entries returns unresolved", () => {
+    const exists = (p: string) => p === "/sessions/Root.jsonl";
+    const readId = (_p: string) => "root-sid";
+    expect(resolveOmpIdentity(
+      "child-sid",
+      "/sessions/Root/Child.jsonl",
+      [{ type: "header" }, { type: "message" }],
+      exists,
+      readId,
+    )).toEqual({ kind: "unresolved" });
+  });
+
+  test("missing or non-file root candidate (readId returns null) falls back to root", () => {
+    const entries = [{ type: "session_init", agent: "task" }];
+    const exists = (p: string) => p === "/sessions/Root.jsonl";
+    const readId = (_p: string) => null;
+    expect(resolveOmpIdentity(
+      "child-sid",
+      "/sessions/Root/Child.jsonl",
+      entries,
+      exists,
+      readId,
+    )).toEqual({ kind: "root", sessionId: "child-sid" });
+  });
+
+  test("session_init.agent must be non-empty to classify as subagent", () => {
+    const entries = [{ type: "session_init", agent: "" }];
+    const exists = (p: string) => p === "/sessions/Root.jsonl";
+    const readId = (_p: string) => "root-sid";
+    expect(resolveOmpIdentity(
+      "child-sid",
+      "/sessions/Root/Child.jsonl",
+      entries,
+      exists,
+      readId,
+    )).toEqual({ kind: "unresolved" });
+  });
+
+  test("directory root candidate returns root identity", () => {
+    // isRegularFileFn returns false when the path resolves to a directory
+    const entries = [{ type: "session_init", agent: "task" }];
+    const isRegularFile = (_p: string) => false;
+    const readId = (_p: string) => "root-sid";
+    expect(resolveOmpIdentity(
+      "child-sid",
+      "/sessions/Root/Child.jsonl",
+      entries,
+      isRegularFile,
+      readId,
+    )).toEqual({ kind: "root", sessionId: "child-sid" });
+  });
+
+  // ── OMP 18.0.10 regression ────────────────────────────────────────────────
+
+  test("OMP 18.0.10: child resolves when root transcript uses {type:session,version:3,id}", () => {
+    // Real shape captured from OMP 18.0.10 root transcript
+    const omp1810Transcript = JSON.stringify({
+      type: "session",
+      version: 3,
+      id: "01a04d4e-f1b2-4c3d-8e5f-a6b7c8d9e0f1",
+    });
+    const entries = [{ type: "session_init", agent: "task" }];
+    const exists = (p: string) => p === "/sessions/Root.jsonl";
+    const readId = (p: string) => readRootSessionId(p, 20, () => omp1810Transcript);
+    expect(resolveOmpIdentity(
+      "child-sid",
+      "/sessions/Root/Worker.jsonl",
+      entries,
+      exists,
+      readId,
+    )).toEqual({
+      kind: "subagent",
+      sessionId: "child-sid",
+      parentSessionId: "01a04d4e-f1b2-4c3d-8e5f-a6b7c8d9e0f1",
+      agentId: "Worker",
+      agentType: "task",
+    });
+  });
+
+  test("OMP 18.0.10: non-session type with id field does not supply lineage", () => {
+    // Arbitrary record with id must not bleed into parent resolution
+    const badTranscript = [
+      JSON.stringify({ type: "header", id: "attacker-id", version: 3 }),
+      JSON.stringify({ type: "session_init", id: "also-bad" }),
+    ].join("\n");
+    const entries = [{ type: "session_init", agent: "task" }];
+    const exists = (p: string) => p === "/sessions/Root.jsonl";
+    const readId = (p: string) => readRootSessionId(p, 20, () => badTranscript);
+    // readId returns null → falls back to root
+    expect(resolveOmpIdentity(
+      "child-sid",
+      "/sessions/Root/Worker.jsonl",
+      entries,
+      exists,
+      readId,
+    )).toEqual({ kind: "root", sessionId: "child-sid" });
+  });
+});
+
+// ── Lifecycle event behavior ──────────────────────────────────────────────────
+
+interface FakeSchema {
+  optional: () => FakeSchema;
+  describe: () => FakeSchema;
+  refine: () => FakeSchema;
+  min: () => FakeSchema;
+}
+
+function fakeSchema(): FakeSchema {
+  const schema: FakeSchema = {
+    optional: () => schema,
+    describe: () => schema,
+    refine: () => schema,
+    min: () => schema,
+  };
+  return schema;
+}
+
+function makeExtensionApi(
+  events: Record<string, unknown>[],
+  sendFn?: (payload: object) => Promise<boolean>,
+): {
+  api: Parameters<typeof codeislandExtension>[0];
+  handlers: Map<string, (event: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<void>>;
+} {
+  const handlers = new Map<string, (event: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<void>>();
+  const api = {
+    zod: {
+      string: fakeSchema,
+      number: fakeSchema,
+      boolean: fakeSchema,
+      array: fakeSchema,
+      object: fakeSchema,
+    },
+    pi: {
+      AskTool: class { constructor(_: unknown) {} readonly name = "ask"; readonly label = "Ask"; readonly description = ""; readonly parameters = fakeSchema(); readonly strict = true; readonly approval = "read"; readonly concurrency = "exclusive"; async execute() { return { content: [], details: {} }; } },
+      askToolRenderer: { mergeCallAndResult: true, renderCall: () => null, renderResult: () => null },
+      settings: {},
+    },
+    getSessionName: () => undefined as string | undefined,
+    registerTool: (_tool: unknown) => {},
+    on: (eventName: string, handler: (event: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<void>) => {
+      handlers.set(eventName, handler);
+    },
+  } as never;
+  const capturer = sendFn ?? ((payload: object) => { events.push(payload as Record<string, unknown>); return Promise.resolve(true); });
+  codeislandExtension(api, capturer);
+  return { api, handlers };
+}
+
+function makeRootCtx(sessionId: string, cwd = "/project"): Record<string, unknown> {
+  return {
+    cwd,
+    hasUI: true,
+    sessionManager: {
+      getSessionId: () => sessionId,
+      getSessionFile: () => null,
+      getEntries: () => [],
+    },
+    modelRegistry: {},
+    model: {},
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    abort: () => {},
+    ui: {},
+  };
+}
+
+function makeChildCtx(
+  sessionId: string,
+  sessionFile: string,
+  entries: Record<string, unknown>[],
+  cwd = "/project",
+): Record<string, unknown> {
+  return {
+    cwd,
+    hasUI: true,
+    sessionManager: {
+      getSessionId: () => sessionId,
+      getSessionFile: () => sessionFile,
+      getEntries: () => entries,
+    },
+    modelRegistry: {},
+    model: {},
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    abort: () => {},
+    ui: {},
+  };
+}
+
+describe("lifecycle event wire contract", () => {
+
+  test("terminal agent_end emits Stop (willContinue absent)", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { handlers } = makeExtensionApi(sent);
+    expect(handlers.has("agent_end")).toBe(true);
+    const handler = handlers.get("agent_end")!;
+    const ctx = makeRootCtx("root-sess");
+    const result = await handler({ messages: [] }, ctx);
+    expect(result).toBeUndefined();
+    // The handler emits SessionStart (ensureSessionStarted) then Stop.
+    const hookNames = sent.map((e) => e.hook_event_name);
+    expect(hookNames).toContain("Stop");
+    const stopEvent = sent.find((e) => e.hook_event_name === "Stop");
+    expect(stopEvent).toBeDefined();
+    expect(stopEvent!._omp_subagent).toBeUndefined();
+  });
+
+  test("non-terminal agent_end with willContinue=true emits no Stop", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { handlers } = makeExtensionApi(sent);
+    const handler = handlers.get("agent_end")!;
+    const ctx = makeRootCtx("root-sess");
+    // willContinue=true: handler returns early before any sendFn call.
+    const result = await handler({ messages: [], willContinue: true }, ctx);
+    expect(result).toBeUndefined();
+    expect(sent).toHaveLength(0);
+  });
+
+  test("park and revival: child identity resolves consistently across separate instances", () => {
+    // OMP creates a fresh extension instance on revival; child re-classifies
+    // from the same session file + entries combination deterministically.
+    const sessionFile = "/home/user/.omp/sessions/Root/ResearchScout.jsonl";
+    const entries = [{ type: "session_init", agent: "scout" }];
+    const exists = (p: string) => p === "/home/user/.omp/sessions/Root.jsonl";
+    const readId = (_p: string) => "root-parent-sid";
+
+    // First classification (park)
+    const id1 = resolveOmpIdentity("child-sid", sessionFile, entries, exists, readId);
+    // Second classification (revival — new extension instance, same inputs)
+    const id2 = resolveOmpIdentity("child-sid", sessionFile, entries, exists, readId);
+
+    expect(id1).toEqual(id2);
+    expect(id1).toEqual({
+      kind: "subagent",
+      sessionId: "child-sid",
+      parentSessionId: "root-parent-sid",
+      agentId: "ResearchScout",
+      agentType: "scout",
+    });
+  });
+
+  test("session_shutdown emits no SessionEnd after child identity cached by a non-start handler", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ci-omp-test-"));
+    try {
+      const rootTranscriptPath = join(dir, "Root.jsonl");
+      writeFileSync(rootTranscriptPath, JSON.stringify({ type: "session", session: "root-provider-id" }));
+      mkdirSync(join(dir, "Root"));
+      const childFile = join(dir, "Root", "Scout.jsonl");
+
+      const sent: Record<string, unknown>[] = [];
+      const { handlers } = makeExtensionApi(sent);
+      const entries = [{ type: "session_init", agent: "scout" }];
+      const ctx = makeChildCtx("child-cache-sid", childFile, entries);
+
+      // Prime the cache via agent_end (a non-start handler) instead of session_start.
+      // resolveIdentityFromCtx now caches subagent identities on first resolution.
+      await handlers.get("agent_end")!({ messages: [] }, ctx);
+      const beforeShutdown = sent.length;
+
+      // session_shutdown must detect the cached child identity and emit nothing.
+      await handlers.get("session_shutdown")!({}, ctx);
+      expect(sent.length).toBe(beforeShutdown);
+      expect(sent.every((e) => e.hook_event_name !== "SessionEnd")).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("unresolved identity does not emit on before_agent_start retry", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { handlers } = makeExtensionApi(sent);
+    const handler = handlers.get("before_agent_start")!;
+    // Construct a child ctx whose session file's parent does NOT match any
+    // session file on disk — resolveOmpIdentity called inside the handler
+    // uses the real existsSync, which returns false for this path, so the
+    // handler classifies the session as root (not unresolved). Either way,
+    // the capturer stub is used instead of the real socket, so no ENOENT.
+    const ctx = makeChildCtx(
+      "child-sid",
+      "/tmp/codeisland-omp-test-nonexistent/Root/Scout.jsonl",
+      [], // no session_init → agent type absent
+    );
+    const result = await handler({ prompt: "test" }, ctx);
+    expect(result).toBeUndefined();
+    // No _omp_subagent field on any emitted event (no confirmed subagent identity).
+    for (const event of sent) {
+      expect(event._omp_subagent).toBeUndefined();
+    }
+  });
+});
+
+// ── Session event emission ────────────────────────────────────────────────────
+
+describe("session event emission", () => {
+  test("root session_start emits SessionStart with correct sessionId", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { handlers } = makeExtensionApi(sent);
+    const handler = handlers.get("session_start")!;
+    await handler({}, makeRootCtx("root-abc"));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.hook_event_name).toBe("SessionStart");
+    expect(sent[0]!.session_id).toBe("pi-root-abc");
+    expect(sent[0]!._omp_subagent).toBeUndefined();
+  });
+
+  test("root session_start does not emit SessionStart twice for the same session", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { handlers } = makeExtensionApi(sent);
+    const handler = handlers.get("session_start")!;
+    const ctx = makeRootCtx("root-dedup");
+    await handler({}, ctx);
+    await handler({}, ctx);
+    const starts = sent.filter((e) => e.hook_event_name === "SessionStart");
+    expect(starts).toHaveLength(1);
+  });
+
+  test("child session_start emits SubagentStart with parent and agent metadata", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ci-omp-test-"));
+    try {
+      const rootTranscriptPath = join(dir, "Root.jsonl");
+      writeFileSync(rootTranscriptPath, JSON.stringify({ type: "session", session: "root-provider-id" }));
+      mkdirSync(join(dir, "Root"));
+      const childFile = join(dir, "Root", "Scout.jsonl");
+
+      const sent: Record<string, unknown>[] = [];
+      const { handlers } = makeExtensionApi(sent);
+      const handler = handlers.get("session_start")!;
+      const entries = [{ type: "session_init", agent: "scout" }];
+      const ctx = makeChildCtx("child-sess", childFile, entries);
+      await handler({}, ctx);
+
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.hook_event_name).toBe("SubagentStart");
+      expect(sent[0]!._omp_subagent).toBe(true);
+      expect(sent[0]!._omp_parent_session_id).toBe("pi-root-provider-id");
+      expect(sent[0]!._omp_agent_id).toBe("Scout");
+      expect(sent[0]!._omp_agent_type).toBe("scout");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("child session_shutdown emits no SessionEnd", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ci-omp-test-"));
+    try {
+      const rootTranscriptPath = join(dir, "Root.jsonl");
+      writeFileSync(rootTranscriptPath, JSON.stringify({ type: "session", session: "root-provider-id" }));
+      mkdirSync(join(dir, "Root"));
+      const childFile = join(dir, "Root", "Scout.jsonl");
+
+      const sent: Record<string, unknown>[] = [];
+      const { handlers } = makeExtensionApi(sent);
+      const entries = [{ type: "session_init", agent: "scout" }];
+      const ctx = makeChildCtx("child-sess", childFile, entries);
+
+      // Prime the cache via session_start.
+      await handlers.get("session_start")!({}, ctx);
+      const beforeShutdown = sent.length;
+
+      // Shutdown should clear caches silently — no SessionEnd.
+      await handlers.get("session_shutdown")!({}, ctx);
+      const afterShutdown = sent.length;
+
+      expect(afterShutdown).toBe(beforeShutdown);
+      expect(sent.every((e) => e.hook_event_name !== "SessionEnd")).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("root session_shutdown emits SessionEnd", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { handlers } = makeExtensionApi(sent);
+    const ctx = makeRootCtx("root-shutdown");
+
+    await handlers.get("session_start")!({}, ctx);
+    await handlers.get("session_shutdown")!({}, ctx);
+
+    const endEvents = sent.filter((e) => e.hook_event_name === "SessionEnd");
+    expect(endEvents).toHaveLength(1);
+    expect(endEvents[0]!.session_id).toBe("pi-root-shutdown");
+    expect(endEvents[0]!._omp_subagent).toBeUndefined();
+  });
+
+  test("session_switch clears started state so next session_start re-emits SessionStart", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { handlers } = makeExtensionApi(sent);
+    const ctx = makeRootCtx("root-switch");
+
+    await handlers.get("session_start")!({}, ctx);
+    const afterFirst = sent.filter((e) => e.hook_event_name === "SessionStart").length;
+    expect(afterFirst).toBe(1);
+
+    // Switch clears startedSessions for this session.
+    await handlers.get("session_switch")!({}, ctx);
+
+    // Next session_start should emit again because the guard was cleared.
+    await handlers.get("session_start")!({}, ctx);
+    const afterSwitch = sent.filter((e) => e.hook_event_name === "SessionStart").length;
+    expect(afterSwitch).toBe(2);
+  });
+
+  // ── OMP 18.0.10 regression ────────────────────────────────────────────────
+
+  test("OMP 18.0.10: child session_start emits SubagentStart with correct parent id and metadata", async () => {
+    // Uses the exact root transcript shape from OMP 18.0.10:
+    //   {"type":"session","version":3,"id":"01a04d4e-..."}
+    const dir = mkdtempSync(join(tmpdir(), "ci-omp-test-"));
+    try {
+      const rootTranscriptPath = join(dir, "Root.jsonl");
+      writeFileSync(
+        rootTranscriptPath,
+        JSON.stringify({
+          type: "session",
+          version: 3,
+          id: "01a04d4e-f1b2-4c3d-8e5f-a6b7c8d9e0f1",
+        }),
+      );
+      mkdirSync(join(dir, "Root"));
+      const childFile = join(dir, "Root", "FixOmpRootId.jsonl");
+
+      const sent: Record<string, unknown>[] = [];
+      const { handlers } = makeExtensionApi(sent);
+      const entries = [{ type: "session_init", agent: "task" }];
+      const ctx = makeChildCtx("child-omp1810", childFile, entries);
+      await handlers.get("session_start")!({}, ctx);
+
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.hook_event_name).toBe("SubagentStart");
+      expect(sent[0]!._omp_subagent).toBe(true);
+      expect(sent[0]!._omp_parent_session_id).toBe("pi-01a04d4e-f1b2-4c3d-8e5f-a6b7c8d9e0f1");
+      expect(sent[0]!._omp_agent_id).toBe("FixOmpRootId");
+      expect(sent[0]!._omp_agent_type).toBe("task");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

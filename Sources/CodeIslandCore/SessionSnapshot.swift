@@ -956,6 +956,9 @@ public func reduceEvent(
     let sessionId = event.sessionId ?? "default"
     let eventName = EventNormalizer.normalize(event.eventName)
     var effects: [SideEffect] = []
+    // True when a top-level (separate-mode) OMP child Stop arrives. Suppresses
+    // completion enqueue and Stop sound; all other state updates still apply.
+    var isOmpSubagentStop = false
 
     // Ensure session exists
     if sessions[sessionId] == nil {
@@ -1164,6 +1167,13 @@ public func reduceEvent(
         }
         effects.append(.enqueueCompletion(sessionId: sessionId))
     case "Stop":
+        // A top-level Stop from a separate-mode OMP child carries _omp_subagent == true
+        // but has no agent_id (merged children are routed via handleSubagentEvent).
+        // It still idles the card and records the reply, but must not enqueue a
+        // completion or play the Stop sound.
+        if (event.rawJSON["_omp_subagent"] as? Bool) == true {
+            isOmpSubagentStop = true
+        }
         // Detect ESC/Ctrl+C interruption
         let stopReason = event.rawJSON["stop_reason"] as? String ?? ""
         let wasInterrupted = (stopReason == "user" || stopReason == "interrupted")
@@ -1226,10 +1236,9 @@ public func reduceEvent(
             sessions[sessionId]?.status = .idle
             sessions[sessionId]?.currentTool = nil
             sessions[sessionId]?.toolDescription = nil
-            // `lastToolIntent` persists past turn end so the next turn's opening
-            // generation gap shows the last intent (matching omp) until its first
-            // tool overwrites it. The idle card shows the reply, not this field.
-            effects.append(.enqueueCompletion(sessionId: sessionId))
+            if !isOmpSubagentStop {
+                effects.append(.enqueueCompletion(sessionId: sessionId))
+            }
         }
     case "SessionStart":
         effects.append(.stopMonitor(sessionId: sessionId))
@@ -1364,7 +1373,9 @@ public func reduceEvent(
     }
 
     // Trigger sound for this event
-    effects.append(.playSound(eventName))
+    if !isOmpSubagentStop {
+        effects.append(.playSound(eventName))
+    }
 
     // Switch display to the session that just had activity
     if eventName == "Stop" {

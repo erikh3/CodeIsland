@@ -59,6 +59,7 @@
 - New setting: Always-proceed Agents — permission requests from listed agents are approved without a card, for CLIs already running in their own Turbo/YOLO mode (#283, thanks @fajarnuha)
 - Qoder: omit the scalar `answer` key that its strict AskUserQuestion schema rejects (#300, thanks @ri-char)
 - Sound behaviour is now testable, and pinned: a burst of queued approvals chimes once (#312, thanks @halindrome)
+- OMP: fold task children under Agent Sub-Sessions (separate / merge / hide) — separate cards use the child's name and stay readable after the child finishes; merged mode keeps approval and question cards actionable; the completion indicator fires only when the root session ends; bundled OMP extension updated to v8 (reload by restarting any already-running OMP process after CodeIsland updates)
 
 ### 中文
 - 空闲 CPU 从约 10% 降到约 1%——只要屏幕上还有一个活着的 TimelineView，SwiftUI 就每个显示周期重跑整个面板布局；现在灵动岛收起且无任务时渲染静态睡眠帧，同时去掉 3 秒一次的运行程序枚举和 500 毫秒轮询（#299，感谢 @cbingb666 提供的堆栈采样）
@@ -83,6 +84,7 @@
 - 新增设置项「免确认的 Agent」——名单内 agent 的权限请求直接放行、不弹卡片，适合本身已开 Turbo/YOLO 模式的 CLI（#283，感谢 @fajarnuha）
 - Qoder：去掉其严格 AskUserQuestion schema 会拒绝的标量 `answer` 字段（#300，感谢 @ri-char）
 - 提示音行为现在可测试并已加断言：一串排队的审批只响一次（#312，感谢 @halindrome）
+- OMP：将 task 子会话纳入「Agent 子会话」设置（独立 / 合并 / 隐藏）——独立卡片使用子会话自身名称，子会话结束后依然可读；合并模式保持审批与提问卡片可操作；完成指示器仅在根会话结束时触发；内置 OMP 扩展更新至 v8（CodeIsland 更新后重启任意正在运行的 OMP 进程即可生效）
 
 ## [v1.0.31] - 2026-07-23
 

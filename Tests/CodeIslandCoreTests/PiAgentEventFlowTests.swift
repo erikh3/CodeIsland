@@ -177,5 +177,178 @@ final class PiAgentEventFlowTests: XCTestCase {
         ]) { _, new in new }, to: &sessions)
         XCTAssertEqual(sessions[sessionId]?.lastToolIntent, "Count Swift files")
         XCTAssertEqual(sessions[sessionId]?.status, .processing)
+    // MARK: - OMP subagent Stop reducer tests
+
+    func testOmpSeparateChildStopIdlesAndRetainsReply() throws {
+        let childId = "pi-child-1"
+        var sessions: [String: SessionSnapshot] = [:]
+        let base: [String: Any] = [
+            "session_id": childId,
+            "_source": "pi",
+            "_omp_subagent": true,
+            "_omp_parent_session_id": "pi-root-1",
+            "_omp_agent_id": "ResearchScout",
+            "_omp_agent_type": "scout",
+        ]
+
+        _ = try apply(base.merging(["hook_event_name": "SessionStart"]) { $1 }, to: &sessions)
+        _ = try apply(base.merging([
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "Research the topic",
+        ]) { $1 }, to: &sessions)
+
+        let stopEffects = try apply(base.merging([
+            "hook_event_name": "Stop",
+            "last_assistant_message": "Research complete.",
+        ]) { $1 }, to: &sessions)
+
+        let session = try XCTUnwrap(sessions[childId])
+        XCTAssertEqual(session.status, .idle)
+        XCTAssertEqual(session.lastAssistantMessage, "Research complete.")
+        XCTAssertFalse(stopEffects.contains(.enqueueCompletion(sessionId: childId)))
+        XCTAssertFalse(stopEffects.contains(.playSound("Stop")))
+    }
+
+    func testOmpSeparateChildStopEmitsNeitherCompletionNorSound() throws {
+        let childId = "pi-child-nosound"
+        var sessions: [String: SessionSnapshot] = [:]
+
+        _ = try apply([
+            "hook_event_name": "SessionStart",
+            "session_id": childId,
+            "_source": "pi",
+        ], to: &sessions)
+
+        let stopEffects = try apply([
+            "hook_event_name": "Stop",
+            "session_id": childId,
+            "_source": "pi",
+            "_omp_subagent": true,
+            "_omp_parent_session_id": "pi-root-2",
+            "_omp_agent_id": "Worker",
+            "last_assistant_message": "Done.",
+        ], to: &sessions)
+
+        XCTAssertFalse(stopEffects.contains(.enqueueCompletion(sessionId: childId)))
+        XCTAssertFalse(stopEffects.contains(.playSound("Stop")))
+    }
+
+    func testNormalRootPiStopEmitsBothCompletionAndSound() throws {
+        let sessionId = "pi-root-normal"
+        var sessions: [String: SessionSnapshot] = [:]
+
+        _ = try apply([
+            "hook_event_name": "SessionStart",
+            "session_id": sessionId,
+            "_source": "pi",
+        ], to: &sessions)
+
+        let stopEffects = try apply([
+            "hook_event_name": "Stop",
+            "session_id": sessionId,
+            "_source": "pi",
+            "last_assistant_message": "All done.",
+        ], to: &sessions)
+
+        XCTAssertTrue(stopEffects.contains(.enqueueCompletion(sessionId: sessionId)))
+        XCTAssertTrue(stopEffects.contains(.playSound("Stop")))
+    }
+
+    func testMergedChildStopWithSiblingLeavesParentActive() throws {
+        let parentId = "pi-root-merge"
+        var sessions: [String: SessionSnapshot] = [:]
+
+        _ = try apply([
+            "hook_event_name": "SessionStart",
+            "session_id": parentId,
+            "_source": "pi",
+        ], to: &sessions)
+
+        // Two merged children start
+        _ = try apply([
+            "hook_event_name": "SubagentStart",
+            "session_id": parentId,
+            "_source": "pi",
+            "agent_id": "Scout",
+            "agent_type": "scout",
+        ], to: &sessions)
+        _ = try apply([
+            "hook_event_name": "SubagentStart",
+            "session_id": parentId,
+            "_source": "pi",
+            "agent_id": "Reviewer",
+            "agent_type": "reviewer",
+        ], to: &sessions)
+
+        // First child stops
+        let firstStopEffects = try apply([
+            "hook_event_name": "Stop",
+            "session_id": parentId,
+            "_source": "pi",
+            "agent_id": "Scout",
+        ], to: &sessions)
+
+        let session = try XCTUnwrap(sessions[parentId])
+        // Sibling still active
+        XCTAssertNotNil(session.subagents["Reviewer"])
+        XCTAssertNil(session.subagents["Scout"])
+        // Parent still active (not idle)
+        XCTAssertNotEqual(session.status, .idle)
+        XCTAssertFalse(firstStopEffects.contains(.enqueueCompletion(sessionId: parentId)))
+    }
+
+    func testMergedFinalChildStopReturnsParentToProcessingNoCompletion() throws {
+        let parentId = "pi-root-final-child"
+        var sessions: [String: SessionSnapshot] = [:]
+
+        _ = try apply([
+            "hook_event_name": "SessionStart",
+            "session_id": parentId,
+            "_source": "pi",
+        ], to: &sessions)
+
+        _ = try apply([
+            "hook_event_name": "SubagentStart",
+            "session_id": parentId,
+            "_source": "pi",
+            "agent_id": "OnlyChild",
+            "agent_type": "task",
+        ], to: &sessions)
+
+        let finalStopEffects = try apply([
+            "hook_event_name": "Stop",
+            "session_id": parentId,
+            "_source": "pi",
+            "agent_id": "OnlyChild",
+        ], to: &sessions)
+
+        let session = try XCTUnwrap(sessions[parentId])
+        XCTAssertTrue(session.subagents.isEmpty)
+        XCTAssertEqual(session.status, .processing)
+        XCTAssertFalse(finalStopEffects.contains(.enqueueCompletion(sessionId: parentId)))
+    }
+
+    func testNonOmpProviderStopRemainsUnchanged() throws {
+        let sessionId = "claude-normal"
+        var sessions: [String: SessionSnapshot] = [:]
+
+        _ = try apply([
+            "hook_event_name": "SessionStart",
+            "session_id": sessionId,
+            "_source": "claude",
+        ], to: &sessions)
+
+        let stopEffects = try apply([
+            "hook_event_name": "Stop",
+            "session_id": sessionId,
+            "_source": "claude",
+            "last_assistant_message": "Task finished.",
+        ], to: &sessions)
+
+        XCTAssertTrue(stopEffects.contains(.enqueueCompletion(sessionId: sessionId)))
+        XCTAssertTrue(stopEffects.contains(.playSound("Stop")))
+        let session = try XCTUnwrap(sessions[sessionId])
+        XCTAssertEqual(session.status, .idle)
+        XCTAssertEqual(session.lastAssistantMessage, "Task finished.")
     }
 }
