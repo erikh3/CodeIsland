@@ -342,6 +342,7 @@ open .build/release/CodeIsland.app
 swift test
 ```
 
+
 ## Requirements
 
 - macOS 14 Sonoma or later

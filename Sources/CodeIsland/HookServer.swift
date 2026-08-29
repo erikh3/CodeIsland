@@ -333,6 +333,7 @@ class HookServer {
     private static let cursorSourceExactBytes = Data(#""_source":"cursor""#.utf8)
     private static let cursorCliSourceExactBytes = Data(#""_source":"cursor-cli""#.utf8)
     private static let ppidKeyBytes = Data(#""_ppid""#.utf8)
+    private static let ompSubagentMarkerBytes = Data(#""_omp_subagent""#.utf8)
     /// JSON `\uXXXX` escape — only then do we fall back to a full parse.
     private static let jsonUnicodeEscapeBytes = Data(#"\u"#.utf8)
     private static let cursorSourceFlexibleRegex: NSRegularExpression = {
@@ -547,7 +548,125 @@ class HookServer {
         routeSubsessionPayloadIfNeeded(data: data)
     }
 
+    // MARK: - OMP subagent routing
+
+    /// Decision produced by ``decideOmpSubagent(raw:)``.
+    enum OmpSubagentDecision {
+        /// Payload is a valid OMP child; apply the chosen mode.
+        case route(childSessionId: String, parentSessionId: String, agentId: String, agentType: String)
+        /// Already routed — `_omp_subagent` + `agent_id` + `_omp_child_session_id`
+        /// but no `_omp_parent_session_id`. Leave unchanged.
+        case alreadyMerged
+        /// Not an OMP child event, or invalid/partial metadata. Pass through.
+        case passThrough
+    }
+
+    /// Cheap structural check: true when raw bytes contain `"_omp_subagent"`.
+    internal static func mayBeOmpSubagent(data: Data) -> Bool {
+        data.range(of: ompSubagentMarkerBytes) != nil
+    }
+
+    /// Parse and validate OMP routing metadata from an already-deserialized payload.
+    ///
+    /// Returns `.route` when all required fields are present and valid.
+    /// Returns `.alreadyMerged` for a payload that has already been routed.
+    /// Returns `.passThrough` for anything else (including malformed/partial metadata).
+    internal static func decideOmpSubagent(raw: [String: Any]) -> OmpSubagentDecision {
+        // Must have _omp_subagent: true
+        guard (raw["_omp_subagent"] as? Bool) == true else { return .passThrough }
+
+        // Already-merged: has agent_id and _omp_child_session_id but no parent pointer.
+        if Self.nonEmptyString(raw["agent_id"]) != nil,
+           Self.nonEmptyString(raw["_omp_child_session_id"]) != nil,
+           raw["_omp_parent_session_id"] == nil {
+            return .alreadyMerged
+        }
+
+        // All routing fields must be present and non-empty.
+        guard let childSessionId = Self.rawSessionId(from: raw),
+              let parentSessionId = Self.nonEmptyString(raw["_omp_parent_session_id"]),
+              let agentId = Self.nonEmptyString(raw["_omp_agent_id"]),
+              let agentType = Self.nonEmptyString(raw["_omp_agent_type"]) else {
+            return .passThrough
+        }
+        // Child and parent must be distinct.
+        guard childSessionId != parentSessionId else { return .passThrough }
+
+        return .route(
+            childSessionId: childSessionId,
+            parentSessionId: parentSessionId,
+            agentId: agentId,
+            agentType: agentType
+        )
+    }
+
+    /// Apply OMP-specific routing when ``decideOmpSubagent(raw:)`` returns `.route`.
+    ///
+    /// - `separate`: return `(data, nil)` — child session ID and title are unchanged.
+    /// - `merge`:    rewrite `session_id` to the resolved root key, set `agent_id`,
+    ///               `agent_type`, and `_omp_child_session_id`; remove the three
+    ///               routing-only fields `_omp_parent_session_id`, `_omp_agent_id`,
+    ///               and `_omp_agent_type`. Falls back to original `data` on
+    ///               serialization failure.
+    /// - `hide`:     return `(data, hiddenPluginResponse)`.
+    private func applyOmpRouting(
+        data: Data,
+        raw: [String: Any],
+        childSessionId: String,
+        parentSessionId: String,
+        agentId: String,
+        agentType: String,
+        mode: String
+    ) -> (processedData: Data, responseData: Data?) {
+        switch mode {
+        case "hide":
+            return (data, Self.hiddenPluginResponse(for: raw))
+        case "merge":
+            let resolvedParent = appState.findSessionId(providerSessionId: parentSessionId)
+                ?? parentSessionId
+            var rewritten = raw
+            rewritten["session_id"] = resolvedParent
+            rewritten["agent_id"] = agentId
+            rewritten["agent_type"] = agentType
+            rewritten["_omp_child_session_id"] = childSessionId
+            rewritten.removeValue(forKey: "_omp_parent_session_id")
+            rewritten.removeValue(forKey: "_omp_agent_id")
+            rewritten.removeValue(forKey: "_omp_agent_type")
+            guard let newData = try? JSONSerialization.data(withJSONObject: rewritten) else {
+                return (data, nil)
+            }
+            return (newData, nil)
+        default:
+            // "separate" or unknown — leave session ID and title as-is.
+            return (data, nil)
+        }
+    }
+
     private func routeSubsessionPayloadIfNeeded(data: Data) -> (processedData: Data, responseData: Data?) {
+        // OMP child routing runs before all other sub-session probes.
+        // A cheap byte probe avoids JSONSerialization on the hot path.
+        if Self.mayBeOmpSubagent(data: data),
+           let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let mode = UserDefaults.standard.string(forKey: SettingsKey.pluginSessionMode)
+                ?? SettingsDefaults.pluginSessionMode
+            switch Self.decideOmpSubagent(raw: raw) {
+            case .alreadyMerged:
+                return (data, nil)
+            case .route(let childSessionId, let parentSessionId, let agentId, let agentType):
+                return applyOmpRouting(
+                    data: data,
+                    raw: raw,
+                    childSessionId: childSessionId,
+                    parentSessionId: parentSessionId,
+                    agentId: agentId,
+                    agentType: agentType,
+                    mode: mode
+                )
+            case .passThrough:
+                break
+            }
+        }
+
         let mayNeedPluginOrCodex = data.range(of: Self.pluginMarkerBytes) != nil
             || (data.range(of: Self.sourceMarkerBytes) != nil && data.range(of: Self.codexMarkerBytes) != nil)
         let mayNeedCursorTranscript = Self.mayNeedCursorSubsessionRouting(data: data)
