@@ -1022,9 +1022,10 @@ public func reduceEvent(
     let sessionId = event.sessionId ?? "default"
     let eventName = EventNormalizer.normalize(event.eventName)
     var effects: [SideEffect] = []
-    // True when a top-level (separate-mode) OMP child Stop arrives. Suppresses
-    // completion enqueue and Stop sound; all other state updates still apply.
-    var isOmpSubagentStop = false
+    // True when a top-level (separate-mode) OMP child Stop arrives. Derived once
+    // as a pure let — suppresses completion enqueue and Stop sound.
+    let isOmpSubagentStop = eventName == "Stop"
+        && (event.rawJSON["_omp_subagent"] as? Bool) == true
 
     // Ensure session exists
     if sessions[sessionId] == nil {
@@ -1290,9 +1291,6 @@ public func reduceEvent(
         // but has no agent_id (merged children are routed via handleSubagentEvent).
         // It still idles the card and records the reply, but must not enqueue a
         // completion or play the Stop sound.
-        if (event.rawJSON["_omp_subagent"] as? Bool) == true {
-            isOmpSubagentStop = true
-        }
         // Detect ESC/Ctrl+C interruption
         let stopReason = event.rawJSON["stop_reason"] as? String ?? ""
         let wasInterrupted = (stopReason == "user" || stopReason == "interrupted")
@@ -2174,6 +2172,13 @@ private func handleSubagentEvent(
             sessions[sessionId]?.status = .processing
             sessions[sessionId]?.subagents[agentId]?.status = .processing
         }
+        return true
+
+    case "PreCompact", "PostCompact":
+        // Compaction events from a merged child — update child lastActivity but do not
+        // touch parent status/toolDescription or emit sound.
+        sessions[sessionId]?.subagents[agentId]?.lastActivity = Date()
+        sessions[sessionId]?.lastActivity = Date()
         return true
 
     default:

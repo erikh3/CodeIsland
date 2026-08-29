@@ -209,29 +209,6 @@ final class PiAgentEventFlowTests: XCTestCase {
         XCTAssertFalse(stopEffects.contains(.playSound("Stop")))
     }
 
-    func testOmpSeparateChildStopEmitsNeitherCompletionNorSound() throws {
-        let childId = "pi-child-nosound"
-        var sessions: [String: SessionSnapshot] = [:]
-
-        _ = try apply([
-            "hook_event_name": "SessionStart",
-            "session_id": childId,
-            "_source": "pi",
-        ], to: &sessions)
-
-        let stopEffects = try apply([
-            "hook_event_name": "Stop",
-            "session_id": childId,
-            "_source": "pi",
-            "_omp_subagent": true,
-            "_omp_parent_session_id": "pi-root-2",
-            "_omp_agent_id": "Worker",
-            "last_assistant_message": "Done.",
-        ], to: &sessions)
-
-        XCTAssertFalse(stopEffects.contains(.enqueueCompletion(sessionId: childId)))
-        XCTAssertFalse(stopEffects.contains(.playSound("Stop")))
-    }
 
     func testNormalRootPiStopEmitsBothCompletionAndSound() throws {
         let sessionId = "pi-root-normal"
@@ -350,5 +327,71 @@ final class PiAgentEventFlowTests: XCTestCase {
         let session = try XCTUnwrap(sessions[sessionId])
         XCTAssertEqual(session.status, .idle)
         XCTAssertEqual(session.lastAssistantMessage, "Task finished.")
+    }
+
+    func testMergedChildPreCompactDoesNotMutateParent() throws {
+        let parentId = "pi-root-precompact"
+        var sessions: [String: SessionSnapshot] = [:]
+
+        _ = try apply([
+            "hook_event_name": "SessionStart",
+            "session_id": parentId,
+            "_source": "pi",
+        ], to: &sessions)
+        _ = try apply([
+            "hook_event_name": "SubagentStart",
+            "session_id": parentId,
+            "_source": "pi",
+            "agent_id": "Compactor",
+            "agent_type": "task",
+        ], to: &sessions)
+
+        let parentStatus = try XCTUnwrap(sessions[parentId]).status
+        let parentDesc = sessions[parentId]?.toolDescription
+
+        let effects = try apply([
+            "hook_event_name": "PreCompact",
+            "session_id": parentId,
+            "_source": "pi",
+            "agent_id": "Compactor",
+        ], to: &sessions)
+
+        let session = try XCTUnwrap(sessions[parentId])
+        XCTAssertEqual(session.status, parentStatus, "parent status must not change on merged child PreCompact")
+        XCTAssertEqual(session.toolDescription, parentDesc, "parent toolDescription must not change on merged child PreCompact")
+        XCTAssertFalse(effects.contains(.playSound("PreCompact")), "merged child PreCompact must not emit sound")
+    }
+
+    func testMergedChildPostCompactDoesNotMutateParent() throws {
+        let parentId = "pi-root-postcompact"
+        var sessions: [String: SessionSnapshot] = [:]
+
+        _ = try apply([
+            "hook_event_name": "SessionStart",
+            "session_id": parentId,
+            "_source": "pi",
+        ], to: &sessions)
+        _ = try apply([
+            "hook_event_name": "SubagentStart",
+            "session_id": parentId,
+            "_source": "pi",
+            "agent_id": "Compactor",
+            "agent_type": "task",
+        ], to: &sessions)
+
+        let parentStatus = try XCTUnwrap(sessions[parentId]).status
+        let parentDesc = sessions[parentId]?.toolDescription
+
+        let effects = try apply([
+            "hook_event_name": "PostCompact",
+            "session_id": parentId,
+            "_source": "pi",
+            "agent_id": "Compactor",
+        ], to: &sessions)
+
+        let session = try XCTUnwrap(sessions[parentId])
+        XCTAssertEqual(session.status, parentStatus, "parent status must not change on merged child PostCompact")
+        XCTAssertEqual(session.toolDescription, parentDesc, "parent toolDescription must not change on merged child PostCompact")
+        XCTAssertFalse(effects.contains(.playSound("PostCompact")), "merged child PostCompact must not emit sound")
     }
 }

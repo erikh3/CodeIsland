@@ -490,10 +490,7 @@ class HookServer {
             parentSessionId: parentSessionId,
             childSessionId: childSessionId
         )
-        guard let newData = try? JSONSerialization.data(withJSONObject: rewritten) else {
-            return (data, nil)
-        }
-        return (newData, nil)
+        return (Self.serializeOrFallback(rewritten, fallback: data), nil)
     }
 
     /// merge/hide fallback when transcript fold returned `.leave`.
@@ -539,6 +536,11 @@ class HookServer {
             return true
         }
         return false
+    }
+
+    /// Serialize `rewritten` to JSON; return `fallback` on failure.
+    private static func serializeOrFallback(_ rewritten: [String: Any], fallback: Data) -> Data {
+        (try? JSONSerialization.data(withJSONObject: rewritten)) ?? fallback
     }
 
     /// Test seam for Agent Sub-Sessions pre-routing (Cursor / Codex / plugin).
@@ -632,10 +634,7 @@ class HookServer {
             rewritten.removeValue(forKey: "_omp_parent_session_id")
             rewritten.removeValue(forKey: "_omp_agent_id")
             rewritten.removeValue(forKey: "_omp_agent_type")
-            guard let newData = try? JSONSerialization.data(withJSONObject: rewritten) else {
-                return (data, nil)
-            }
-            return (newData, nil)
+            return (Self.serializeOrFallback(rewritten, fallback: data), nil)
         default:
             // "separate" or unknown — leave session ID and title as-is.
             return (data, nil)
@@ -643,12 +642,14 @@ class HookServer {
     }
 
     private func routeSubsessionPayloadIfNeeded(data: Data) -> (processedData: Data, responseData: Data?) {
+        let mode = UserDefaults.standard.string(forKey: SettingsKey.pluginSessionMode)
+            ?? SettingsDefaults.pluginSessionMode
+        let isMergeOrHide = mode == "hide" || mode == "merge"
+
         // OMP child routing runs before all other sub-session probes.
         // A cheap byte probe avoids JSONSerialization on the hot path.
         if Self.mayBeOmpSubagent(data: data),
            let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            let mode = UserDefaults.standard.string(forKey: SettingsKey.pluginSessionMode)
-                ?? SettingsDefaults.pluginSessionMode
             switch Self.decideOmpSubagent(raw: raw) {
             case .alreadyMerged:
                 return (data, nil)
@@ -670,10 +671,6 @@ class HookServer {
         let mayNeedPluginOrCodex = data.range(of: Self.pluginMarkerBytes) != nil
             || (data.range(of: Self.sourceMarkerBytes) != nil && data.range(of: Self.codexMarkerBytes) != nil)
         let mayNeedCursorTranscript = Self.mayNeedCursorSubsessionRouting(data: data)
-
-        let mode = UserDefaults.standard.string(forKey: SettingsKey.pluginSessionMode)
-            ?? SettingsDefaults.pluginSessionMode
-        let isMergeOrHide = mode == "hide" || mode == "merge"
 
         // merge/hide: parse Cursor hooks that lack `agent-transcripts` only when
         // `_ppid` is present — otherwise there is nothing for the fallback to use.
@@ -726,9 +723,7 @@ class HookServer {
                    let mainSessionId = appState.findSessionId(forSource: source, ppid: ppid) {
                     var rewritten = raw
                     rewritten["session_id"] = mainSessionId
-                    if let newData = try? JSONSerialization.data(withJSONObject: rewritten) {
-                        return (newData, nil)
-                    }
+                    return (Self.serializeOrFallback(rewritten, fallback: data), nil)
                 }
             default:
                 break
@@ -761,9 +756,7 @@ class HookServer {
             if let eventName = Self.rawEventName(from: raw) {
                 rewritten["_codex_subagent_event"] = EventNormalizer.normalize(eventName)
             }
-            if let newData = try? JSONSerialization.data(withJSONObject: rewritten) {
-                return (newData, nil)
-            }
+            return (Self.serializeOrFallback(rewritten, fallback: data), nil)
         default:
             break
         }
