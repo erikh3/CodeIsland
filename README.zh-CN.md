@@ -151,11 +151,9 @@ CodeIsland 提供 7 个标签页的设置面板：
 
 ## OMP 任务子会话（Agent Sub-Sessions）
 
-Oh My Pi 支持任务子 Agent，每个子 Agent 都作为独立会话出现在 CodeIsland 面板中。子会话卡片显示子 Agent 名称，完成后依然可读。
+Oh My Pi 以子任务形式派生子 Agent，CodeIsland 通过 **Agent Sub-Sessions** 设置统一管理，共有三种模式：
 
-面板提供三种显示模式，可在设置中切换：
-
-- **分离模式** — 每个子 Agent 独立显示为一张卡片，使用子 Agent 名称作为标题
+- **分离模式** — 每个子 Agent 独立显示为一张卡片，以子 Agent 名称为标题；完成后仍可展开查看历史
 - **合并模式** — 所有子会话折叠到父会话卡片中，审批请求和问题仍可直接操作
 - **隐藏模式** — 子会话不在面板中显示
 

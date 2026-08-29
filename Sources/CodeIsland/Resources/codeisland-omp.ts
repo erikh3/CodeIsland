@@ -563,6 +563,20 @@ export default function codeislandExtension(
     return resolved;
   }
 
+  /**
+   * Resolves identity and ensures the session start event has been emitted.
+   * Returns `null` when identity is unresolved (caller should return early).
+   */
+  async function resolveAndEnsureStart(
+    ctx: { sessionManager: { getSessionId(): string; getSessionFile(): string | null; getEntries(): readonly Record<string, unknown>[] }; cwd: string },
+  ): Promise<{ identity: OmpSessionIdentity & { kind: "root" | "subagent" }; sid: string } | null> {
+    const identity = resolveIdentityFromCtx(ctx);
+    if (identity.kind === "unresolved") return null;
+    await ensureSessionStarted(identity, ctx.cwd);
+    const sid = `pi-${identity.sessionId}`;
+    return { identity, sid };
+  }
+
   async function ensureSessionStarted(
     identity: OmpSessionIdentity,
     cwd: string,
@@ -852,7 +866,19 @@ export default function codeislandExtension(
         throw new ToolAbortError("Ask tool requires interactive mode");
       }
 
-      const identity = resolveIdentityFromCtx(ctx);
+      const rawIdentity = resolveIdentityFromCtx(ctx);
+
+      // Unresolved lineage: the parent transcript is not yet readable.
+      // Emit nothing to CodeIsland; run native Ask directly so the TUI
+      // dialog still works while before_agent_start waits for resolution.
+      if (rawIdentity.kind === "unresolved") {
+        const nativeAsk = createNativeAskTool(ctx);
+        const nativeContext = createNativeAskContext(ctx, () => undefined);
+        const result = await nativeAsk.execute(toolCallId, params, signal, onUpdate, nativeContext);
+        return result;
+      }
+
+      const identity = rawIdentity;
       const islandQuestions = mapAskQuestionsToCodeIsland(questions);
       const answerKeys = computeAnswerKeys(questions);
 
@@ -1010,25 +1036,9 @@ export default function codeislandExtension(
   // ── Agent lifecycle ────────────────────────────────────────────────────────
 
   pi.on("before_agent_start", async (event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    const sid = `pi-${sessionId}`;
-
-    // Retry identity resolution if unresolved from session_start.
-    let identity = resolveIdentityFromCtx(ctx);
-    if (identity.kind === "unresolved") {
-      // Re-resolve now that entries may include session_init.
-      identity = resolveOmpIdentity(
-        sessionId,
-        ctx.sessionManager.getSessionFile(),
-        ctx.sessionManager.getEntries(),
-      );
-      if (identity.kind === "subagent") {
-        identityCache.set(sessionId, identity);
-      }
-    }
-    if (identity.kind === "unresolved") return;
-
-    await ensureSessionStarted(identity, ctx.cwd);
+    const resolved = await resolveAndEnsureStart(ctx);
+    if (!resolved) return;
+    const { identity, sid } = resolved;
 
     if (pendingPermissionSessions.has(sid)) return;
 
@@ -1045,12 +1055,9 @@ export default function codeislandExtension(
     // Non-terminal turns: OMP already scheduled more work; suppress Stop.
     if ((event as Record<string, unknown>).willContinue === true) return;
 
-    const sessionId = ctx.sessionManager.getSessionId();
-    const sid = `pi-${sessionId}`;
-    const identity = resolveIdentityFromCtx(ctx);
-    if (identity.kind === "unresolved") return;
-
-    await ensureSessionStarted(identity, ctx.cwd);
+    const resolved = await resolveAndEnsureStart(ctx);
+    if (!resolved) return;
+    const { identity, sid } = resolved;
 
     if (pendingPermissionSessions.has(sid)) return;
 
@@ -1069,11 +1076,9 @@ export default function codeislandExtension(
   // ── Tool calls ─────────────────────────────────────────────────────────────
 
   pi.on("tool_call", async (event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    const sid = `pi-${sessionId}`;
-    const identity = resolveIdentityFromCtx(ctx);
-    if (identity.kind === "unresolved") return;
-    await ensureSessionStarted(identity, ctx.cwd);
+    const resolved = await resolveAndEnsureStart(ctx);
+    if (!resolved) return;
+    const { identity, sid } = resolved;
     const toolName = displayToolName(event.toolName);
 
     // Build a tool_input object appropriate for the tool type.
@@ -1163,36 +1168,32 @@ export default function codeislandExtension(
   });
 
   pi.on("tool_result", async (_event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    const sid = `pi-${sessionId}`;
-    const identity = resolveIdentityFromCtx(ctx);
-    if (identity.kind === "unresolved") return;
-    await ensureSessionStarted(identity, ctx.cwd);
+    const resolved = await resolveAndEnsureStart(ctx);
+    if (!resolved) return;
+    const { sid } = resolved;
 
     if (pendingPermissionSessions.has(sid)) return;
 
     await sendFn(
-      buildEvent(identity, ctx.cwd, { hook_event_name: "PostToolUse" }),
+      buildEvent(resolved.identity, ctx.cwd, { hook_event_name: "PostToolUse" }),
     );
   });
 
   // ── Compaction ─────────────────────────────────────────────────────────────
 
   pi.on("session_before_compact", async (_event, ctx) => {
-    const identity = resolveIdentityFromCtx(ctx);
-    if (identity.kind === "unresolved") return;
-    await ensureSessionStarted(identity, ctx.cwd);
+    const resolved = await resolveAndEnsureStart(ctx);
+    if (!resolved) return;
     await sendFn(
-      buildEvent(identity, ctx.cwd, { hook_event_name: "PreCompact" }),
+      buildEvent(resolved.identity, ctx.cwd, { hook_event_name: "PreCompact" }),
     );
   });
 
   pi.on("session_compact", async (_event, ctx) => {
-    const identity = resolveIdentityFromCtx(ctx);
-    if (identity.kind === "unresolved") return;
-    await ensureSessionStarted(identity, ctx.cwd);
+    const resolved = await resolveAndEnsureStart(ctx);
+    if (!resolved) return;
     await sendFn(
-      buildEvent(identity, ctx.cwd, { hook_event_name: "PostCompact" }),
+      buildEvent(resolved.identity, ctx.cwd, { hook_event_name: "PostCompact" }),
     );
   });
 }

@@ -365,8 +365,10 @@ function makeExtensionApi(
 ): {
   api: Parameters<typeof codeislandExtension>[0];
   handlers: Map<string, (event: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<void>>;
+  tools: Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>;
 } {
   const handlers = new Map<string, (event: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<void>>();
+  const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
   const api = {
     zod: {
       string: fakeSchema,
@@ -376,19 +378,19 @@ function makeExtensionApi(
       object: fakeSchema,
     },
     pi: {
-      AskTool: class { constructor(_: unknown) {} readonly name = "ask"; readonly label = "Ask"; readonly description = ""; readonly parameters = fakeSchema(); readonly strict = true; readonly approval = "read"; readonly concurrency = "exclusive"; async execute() { return { content: [], details: {} }; } },
+      AskTool: class { constructor(_: unknown) {} readonly name = "ask"; readonly label = "Ask"; readonly description = ""; readonly parameters = fakeSchema(); readonly strict = true; readonly approval = "read"; readonly concurrency = "exclusive"; async execute() { return { content: [{ type: "text", text: "User selected: Option A" }], details: { question: "q", options: ["Option A"], multi: false, selectedOptions: ["Option A"] } }; } },
       askToolRenderer: { mergeCallAndResult: true, renderCall: () => null, renderResult: () => null },
       settings: {},
     },
     getSessionName: () => undefined as string | undefined,
-    registerTool: (_tool: unknown) => {},
+    registerTool: (tool: unknown) => { tools.set((tool as { name: string }).name, tool as { execute: (...args: unknown[]) => Promise<unknown> }); },
     on: (eventName: string, handler: (event: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<void>) => {
       handlers.set(eventName, handler);
     },
   } as never;
   const capturer = sendFn ?? ((payload: object) => { events.push(payload as Record<string, unknown>); return Promise.resolve(true); });
   codeislandExtension(api, capturer);
-  return { api, handlers };
+  return { api, handlers, tools };
 }
 
 function makeRootCtx(sessionId: string, cwd = "/project"): Record<string, unknown> {
@@ -431,6 +433,27 @@ function makeChildCtx(
     ui: {},
   };
 }
+
+/**
+ * Creates a temp directory containing a root transcript and a subdirectory for
+ * child session files.  Returns the dir, the root transcript path, and a helper
+ * that builds an absolute child file path inside `<dir>/Root/`.
+ *
+ * Callers are responsible for cleanup (`rmSync(dir, { recursive: true, force: true })`).
+ */
+function makeChildTranscriptDir(rootTranscriptContent: object): {
+  dir: string;
+  childFile: (name: string) => string;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "ci-omp-test-"));
+  writeFileSync(join(dir, "Root.jsonl"), JSON.stringify(rootTranscriptContent));
+  mkdirSync(join(dir, "Root"));
+  return {
+    dir,
+    childFile: (name: string) => join(dir, "Root", name),
+  };
+}
+
 
 describe("lifecycle event wire contract", () => {
 
@@ -485,20 +508,15 @@ describe("lifecycle event wire contract", () => {
   });
 
   test("session_shutdown emits no SessionEnd after child identity cached by a non-start handler", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ci-omp-test-"));
+    const { dir, childFile } = makeChildTranscriptDir({ type: "session", session: "root-provider-id" });
     try {
-      const rootTranscriptPath = join(dir, "Root.jsonl");
-      writeFileSync(rootTranscriptPath, JSON.stringify({ type: "session", session: "root-provider-id" }));
-      mkdirSync(join(dir, "Root"));
-      const childFile = join(dir, "Root", "Scout.jsonl");
-
       const sent: Record<string, unknown>[] = [];
       const { handlers } = makeExtensionApi(sent);
       const entries = [{ type: "session_init", agent: "scout" }];
-      const ctx = makeChildCtx("child-cache-sid", childFile, entries);
+      const ctx = makeChildCtx("child-cache-sid", childFile("Scout.jsonl"), entries);
 
       // Prime the cache via agent_end (a non-start handler) instead of session_start.
-      // resolveIdentityFromCtx now caches subagent identities on first resolution.
+      // resolveIdentityFromCtx caches subagent identities on first resolution.
       await handlers.get("agent_end")!({ messages: [] }, ctx);
       const beforeShutdown = sent.length;
 
@@ -532,6 +550,39 @@ describe("lifecycle event wire contract", () => {
       expect(event._omp_subagent).toBeUndefined();
     }
   });
+
+  test("unresolved Ask child executes native Ask without any CodeIsland bridge request", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { tools } = makeExtensionApi(sent);
+    const askTool = tools.get("ask");
+    expect(askTool).toBeDefined();
+
+    // Unresolved: parent transcript absent → resolveOmpIdentity returns "unresolved".
+    const ctx = makeChildCtx(
+      "child-ask-sid",
+      "/tmp/codeisland-omp-test-nonexistent/Root/Scout.jsonl",
+      [], // no session_init → agent type absent; parent path does not exist on disk
+    ) as Record<string, unknown> & { hasUI: boolean };
+    ctx.hasUI = true;
+
+    const params = {
+      questions: [{
+        id: "q1",
+        question: "Pick one",
+        options: [{ label: "Option A" }],
+        multi: false,
+      }],
+    };
+    const result = await askTool!.execute("call-1", params, undefined, () => {}, ctx);
+
+    // Native AskTool stub returns a result — confirm it arrived.
+    expect(result).toBeDefined();
+    const r = result as { content: { type: string; text: string }[] };
+    expect(r.content.length).toBeGreaterThan(0);
+
+    // No CodeIsland socket/bridge request must have been attempted.
+    expect(sent).toHaveLength(0);
+  });
 });
 
 // ── Session event emission ────────────────────────────────────────────────────
@@ -560,19 +611,13 @@ describe("session event emission", () => {
   });
 
   test("child session_start emits SubagentStart with parent and agent metadata", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ci-omp-test-"));
+    const { dir, childFile } = makeChildTranscriptDir({ type: "session", session: "root-provider-id" });
     try {
-      const rootTranscriptPath = join(dir, "Root.jsonl");
-      writeFileSync(rootTranscriptPath, JSON.stringify({ type: "session", session: "root-provider-id" }));
-      mkdirSync(join(dir, "Root"));
-      const childFile = join(dir, "Root", "Scout.jsonl");
-
       const sent: Record<string, unknown>[] = [];
       const { handlers } = makeExtensionApi(sent);
-      const handler = handlers.get("session_start")!;
       const entries = [{ type: "session_init", agent: "scout" }];
-      const ctx = makeChildCtx("child-sess", childFile, entries);
-      await handler({}, ctx);
+      const ctx = makeChildCtx("child-sess", childFile("Scout.jsonl"), entries);
+      await handlers.get("session_start")!({}, ctx);
 
       expect(sent).toHaveLength(1);
       expect(sent[0]!.hook_event_name).toBe("SubagentStart");
@@ -586,17 +631,12 @@ describe("session event emission", () => {
   });
 
   test("child session_shutdown emits no SessionEnd", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ci-omp-test-"));
+    const { dir, childFile } = makeChildTranscriptDir({ type: "session", session: "root-provider-id" });
     try {
-      const rootTranscriptPath = join(dir, "Root.jsonl");
-      writeFileSync(rootTranscriptPath, JSON.stringify({ type: "session", session: "root-provider-id" }));
-      mkdirSync(join(dir, "Root"));
-      const childFile = join(dir, "Root", "Scout.jsonl");
-
       const sent: Record<string, unknown>[] = [];
       const { handlers } = makeExtensionApi(sent);
       const entries = [{ type: "session_init", agent: "scout" }];
-      const ctx = makeChildCtx("child-sess", childFile, entries);
+      const ctx = makeChildCtx("child-sess", childFile("Scout.jsonl"), entries);
 
       // Prime the cache via session_start.
       await handlers.get("session_start")!({}, ctx);
@@ -604,9 +644,7 @@ describe("session event emission", () => {
 
       // Shutdown should clear caches silently — no SessionEnd.
       await handlers.get("session_shutdown")!({}, ctx);
-      const afterShutdown = sent.length;
-
-      expect(afterShutdown).toBe(beforeShutdown);
+      expect(sent.length).toBe(beforeShutdown);
       expect(sent.every((e) => e.hook_event_name !== "SessionEnd")).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -650,24 +688,16 @@ describe("session event emission", () => {
   test("OMP 18.0.10: child session_start emits SubagentStart with correct parent id and metadata", async () => {
     // Uses the exact root transcript shape from OMP 18.0.10:
     //   {"type":"session","version":3,"id":"01a04d4e-..."}
-    const dir = mkdtempSync(join(tmpdir(), "ci-omp-test-"));
+    const { dir, childFile } = makeChildTranscriptDir({
+      type: "session",
+      version: 3,
+      id: "01a04d4e-f1b2-4c3d-8e5f-a6b7c8d9e0f1",
+    });
     try {
-      const rootTranscriptPath = join(dir, "Root.jsonl");
-      writeFileSync(
-        rootTranscriptPath,
-        JSON.stringify({
-          type: "session",
-          version: 3,
-          id: "01a04d4e-f1b2-4c3d-8e5f-a6b7c8d9e0f1",
-        }),
-      );
-      mkdirSync(join(dir, "Root"));
-      const childFile = join(dir, "Root", "FixOmpRootId.jsonl");
-
       const sent: Record<string, unknown>[] = [];
       const { handlers } = makeExtensionApi(sent);
       const entries = [{ type: "session_init", agent: "task" }];
-      const ctx = makeChildCtx("child-omp1810", childFile, entries);
+      const ctx = makeChildCtx("child-omp1810", childFile("FixOmpRootId.jsonl"), entries);
       await handlers.get("session_start")!({}, ctx);
 
       expect(sent).toHaveLength(1);

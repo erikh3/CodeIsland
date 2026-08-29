@@ -296,77 +296,73 @@ final class OmpSubsessionRoutingTests: XCTestCase {
 
     // MARK: - Malformed metadata unchanged
 
-    func testMissingParentSessionIdPassesThrough() throws {
-        try withPluginSessionMode("merge") {
-            let appState = AppState()
-
-            let routed = try route(appState: appState, payload: [
-                "_omp_subagent": true,
-                // _omp_parent_session_id missing
-                "_omp_agent_id": "ResearchScout",
-                "_omp_agent_type": "scout",
-                "session_id": childId,
-                "_source": "pi",
-                "hook_event_name": "PostToolUse",
-            ])
-            // Incomplete — no rewrite
-            XCTAssertEqual(routed.raw["session_id"] as? String, childId)
-            XCTAssertNil(routed.raw["agent_id"])
+    func testMalformedOmpPayloadPassesThrough() throws {
+        struct Case {
+            let label: String
+            let payload: [String: Any]
+            let expectedSessionId: String
         }
-    }
-
-    func testMissingAgentIdPassesThrough() throws {
+        let cases: [Case] = [
+            Case(
+                label: "missing _omp_parent_session_id",
+                payload: [
+                    "_omp_subagent": true,
+                    "_omp_agent_id": "ResearchScout",
+                    "_omp_agent_type": "scout",
+                    "session_id": childId,
+                    "_source": "pi",
+                    "hook_event_name": "PostToolUse",
+                ],
+                expectedSessionId: childId
+            ),
+            Case(
+                label: "missing _omp_agent_id",
+                payload: [
+                    "_omp_subagent": true,
+                    "_omp_parent_session_id": rootId,
+                    "_omp_agent_type": "scout",
+                    "session_id": childId,
+                    "_source": "pi",
+                    "hook_event_name": "PostToolUse",
+                ],
+                expectedSessionId: childId
+            ),
+            Case(
+                label: "child and parent session_id identical",
+                payload: [
+                    "_omp_subagent": true,
+                    "_omp_parent_session_id": rootId,
+                    "_omp_agent_id": "ResearchScout",
+                    "_omp_agent_type": "scout",
+                    "session_id": rootId,
+                    "_source": "pi",
+                    "hook_event_name": "PostToolUse",
+                ],
+                expectedSessionId: rootId
+            ),
+            Case(
+                label: "_omp_subagent is string not bool",
+                payload: [
+                    "_omp_subagent": "true",
+                    "_omp_parent_session_id": rootId,
+                    "_omp_agent_id": "ResearchScout",
+                    "_omp_agent_type": "scout",
+                    "session_id": childId,
+                    "_source": "pi",
+                    "hook_event_name": "PostToolUse",
+                ],
+                expectedSessionId: childId
+            ),
+        ]
         try withPluginSessionMode("merge") {
-            let appState = AppState()
-
-            let routed = try route(appState: appState, payload: [
-                "_omp_subagent": true,
-                "_omp_parent_session_id": rootId,
-                // _omp_agent_id missing
-                "_omp_agent_type": "scout",
-                "session_id": childId,
-                "_source": "pi",
-                "hook_event_name": "PostToolUse",
-            ])
-            XCTAssertEqual(routed.raw["session_id"] as? String, childId)
-            XCTAssertNil(routed.raw["agent_id"])
-        }
-    }
-
-    func testIdenticalChildAndParentIdsPassesThrough() throws {
-        try withPluginSessionMode("merge") {
-            let appState = AppState()
-
-            let routed = try route(appState: appState, payload: [
-                "_omp_subagent": true,
-                "_omp_parent_session_id": rootId,
-                "_omp_agent_id": "ResearchScout",
-                "_omp_agent_type": "scout",
-                "session_id": rootId,  // same as parent — invalid
-                "_source": "pi",
-                "hook_event_name": "PostToolUse",
-            ])
-            XCTAssertEqual(routed.raw["session_id"] as? String, rootId)
-            XCTAssertNil(routed.raw["agent_id"])
-        }
-    }
-
-    func testNonBoolOmpSubagentFlagPassesThrough() throws {
-        try withPluginSessionMode("merge") {
-            let appState = AppState()
-
-            let routed = try route(appState: appState, payload: [
-                "_omp_subagent": "true",  // string, not bool
-                "_omp_parent_session_id": rootId,
-                "_omp_agent_id": "ResearchScout",
-                "_omp_agent_type": "scout",
-                "session_id": childId,
-                "_source": "pi",
-                "hook_event_name": "PostToolUse",
-            ])
-            // Not a bool true — must pass through unchanged
-            XCTAssertEqual(routed.raw["session_id"] as? String, childId)
-            XCTAssertNil(routed.raw["agent_id"])
+            for c in cases {
+                let appState = AppState()
+                let routed = try route(appState: appState, payload: c.payload)
+                XCTAssertEqual(routed.raw["session_id"] as? String, c.expectedSessionId,
+                    "session_id wrong for case: \(c.label)")
+                XCTAssertNil(routed.raw["agent_id"],
+                    "agent_id should be nil for case: \(c.label)")
+            }
         }
     }
 
