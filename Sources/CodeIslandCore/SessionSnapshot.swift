@@ -205,6 +205,11 @@ public struct SessionSnapshot: Sendable {
     /// until one is seen. Transcript lines carry only the bare API id, so this
     /// is the one place a switch *to or from* the `[1m]` variant shows up.
     public var configuredLongContext: Bool?
+    /// True when the current `waitingApproval` status was set by a Herdr subscription
+    /// event, not a `PermissionRequest` from the hook flow. Used by `AppState` to avoid
+    /// clearing a Herdr-driven blocked state on unrelated activity events.
+    /// Never written by `reduceEvent`; owned exclusively by `AppState`.
+    public var herdrBlocked: Bool = false
 
     public init(startTime: Date = Date()) {
         self.startTime = startTime
