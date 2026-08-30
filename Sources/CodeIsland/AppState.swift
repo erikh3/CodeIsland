@@ -116,6 +116,8 @@ final class AppState {
     }
 
     var sessions: [String: SessionSnapshot] = [:]
+    @ObservationIgnored
+    private var herdrSubscriptions: [String: HerdrSubscription] = [:]
     var activeSessionId: String?
     var permissionQueue: [PermissionRequest] = []
     var questionQueue: [QuestionRequest] = []
@@ -802,6 +804,9 @@ final class AppState {
             }
         }
         sessions.removeValue(forKey: sessionId)
+        if let sub = herdrSubscriptions.removeValue(forKey: sessionId) {
+            sub.cancel()
+        }
         stopMonitor(sessionId)
         detachTranscriptTailer(sessionId: sessionId)
         exitingSessions.removeValue(forKey: sessionId)
@@ -813,6 +818,40 @@ final class AppState {
         startRotationIfNeeded()
         refreshDerivedState()
         scheduleSave()
+    }
+
+    // MARK: - Herdr blocked-state sync
+
+    /// Applies a status change delivered by a ``HerdrSubscription`` for the given session.
+    ///
+    /// Additive: Herdr-driven `waitingApproval` always wins. Herdr-driven clear only takes
+    /// effect when no `PermissionRequest` or question is pending in the hook-event queues
+    /// and the current `waitingApproval` was itself set by Herdr (guarded by `herdrBlocked`).
+    @MainActor
+    private func applyHerdrStatusChange(_ change: HerdrSubscription.StatusChange, sessionId: String) {
+        guard sessions[sessionId] != nil else { return }
+        guard let status = change.status else { return } // unknown -> no-op
+
+        switch status {
+        case .waitingApproval:
+            sessions[sessionId]?.status = .waitingApproval
+            sessions[sessionId]?.toolDescription = change.label
+            sessions[sessionId]?.herdrBlocked = true
+            refreshDerivedState()
+
+        case .running, .idle:
+            guard sessions[sessionId]?.herdrBlocked == true else { return }
+            let stillHasPermission = permissionQueue.contains { ($0.event.sessionId ?? "default") == sessionId }
+            let stillHasQuestion = questionQueue.contains { ($0.event.sessionId ?? "default") == sessionId }
+            guard !stillHasPermission && !stillHasQuestion else { return }
+            sessions[sessionId]?.herdrBlocked = false
+            sessions[sessionId]?.status = status
+            if status == .idle { sessions[sessionId]?.toolDescription = nil }
+            refreshDerivedState()
+
+        default:
+            break
+        }
     }
 
     // MARK: - Compact bar mascot rotation
@@ -1427,6 +1466,7 @@ final class AppState {
                 let stillHasPermission = permissionQueue.contains { $0.event.sessionId == sessionId }
                 let stillHasQuestion = questionQueue.contains { $0.event.sessionId == sessionId }
                 if !stillHasPermission && !stillHasQuestion,
+                   sessions[sessionId]?.herdrBlocked != true,
                    sessions[sessionId]?.status == .waitingApproval
                     || sessions[sessionId]?.status == .waitingQuestion {
                     sessions[sessionId]?.status = (normalizedEventName == "Stop") ? .idle : .processing
@@ -1465,6 +1505,23 @@ final class AppState {
         if sessions[sessionId]?.status == .idle && activeSessionId == sessionId {
             if normalizedEventName != "Stop" {
                 activeSessionId = mostActiveSessionId()
+            }
+        }
+
+        // Herdr blocked-state sync: start subscription on SessionStart, stop on removal.
+        // Only when _herdr_socket_path and _herdr_pane_id are present (i.e. omp inside Herdr).
+        if normalizedEventName == "SessionStart" {
+            if let socketPath = event.rawJSON["_herdr_socket_path"] as? String,
+               let paneId = event.rawJSON["_herdr_pane_id"] as? String,
+               !socketPath.isEmpty, !paneId.isEmpty {
+                herdrSubscriptions[sessionId]?.cancel()
+                herdrSubscriptions[sessionId] = HerdrSubscription(
+                    socketPath: socketPath,
+                    paneId: paneId,
+                    onStatusChange: { [weak self] change in
+                        self?.applyHerdrStatusChange(change, sessionId: sessionId)
+                    }
+                )
             }
         }
 

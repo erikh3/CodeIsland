@@ -166,6 +166,11 @@ public struct SessionSnapshot: Sendable {
     /// (a turn may have switched branches). nil for non-repo and remote cwds.
     public var gitBranch: String?
     public var gitIsWorktree: Bool = false
+    /// True when the current `waitingApproval` status was set by a Herdr subscription
+    /// event, not a `PermissionRequest` from the hook flow. Used by `AppState` to avoid
+    /// clearing a Herdr-driven blocked state on unrelated activity events.
+    /// Never written by `reduceEvent`; owned exclusively by `AppState`.
+    public var herdrBlocked: Bool = false
 
     public init(startTime: Date = Date()) {
         self.startTime = startTime
