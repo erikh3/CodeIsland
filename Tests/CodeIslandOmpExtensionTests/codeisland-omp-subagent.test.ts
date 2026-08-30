@@ -665,22 +665,120 @@ describe("session event emission", () => {
     expect(endEvents[0]!._omp_subagent).toBeUndefined();
   });
 
-  test("session_switch clears started state so next session_start re-emits SessionStart", async () => {
+  // ── session_switch (/new) ──────────────────────────────────────────────────
+
+  test("session_switch reason=new ends pi-old-root and immediately starts pi-new-root", async () => {
+    // Write a temp previous-session transcript that readRootSessionId can parse.
+    const tmpDir = mkdtempSync(join(tmpdir(), "ci-omp-switch-test-"));
+    const prevFile = join(tmpDir, "OldRoot.jsonl");
+    try {
+      writeFileSync(prevFile, JSON.stringify({ type: "session", session: "old-root" }));
+
+      const sent: Record<string, unknown>[] = [];
+      const { handlers } = makeExtensionApi(sent);
+
+      // Establish the old session in startedSessions via session_start.
+      const oldCtx = makeRootCtx("old-root");
+      await handlers.get("session_start")!({}, oldCtx);
+      expect(sent.filter((e) => e.hook_event_name === "SessionStart")).toHaveLength(1);
+
+      sent.length = 0; // isolate switch side-effects
+
+      // OMP fires session_switch after the context already points to new-root.
+      const newCtx = makeRootCtx("new-root");
+      await handlers.get("session_switch")!(
+        { reason: "new", previousSessionFile: prevFile },
+        newCtx,
+      );
+
+      // SessionEnd must be emitted for the old session.
+      const endEvents = sent.filter((e) => e.hook_event_name === "SessionEnd");
+      expect(endEvents).toHaveLength(1);
+      expect(endEvents[0]!.session_id).toBe("pi-old-root");
+      expect(endEvents[0]!._omp_subagent).toBeUndefined();
+
+      // No SessionEnd for the new session.
+      expect(endEvents.every((e) => e.session_id !== "pi-new-root")).toBe(true);
+
+      // SessionStart for the new session must be emitted in the same switch handling.
+      const startEvents = sent.filter((e) => e.hook_event_name === "SessionStart");
+      expect(startEvents).toHaveLength(1);
+      expect(startEvents[0]!.session_id).toBe("pi-new-root");
+      expect(startEvents[0]!._omp_subagent).toBeUndefined();
+
+      // SessionEnd must precede SessionStart.
+      const endIdx = sent.indexOf(endEvents[0]!);
+      const startIdx = sent.indexOf(startEvents[0]!);
+      expect(endIdx).toBeLessThan(startIdx);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("session_switch reason=new: subsequent session_start produces no duplicate SessionStart", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "ci-omp-switch-test-"));
+    const prevFile = join(tmpDir, "OldRoot.jsonl");
+    try {
+      writeFileSync(prevFile, JSON.stringify({ type: "session", session: "old-root" }));
+
+      const sent: Record<string, unknown>[] = [];
+      const { handlers } = makeExtensionApi(sent);
+
+      // Establish old session.
+      await handlers.get("session_start")!({}, makeRootCtx("old-root"));
+      sent.length = 0;
+
+      // Switch — context is new-root; switch itself emits SessionStart for new-root.
+      const newCtx = makeRootCtx("new-root");
+      await handlers.get("session_switch")!(
+        { reason: "new", previousSessionFile: prevFile },
+        newCtx,
+      );
+
+      // Confirm the switch emitted exactly one SessionStart.
+      const afterSwitch = sent.filter((e) => e.hook_event_name === "SessionStart");
+      expect(afterSwitch).toHaveLength(1);
+      expect(afterSwitch[0]!.session_id).toBe("pi-new-root");
+
+      sent.length = 0;
+
+      // A subsequent session_start must not emit a second SessionStart — the
+      // session is already in startedSessions from the switch.
+      await handlers.get("session_start")!({}, newCtx);
+      const startEvents = sent.filter((e) => e.hook_event_name === "SessionStart");
+      expect(startEvents).toHaveLength(0);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("session_switch reason=new with missing previousSessionFile still starts new-root", async () => {
     const sent: Record<string, unknown>[] = [];
     const { handlers } = makeExtensionApi(sent);
-    const ctx = makeRootCtx("root-switch");
 
-    await handlers.get("session_start")!({}, ctx);
-    const afterFirst = sent.filter((e) => e.hook_event_name === "SessionStart").length;
-    expect(afterFirst).toBe(1);
+    // No previous file provided — handler must not crash and must still emit
+    // SessionStart for the current new-root session.
+    await handlers.get("session_switch")!({ reason: "new" }, makeRootCtx("new-root"));
 
-    // Switch clears startedSessions for this session.
-    await handlers.get("session_switch")!({}, ctx);
+    const startEvents = sent.filter((e) => e.hook_event_name === "SessionStart");
+    expect(startEvents).toHaveLength(1);
+    expect(startEvents[0]!.session_id).toBe("pi-new-root");
+    expect(sent.filter((e) => e.hook_event_name === "SessionEnd")).toHaveLength(0);
+  });
 
-    // Next session_start should emit again because the guard was cleared.
-    await handlers.get("session_start")!({}, ctx);
-    const afterSwitch = sent.filter((e) => e.hook_event_name === "SessionStart").length;
-    expect(afterSwitch).toBe(2);
+  test("session_switch reason=new with unreadable previousSessionFile still starts new-root", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { handlers } = makeExtensionApi(sent);
+
+    await handlers.get("session_switch")!(
+      { reason: "new", previousSessionFile: "/tmp/ci-omp-nonexistent-file.jsonl" },
+      makeRootCtx("new-root"),
+    );
+
+    const startEvents = sent.filter((e) => e.hook_event_name === "SessionStart");
+    expect(startEvents).toHaveLength(1);
+    expect(startEvents[0]!.session_id).toBe("pi-new-root");
+    expect(sent.filter((e) => e.hook_event_name === "SessionEnd")).toHaveLength(0);
   });
 
   // ── OMP 18.0.10 regression ────────────────────────────────────────────────
@@ -709,5 +807,85 @@ describe("session event emission", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ── /clear input handler ──────────────────────────────────────────────────────
+
+describe("/clear input handler", () => {
+  test("/clear emits a second SessionStart (same ID) and no SessionEnd — card is retained", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { handlers } = makeExtensionApi(sent);
+    const ctx = makeRootCtx("root-clear");
+
+    // Establish the session so startedSessions has this id.
+    await handlers.get("session_start")!({}, ctx);
+    const afterStart = sent.filter((e) => e.hook_event_name === "SessionStart").length;
+    expect(afterStart).toBe(1);
+
+    sent.length = 0; // isolate the /clear side-effects
+
+    await handlers.get("input")!({ text: "/clear" }, ctx);
+
+    // The card is retained by re-emitting SessionStart for the same session id.
+    const startEvents = sent.filter((e) => e.hook_event_name === "SessionStart");
+    expect(startEvents).toHaveLength(1);
+    expect(startEvents[0]!.session_id).toBe("pi-root-clear");
+    expect(startEvents[0]!._omp_subagent).toBeUndefined();
+
+    // No SessionEnd must be emitted — removing the card is the wrong behavior.
+    const endEvents = sent.filter((e) => e.hook_event_name === "SessionEnd");
+    expect(endEvents).toHaveLength(0);
+  });
+
+  test("/clear leaves startedSessions intact so a subsequent before_agent_start does not emit a third SessionStart but does emit UserPromptSubmit", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { handlers } = makeExtensionApi(sent);
+    const ctx = makeRootCtx("root-clear-reopen");
+
+    // Initial start.
+    await handlers.get("session_start")!({}, ctx);
+    // /clear resets card content via a second SessionStart.
+    await handlers.get("input")!({ text: "/clear" }, ctx);
+
+    sent.length = 0; // now observe only the subsequent lifecycle event
+
+    // Because startedSessions still contains this session, ensureSessionStarted
+    // is a no-op and before_agent_start proceeds straight to UserPromptSubmit.
+    await handlers.get("before_agent_start")!({ prompt: "hello" }, ctx);
+
+    const startEvents = sent.filter((e) => e.hook_event_name === "SessionStart");
+    expect(startEvents).toHaveLength(0);
+
+    const promptEvents = sent.filter((e) => e.hook_event_name === "UserPromptSubmit");
+    expect(promptEvents).toHaveLength(1);
+    expect(promptEvents[0]!.session_id).toBe("pi-root-clear-reopen");
+  });
+
+  test("non-/clear input does nothing", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { handlers } = makeExtensionApi(sent);
+    const ctx = makeRootCtx("root-no-clear");
+
+    await handlers.get("session_start")!({}, ctx);
+    sent.length = 0;
+
+    // None of these match the exact "/clear" trim, so no event is emitted.
+    await handlers.get("input")!({ text: "hello world" }, ctx);
+    await handlers.get("input")!({ text: "/new" }, ctx);
+    await handlers.get("input")!({ text: "  /clear extra" }, ctx);
+
+    expect(sent).toHaveLength(0);
+  });
+
+  test("/clear on a session that was never started does nothing", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { handlers } = makeExtensionApi(sent);
+    const ctx = makeRootCtx("root-clear-unstarted");
+
+    // Never call session_start — startedSessions is empty for this id.
+    await handlers.get("input")!({ text: "/clear" }, ctx);
+
+    expect(sent).toHaveLength(0);
   });
 });

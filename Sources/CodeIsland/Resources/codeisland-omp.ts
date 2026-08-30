@@ -1,5 +1,5 @@
 // CodeIsland pi extension
-// version: v9
+// version: v15
 // OMP-compatible install
 
 /**
@@ -1040,10 +1040,60 @@ export default function codeislandExtension(
     startedSessions.delete(`pi-${sessionId}`);
   });
 
-  pi.on("session_switch", (_event, ctx) => {
+  pi.on("session_switch", async (event, ctx) => {
+    const evt = event as Record<string, unknown>;
+    if (evt["reason"] === "new") {
+      // ctx already points to the new session; previousSessionFile identifies
+      // the old session's root transcript.
+      const prevFile = evt["previousSessionFile"] as string | undefined;
+      if (prevFile) {
+        const oldRawId = readRootSessionId(prevFile);
+        if (oldRawId) {
+          const oldSid = `pi-${oldRawId}`;
+          const oldIdentity: OmpSessionIdentity = { kind: "root", sessionId: oldRawId };
+          await sendFn(buildEvent(oldIdentity, ctx.cwd as string, { hook_event_name: "SessionEnd" }));
+          identityCache.delete(oldRawId);
+          startedSessions.delete(oldSid);
+        }
+      }
+      // Immediately start the new session card — don't wait for session_start.
+      const newIdentity: OmpSessionIdentity = { kind: "root", sessionId: ctx.sessionManager.getSessionId() };
+      await ensureSessionStarted(newIdentity, ctx.cwd);
+      return;
+    }
+    // For resume/fork: end the old session only if we have a known identity for it.
+    // The current session ID is the new one — do not use it as an old ID.
+    const prevFile = evt["previousSessionFile"] as string | undefined;
+    if (prevFile) {
+      const oldRawId = readRootSessionId(prevFile);
+      if (oldRawId && startedSessions.has(`pi-${oldRawId}`)) {
+        const oldSid = `pi-${oldRawId}`;
+        const oldIdentity: OmpSessionIdentity = { kind: "root", sessionId: oldRawId };
+        await sendFn(buildEvent(oldIdentity, ctx.cwd as string, { hook_event_name: "SessionEnd" }));
+        identityCache.delete(oldRawId);
+        startedSessions.delete(oldSid);
+      }
+    }
+  });
+
+  pi.on("input", async (event, ctx) => {
+    if ((event as Record<string, unknown>).text?.toString().trim() !== "/clear") return;
     const sessionId = ctx.sessionManager.getSessionId();
-    identityCache.delete(sessionId);
-    startedSessions.delete(`pi-${sessionId}`);
+    // Only act when the session is already known to CodeIsland — emitting
+    // SessionStart for an unseen session would create a phantom card.
+    if (!startedSessions.has(`pi-${sessionId}`)) return;
+    // Retain the card by re-emitting SessionStart for the same root identity.
+    // This clears the card's stale content without removing it from the UI.
+    // startedSessions and identityCache are intentionally left intact so
+    // the next lifecycle event sees the session as already started.
+    const identity: OmpSessionIdentity = { kind: "root", sessionId };
+    const sessionName = pi.getSessionName();
+    await sendFn(
+      buildEvent(identity, ctx.cwd, {
+        hook_event_name: "SessionStart",
+        ...(sessionName ? { session_title: sessionName } : {}),
+      }),
+    );
   });
 
   // ── Agent lifecycle ────────────────────────────────────────────────────────

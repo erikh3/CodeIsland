@@ -68,6 +68,14 @@
 - 远程主机：配置路径以 `~`（或 Mac 上的 home 路径）开头的自定义 CLI 现在会装到远程机上，不再一直显示 skipped，被跳过时也会写明原因。远程安装器和远程 hook 会遵循 `$CLAUDE_CONFIG_DIR`；远程 hook 能读出新版 Claude Code 的嵌套 transcript 记录，远程卡片重新显示最近一条回复（#342，感谢 @SeasonPilot；#271，感谢 @halindrome）
 - 文档：中英 README 全面重写——完整的 30+ 工具列表，每个工具都配了吉祥物动图（透明背景，亮暗主题都清楚），加入配置说明、各集成安装位置、隐私说明，以及用真实界面加演示数据渲染的新截图
 
+### English
+- OMP `/new` now immediately shows a fresh agent card for the current session; `/clear` clears stale content while keeping the agent card visible; bundled OMP extension updated to v15 (reload by restarting any already-running OMP process after CodeIsland updates)
+- Add exact click-to-jump and smart suppression for local Herdr agent panes; CodeIsland preserves pane/server identity through hooks and app restarts, raises the hosting terminal after focus, and retains existing terminal activation when Herdr is unavailable or stale
+
+### 中文
+- OMP `/new` 现在立即为当前会话显示新的 agent 卡片；`/clear` 在清除过期内容的同时保留 agent 卡片可见；内置 OMP 扩展更新至 v15（CodeIsland 更新后重启任意正在运行的 OMP 进程即可生效）
+- 新增本地 Herdr Agent 面板的精确点击跳转与智能通知抑制；CodeIsland 通过 hooks 和应用重启保留面板/服务器身份，聚焦后唤起宿主终端，Herdr 不可用或目标过期时继续使用现有终端跳转逻辑
+
 ## [v1.0.33] - 2026-09-01
 
 ### English
