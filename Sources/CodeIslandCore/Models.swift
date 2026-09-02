@@ -284,7 +284,7 @@ public struct HookEvent {
     /// working. `nil` for agents that don't emit it.
     public var toolIntent: String? {
         if let input = toolInput,
-           let intent = HookEvent.normalizedMultilineString(input["i"] ?? input["intent"]) {
+           let intent = HookEvent.normalizedMultilineString(input["intent"]) {
             return intent
         }
         return HookEvent.normalizedMultilineString(rawJSON["intent"])
