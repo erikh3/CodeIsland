@@ -1131,23 +1131,17 @@ export default function codeislandExtension(
     const { identity, sid } = resolved;
     const toolName = displayToolName(event.toolName);
 
-    // Build a tool_input object appropriate for the tool type.
-    const toolInput: Record<string, unknown> = { ...event.input };
-    if (event.toolName === "bash") {
-      const command = event.input.command as string | undefined;
-      if (command) toolInput.patterns = [command];
-    }
-    if (event.toolName === "edit" || event.toolName === "write") {
-      const path = event.input.path as string | undefined;
-      if (path) toolInput.file_path = path;
-    }
-
     // Dangerous bash → send blocking PermissionRequest via bridge.
     if (
       event.toolName === "bash" &&
       typeof event.input.command === "string" &&
       isDangerous(event.input.command)
     ) {
+      // Build a tool_input object for the PermissionRequest payload.
+      const toolInput: Record<string, unknown> = { ...event.input };
+      const command = event.input.command as string | undefined;
+      if (command) toolInput.patterns = [command];
+
       pendingPermissionSessions.add(sid);
 
       const payload = buildEvent(identity, ctx.cwd, {

@@ -81,9 +81,10 @@ public struct SessionSnapshot: Sendable {
     public var toolDescription: String?
     /// The most recent tool's human-readable intent (the omp `i`/`intent`
     /// argument). Unlike ``toolDescription``, this is NOT cleared on
-    /// `PostToolUse`, so the intent omp shows stays visible during the think gap
-    /// between a tool result and the next tool call. Cleared only when a turn
-    /// actually ends (Stop / idle sweep).
+    /// `PostToolUse`, `Stop`, or `UserPromptSubmit` — it persists until the
+    /// next `PreToolUse` carrying an intent overwrites it. This lets the card
+    /// keep showing the last known intent through the model-generation gap
+    /// between turns instead of blanking back to bare "thinking".
     public var lastToolIntent: String?
     public var lastActivity: Date = Date()
     public var cwd: String?
