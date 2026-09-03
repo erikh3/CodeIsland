@@ -1,5 +1,5 @@
 // CodeIsland pi extension
-// version: v15
+// version: v16
 // OMP-compatible install
 
 /**
@@ -1194,9 +1194,9 @@ export default function codeislandExtension(
   // this event exposes `intent` (the model's per-call `i` summary), so it is the
   // source of the live status text CodeIsland shows while the agent works.
   pi.on("tool_execution_start", async (event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    const sid = `pi-${sessionId}`;
-    await ensureSessionStarted(sessionId, ctx.cwd);
+    const resolved = await resolveAndEnsureStart(ctx);
+    if (!resolved) return;
+    const { identity, sid } = resolved;
 
     // A blocking permission request is mid-flight on this session — the
     // PermissionRequest already conveys the tool, so skip the status update.
@@ -1214,13 +1214,13 @@ export default function codeislandExtension(
       if (path) toolInput.file_path = path;
     }
 
-    await sendToSocket(
-      base(sessionId, ctx.cwd, {
+    await sendFn(
+      buildEvent(identity, ctx.cwd, {
         hook_event_name: "PreToolUse",
         tool_name: toolName,
         tool_input: toolInput,
         ...(event.intent ? { intent: event.intent } : {}),
-      }, tty),
+      }),
     );
   });
 
