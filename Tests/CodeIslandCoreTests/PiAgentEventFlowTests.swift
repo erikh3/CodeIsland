@@ -177,6 +177,8 @@ final class PiAgentEventFlowTests: XCTestCase {
         ]) { _, new in new }, to: &sessions)
         XCTAssertEqual(sessions[sessionId]?.lastToolIntent, "Count Swift files")
         XCTAssertEqual(sessions[sessionId]?.status, .processing)
+    }
+
     // MARK: - OMP subagent Stop reducer tests
 
     func testOmpSeparateChildStopIdlesAndRetainsReply() throws {
