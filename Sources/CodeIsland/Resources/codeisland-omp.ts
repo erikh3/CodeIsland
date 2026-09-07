@@ -1,5 +1,5 @@
 // CodeIsland pi extension
-// version: v16
+// version: v17
 // OMP-compatible install
 
 /**
@@ -11,8 +11,7 @@
 
 import { execFile, execFileSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { getuid } from "node:process";
@@ -384,27 +383,35 @@ export function classifyCodeIslandAskResponse(
  * Discriminated union for OMP session identity.
  *
  * - `root`: top-level OMP session
- * - `subagent`: confirmed task child with lineage
- * - `unresolved`: path hints at a child but `session_init.agent` is not yet available
+ * - `subagent`: confirmed task child routed to its top-level session
+ * - `unresolved`: registry lineage is incomplete; the caller should retry
  */
 export type OmpSessionIdentity =
   | { kind: "root"; sessionId: string }
-  | { kind: "subagent"; sessionId: string; parentSessionId: string; agentId: string; agentType: string }
+  | { kind: "subagent"; sessionId: string; rootSessionId: string; agentId: string; agentType: string }
   | { kind: "unresolved" };
 
-/**
- * Reads the provider ID from the first valid `type: session` record in a
- * bounded prefix of a root transcript.  Returns `null` when no valid record
- * exists within the first `maxLines` or when the file cannot be read.
- *
- * OMP 18.0.10 emits `{ type:"session", version:3, id:"<uuid>" }`.
- * Older transcripts use `{ type:"session", session:"<id>" }` instead.
- * `id` takes precedence; `session` is accepted as a fallback — both only on
- * `type:"session"` records so arbitrary records cannot supply lineage.
- *
- * Exported as a test seam; injecting `readFileSyncFn` avoids touching the
- * real filesystem in unit tests.
- */
+interface OmpSessionManager {
+  getSessionId(): string;
+}
+
+interface OmpRegistrySession {
+  sessionManager: OmpSessionManager;
+}
+
+interface OmpAgentRef {
+  id: string;
+  kind: "main" | "sub" | "advisor";
+  parentId?: string;
+  session: OmpRegistrySession | null;
+}
+
+interface OmpAgentRegistry {
+  get(id: string): OmpAgentRef | undefined;
+  list(): OmpAgentRef[];
+}
+
+/** Reads the provider ID from the first valid session record in a bounded transcript prefix. */
 export function readRootSessionId(
   rootPath: string,
   maxLines = 20,
@@ -420,82 +427,62 @@ export function readRootSessionId(
       try {
         const record = JSON.parse(line) as Record<string, unknown>;
         if (record.type !== "session") continue;
-        // OMP 18.0.10: prefer `id`
-        if (typeof record.id === "string" && record.id.length > 0) {
-          return record.id;
-        }
-        // Legacy: fall back to `session`
-        if (typeof record.session === "string" && record.session.length > 0) {
-          return record.session;
-        }
+        if (typeof record.id === "string" && record.id.length > 0) return record.id;
+        if (typeof record.session === "string" && record.session.length > 0) return record.session;
       } catch {
-        // skip malformed lines
+        // Skip malformed lines.
       }
     }
   } catch {
-    // file unreadable
+    // The previous session may already have been removed.
   }
   return null;
 }
 
-/**
- * Resolves OMP session identity from the extension context.
- *
- * Classification:
- * 1. `sessionFile` must be an absolute `.jsonl` path whose parent directory
- *    is itself a `.jsonl` root transcript that is a regular file on disk.
- * 2. `entries` must contain a `session_init` record with a non-empty `agent`.
- *
- * Returns `{ kind: "unresolved" }` when the root transcript exists but
- * `session_init.agent` is not yet in entries — the caller should retry at
- * `before_agent_start`.  Malformed or non-child lineage falls back to root.
- *
- * Exported as a test seam.
- */
+/** Resolves exact OMP ancestry from the process-global agent registry. */
 export function resolveOmpIdentity(
-  sessionId: string,
-  sessionFile: string | null,
+  sessionManager: OmpSessionManager,
   entries: readonly Record<string, unknown>[],
-  isRegularFileFn: (path: string) => boolean = (p) => { try { return statSync(p).isFile(); } catch { return false; } },
-  readRootIdFn: (path: string) => string | null = readRootSessionId,
+  registry: OmpAgentRegistry,
 ): OmpSessionIdentity {
-  if (!sessionFile || !sessionFile.startsWith("/") || !sessionFile.endsWith(".jsonl")) {
-    return { kind: "root", sessionId };
-  }
-
-  const parentDir = dirname(sessionFile);
-  const rootTranscript = parentDir + ".jsonl";
-
-  if (!isRegularFileFn(rootTranscript)) {
-    return { kind: "root", sessionId };
-  }
-
-  let agentType: string | undefined;
-  for (const entry of entries) {
-    if (
+  const sessionId = sessionManager.getSessionId();
+  const current = registry.list().find((ref) => ref.session?.sessionManager === sessionManager);
+  if (!current) {
+    const isSubagent = entries.some((entry) =>
       entry?.type === "session_init"
       && typeof entry.agent === "string"
       && entry.agent.length > 0
-    ) {
-      agentType = entry.agent;
-      break;
-    }
+    );
+    return isSubagent ? { kind: "unresolved" } : { kind: "root", sessionId };
+  }
+  if (current.kind === "main") return { kind: "root", sessionId };
+  if (current.kind !== "sub") return { kind: "unresolved" };
+
+  const agentType = entries.find((entry) =>
+    entry?.type === "session_init"
+    && typeof entry.agent === "string"
+    && entry.agent.length > 0
+  )?.agent;
+  if (typeof agentType !== "string") return { kind: "unresolved" };
+
+  const visited = new Set<string>([current.id]);
+  let ancestor = current;
+  while (ancestor.kind !== "main") {
+    const parentId = ancestor.parentId;
+    if (!parentId || visited.has(parentId)) return { kind: "unresolved" };
+    visited.add(parentId);
+    const parent = registry.get(parentId);
+    if (!parent) return { kind: "unresolved" };
+    ancestor = parent;
   }
 
-  if (!agentType) {
-    return { kind: "unresolved" };
-  }
-
-  const rootSessionId = readRootIdFn(rootTranscript);
-  if (!rootSessionId) {
-    return { kind: "root", sessionId };
-  }
-
+  const rootSessionId = ancestor.session?.sessionManager.getSessionId();
+  if (!rootSessionId) return { kind: "unresolved" };
   return {
     kind: "subagent",
     sessionId,
-    parentSessionId: rootSessionId,
-    agentId: basename(sessionFile, ".jsonl"),
+    rootSessionId,
+    agentId: current.id,
     agentType,
   };
 }
@@ -507,6 +494,7 @@ export default function codeislandExtension(
   sendFn: (payload: object) => Promise<boolean> = sendToSocket,
 ) {
   const askToolRenderer = pi.pi.askToolRenderer;
+  const agentRegistry = pi.pi.AgentRegistry.global();
   class ToolAbortError extends Error {
     override name = "ToolAbortError";
   }
@@ -539,7 +527,7 @@ export default function codeislandExtension(
     const payload = base(rawId, cwd, extra, tty);
     if (identity.kind === "subagent") {
       payload._omp_subagent = true;
-      payload._omp_parent_session_id = `pi-${identity.parentSessionId}`;
+      payload._omp_parent_session_id = `pi-${identity.rootSessionId}`;
       payload._omp_agent_id = identity.agentId;
       payload._omp_agent_type = identity.agentType;
       payload.session_title = `Subagent \u00B7 ${identity.agentId}`;
@@ -552,9 +540,9 @@ export default function codeislandExtension(
     const cached = identityCache.get(sessionId);
     if (cached) return cached;
     const resolved = resolveOmpIdentity(
-      sessionId,
-      ctx.sessionManager.getSessionFile(),
+      ctx.sessionManager,
       ctx.sessionManager.getEntries(),
+      agentRegistry,
     );
     if (resolved.kind === "subagent") {
       identityCache.set(sessionId, resolved);
@@ -881,7 +869,7 @@ export default function codeislandExtension(
 
       const rawIdentity = resolveIdentityFromCtx(ctx);
 
-      // Unresolved lineage: the parent transcript is not yet readable.
+      // Unresolved lineage means the registry has not attached the full parent chain yet.
       // Emit nothing to CodeIsland; run native Ask directly so the TUI
       // dialog still works while before_agent_start waits for resolution.
       if (rawIdentity.kind === "unresolved") {
@@ -1013,9 +1001,9 @@ export default function codeislandExtension(
   pi.on("session_start", async (_event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
     const identity = resolveOmpIdentity(
-      sessionId,
-      ctx.sessionManager.getSessionFile(),
+      ctx.sessionManager,
       ctx.sessionManager.getEntries(),
+      agentRegistry,
     );
     if (identity.kind === "subagent") {
       identityCache.set(sessionId, identity);

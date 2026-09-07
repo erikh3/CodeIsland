@@ -205,6 +205,7 @@ describe("OMP Ask racing settlement", () => {
     const extensionApi = {
       zod,
       pi: {
+        AgentRegistry: { global: () => ({ get: () => undefined, list: () => [] }) },
         AskTool: FakeAskTool,
         askToolRenderer: renderer,
         settings: {},
