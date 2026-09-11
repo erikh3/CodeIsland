@@ -30,4 +30,25 @@ final class PanelWindowControllerTests: XCTestCase {
         XCTAssertEqual(frames.incoming.origin.y, newFrame.origin.y + 30)
         XCTAssertEqual(frames.incoming.size, newFrame.size)
     }
+
+    func testOutsideClickCollapsesQuestionButNotApproval() {
+        let panelFrame = NSRect(x: 100, y: 100, width: 400, height: 300)
+        let outsideClick = NSPoint(x: 20, y: 20)
+
+        XCTAssertTrue(PanelWindowController.shouldCollapseOnGlobalClick(
+            surface: .questionCard(sessionId: "question"),
+            clickLocation: outsideClick,
+            panelFrame: panelFrame
+        ))
+        XCTAssertFalse(PanelWindowController.shouldCollapseOnGlobalClick(
+            surface: .approvalCard(sessionId: "approval"),
+            clickLocation: outsideClick,
+            panelFrame: panelFrame
+        ))
+        XCTAssertFalse(PanelWindowController.shouldCollapseOnGlobalClick(
+            surface: .questionCard(sessionId: "question"),
+            clickLocation: NSPoint(x: 200, y: 200),
+            panelFrame: panelFrame
+        ))
+    }
 }
