@@ -52,6 +52,7 @@ final class L10n: ObservableObject {
         "sound": "Sound",
         "remote": "Remote",
         "hooks": "Hooks",
+        "webhooks": "Webhooks",
         "about": "About",
 
         // Language
@@ -166,8 +167,17 @@ final class L10n: ObservableObject {
         "webhook_url_placeholder": "https://your.webhook.example/hook",
         "webhook_filter_placeholder": "Optional: Stop,SessionEnd,PermissionRequest",
         "webhook_filter_hint": "Comma-separated event names; empty = forward every event. Names can be normalized (PreToolUse) or raw (pre_tool_use).",
-        "webhook_main_sessions_only": "Only forward main session events",
-        "webhook_main_sessions_only_hint": "Exclude events emitted by subagents and child sessions.",
+        "webhook_main_sessions_only": "Send main session events only",
+        "webhook_main_sessions_only_hint": "Ignore notifications from subagents and child sessions.",
+        "webhook_only_when_inactive": "Send when inactive",
+        "webhook_only_when_inactive_hint": "Wait while keyboard, mouse, or trackpad input remains active.",
+        "webhook_inactivity_threshold": "Inactive for",
+        "webhook_inactivity_below_slider": "The custom duration is below the slider range of 30 seconds to 10 minutes.",
+        "webhook_inactivity_above_slider": "The custom duration is above the slider range of 30 seconds to 10 minutes.",
+        "webhook_send_when_locked": "Send when MacBook is locked",
+        "webhook_send_when_locked_hint": "Send pending notifications immediately while the MacBook lock screen is active.",
+        "enable_webhook_tooltip": "Enable webhook forwarding",
+        "disable_webhook_tooltip": "Disable webhook forwarding",
 
         // Appearance
         "preview": "Preview",
@@ -407,6 +417,7 @@ final class L10n: ObservableObject {
         "sound": "Ton",
         "remote": "Remote",
         "hooks": "Hooks",
+        "webhooks": "Webhooks",
         "about": "Info",
 
         // Language
@@ -517,8 +528,17 @@ final class L10n: ObservableObject {
         "webhook_url_placeholder": "https://dein.webhook.example/hook",
         "webhook_filter_placeholder": "Optional: Stop,SessionEnd,PermissionRequest",
         "webhook_filter_hint": "Kommagetrennte Ereignisnamen; leer = alle Ereignisse weiterleiten. Normalisierte Namen (PreToolUse) und rohe Namen (pre_tool_use) werden unterstützt.",
-        "webhook_main_sessions_only": "Nur Ereignisse der Hauptsitzung weiterleiten",
-        "webhook_main_sessions_only_hint": "Ereignisse von Subagenten und untergeordneten Sitzungen ausschließen.",
+        "webhook_main_sessions_only": "Nur Ereignisse der Hauptsitzung senden",
+        "webhook_main_sessions_only_hint": "Benachrichtigungen von Subagenten und untergeordneten Sitzungen ignorieren.",
+        "webhook_only_when_inactive": "Bei Inaktivität senden",
+        "webhook_only_when_inactive_hint": "Warten, solange Tastatur, Maus oder Trackpad aktiv sind.",
+        "webhook_inactivity_threshold": "Inaktiv seit",
+        "webhook_inactivity_below_slider": "Die benutzerdefinierte Dauer liegt unter dem Schiebereglerbereich von 30 Sekunden bis 10 Minuten.",
+        "webhook_inactivity_above_slider": "Die benutzerdefinierte Dauer liegt über dem Schiebereglerbereich von 30 Sekunden bis 10 Minuten.",
+        "webhook_send_when_locked": "Senden, wenn das MacBook gesperrt ist",
+        "webhook_send_when_locked_hint": "Ausstehende Benachrichtigungen sofort senden, während der MacBook-Sperrbildschirm aktiv ist.",
+        "enable_webhook_tooltip": "Webhook-Weiterleitung aktivieren",
+        "disable_webhook_tooltip": "Webhook-Weiterleitung deaktivieren",
 
         // Appearance
         "preview": "Vorschau",
@@ -758,6 +778,7 @@ final class L10n: ObservableObject {
         "sound": "声音",
         "remote": "远程",
         "hooks": "Hooks",
+        "webhooks": "Webhooks",
         "about": "关于",
 
         // Language
@@ -872,8 +893,17 @@ final class L10n: ObservableObject {
         "webhook_url_placeholder": "https://你的.webhook.地址/hook",
         "webhook_filter_placeholder": "可选：Stop,SessionEnd,PermissionRequest",
         "webhook_filter_hint": "逗号分隔的事件名，留空 = 转发所有事件。支持规范化名（PreToolUse）或原始名（pre_tool_use）。",
-        "webhook_main_sessions_only": "仅转发主会话事件",
-        "webhook_main_sessions_only_hint": "排除子代理和子会话发出的事件。",
+        "webhook_main_sessions_only": "仅发送主会话事件",
+        "webhook_main_sessions_only_hint": "忽略来自子代理和子会话的通知。",
+        "webhook_only_when_inactive": "无操作时发送",
+        "webhook_only_when_inactive_hint": "键盘、鼠标或触控板仍有操作时等待。",
+        "webhook_inactivity_threshold": "无操作时长",
+        "webhook_inactivity_below_slider": "自定义时长低于滑块的 30 秒至 10 分钟范围。",
+        "webhook_inactivity_above_slider": "自定义时长高于滑块的 30 秒至 10 分钟范围。",
+        "webhook_send_when_locked": "MacBook 锁定时发送",
+        "webhook_send_when_locked_hint": "MacBook 锁定屏幕处于显示状态时立即发送待处理通知。",
+        "enable_webhook_tooltip": "启用 Webhook 转发",
+        "disable_webhook_tooltip": "停用 Webhook 转发",
 
         // Appearance
         "preview": "预览",
@@ -1113,6 +1143,7 @@ final class L10n: ObservableObject {
         "sound": "聲音",
         "remote": "遠端",
         "hooks": "Hooks",
+        "webhooks": "Webhooks",
         "about": "關於",
 
         // Language
@@ -1227,8 +1258,17 @@ final class L10n: ObservableObject {
         "webhook_url_placeholder": "https://你的.webhook.位址/hook",
         "webhook_filter_placeholder": "可選：Stop,SessionEnd,PermissionRequest",
         "webhook_filter_hint": "以逗號分隔的事件名稱，留空 = 轉發所有事件。支援正規化名稱（PreToolUse）或原始名稱（pre_tool_use）。",
-        "webhook_main_sessions_only": "僅轉發主工作階段事件",
-        "webhook_main_sessions_only_hint": "排除子代理和子工作階段發出的事件。",
+        "webhook_main_sessions_only": "僅傳送主工作階段事件",
+        "webhook_main_sessions_only_hint": "忽略來自子代理和子工作階段的通知。",
+        "webhook_only_when_inactive": "無操作時傳送",
+        "webhook_only_when_inactive_hint": "鍵盤、滑鼠或觸控板仍有操作時等待。",
+        "webhook_inactivity_threshold": "無操作時長",
+        "webhook_inactivity_below_slider": "自訂時長低於滑桿的 30 秒至 10 分鐘範圍。",
+        "webhook_inactivity_above_slider": "自訂時長高於滑桿的 30 秒至 10 分鐘範圍。",
+        "webhook_send_when_locked": "MacBook 鎖定時傳送",
+        "webhook_send_when_locked_hint": "MacBook 鎖定畫面正在顯示時，立即傳送待處理通知。",
+        "enable_webhook_tooltip": "啟用 Webhook 轉發",
+        "disable_webhook_tooltip": "停用 Webhook 轉發",
 
         // Appearance
         "preview": "預覽",
@@ -1468,6 +1508,7 @@ final class L10n: ObservableObject {
         "sound": "サウンド",
         "remote": "リモート",
         "hooks": "Hooks",
+        "webhooks": "Webhooks",
         "about": "情報",
 
         // Language
@@ -1582,8 +1623,17 @@ final class L10n: ObservableObject {
         "webhook_url_placeholder": "https://あなたの.webhook.アドレス/hook",
         "webhook_filter_placeholder": "オプション: Stop,SessionEnd,PermissionRequest",
         "webhook_filter_hint": "カンマ区切りのイベント名、空 = すべてのイベントを転送。正規化名（PreToolUse）または raw 名（pre_tool_use）対応。",
-        "webhook_main_sessions_only": "メインセッションのイベントのみ転送",
-        "webhook_main_sessions_only_hint": "サブエージェントと子セッションが発行したイベントを除外します。",
+        "webhook_main_sessions_only": "メインセッションのイベントのみ送信",
+        "webhook_main_sessions_only_hint": "サブエージェントと子セッションからの通知を無視します。",
+        "webhook_only_when_inactive": "操作がないときに送信",
+        "webhook_only_when_inactive_hint": "キーボード、マウス、トラックパッドの操作中は待機します。",
+        "webhook_inactivity_threshold": "無操作時間",
+        "webhook_inactivity_below_slider": "カスタム時間はスライダー範囲の30秒から10分を下回っています。",
+        "webhook_inactivity_above_slider": "カスタム時間はスライダー範囲の30秒から10分を上回っています。",
+        "webhook_send_when_locked": "MacBook のロック時に送信",
+        "webhook_send_when_locked_hint": "MacBook のロック画面が表示されている間は、保留中の通知をすぐに送信します。",
+        "enable_webhook_tooltip": "Webhook 転送を有効化",
+        "disable_webhook_tooltip": "Webhook 転送を無効化",
 
         // Appearance
         "preview": "プレビュー",
@@ -1823,6 +1873,7 @@ final class L10n: ObservableObject {
         "sound": "사운드",
         "remote": "원격",
         "hooks": "Hooks",
+        "webhooks": "Webhooks",
         "about": "정보",
 
         // Language
@@ -1937,8 +1988,17 @@ final class L10n: ObservableObject {
         "webhook_url_placeholder": "https://your.webhook.example/hook",
         "webhook_filter_placeholder": "선택: Stop,SessionEnd,PermissionRequest",
         "webhook_filter_hint": "쉼표로 구분된 이벤트명, 비어 있음 = 모든 이벤트 전달. 정규화된 이름(PreToolUse) 또는 원본(pre_tool_use) 모두 지원.",
-        "webhook_main_sessions_only": "기본 세션 이벤트만 전달",
-        "webhook_main_sessions_only_hint": "하위 에이전트와 하위 세션에서 발생한 이벤트를 제외합니다.",
+        "webhook_main_sessions_only": "기본 세션 이벤트만 전송",
+        "webhook_main_sessions_only_hint": "하위 에이전트와 하위 세션의 알림을 무시합니다.",
+        "webhook_only_when_inactive": "입력이 없을 때 전송",
+        "webhook_only_when_inactive_hint": "키보드, 마우스 또는 트랙패드 입력이 계속되면 기다립니다.",
+        "webhook_inactivity_threshold": "입력 없음",
+        "webhook_inactivity_below_slider": "사용자 지정 시간이 슬라이더 범위인 30초에서 10분보다 짧습니다.",
+        "webhook_inactivity_above_slider": "사용자 지정 시간이 슬라이더 범위인 30초에서 10분보다 깁니다.",
+        "webhook_send_when_locked": "MacBook이 잠겨 있을 때 전송",
+        "webhook_send_when_locked_hint": "MacBook 잠금 화면이 표시되는 동안 대기 중인 알림을 즉시 전송합니다.",
+        "enable_webhook_tooltip": "Webhook 전달 활성화",
+        "disable_webhook_tooltip": "Webhook 전달 비활성화",
 
         // Appearance
         "preview": "미리보기",
@@ -2178,6 +2238,7 @@ final class L10n: ObservableObject {
         "sound": "Ses",
         "remote": "Uzaktan",
         "hooks": "Hooks",
+        "webhooks": "Webhooks",
         "about": "Hakkında",
 
         // Language
@@ -2292,8 +2353,17 @@ final class L10n: ObservableObject {
         "webhook_url_placeholder": "https://your.webhook.example/hook",
         "webhook_filter_placeholder": "İsteğe bağlı: Stop,SessionEnd,PermissionRequest",
         "webhook_filter_hint": "Virgülle ayrılmış olay adları, boş = tüm olayları iletir. Normalleştirilmiş (PreToolUse) veya ham (pre_tool_use) ad desteklenir.",
-        "webhook_main_sessions_only": "Yalnızca ana oturum olaylarını ilet",
-        "webhook_main_sessions_only_hint": "Alt ajanlar ve alt oturumlar tarafından oluşturulan olayları hariç tutar.",
+        "webhook_main_sessions_only": "Yalnızca ana oturum olaylarını gönder",
+        "webhook_main_sessions_only_hint": "Alt ajanlardan ve alt oturumlardan gelen bildirimleri yok sayar.",
+        "webhook_only_when_inactive": "Giriş yokken gönder",
+        "webhook_only_when_inactive_hint": "Klavye, fare veya izleme dörtgeni kullanılırken bekler.",
+        "webhook_inactivity_threshold": "Girişsiz süre",
+        "webhook_inactivity_below_slider": "Özel süre, kaydırıcının 30 saniye ile 10 dakika aralığının altında.",
+        "webhook_inactivity_above_slider": "Özel süre, kaydırıcının 30 saniye ile 10 dakika aralığının üzerinde.",
+        "webhook_send_when_locked": "MacBook kilitliyken gönder",
+        "webhook_send_when_locked_hint": "MacBook kilit ekranı etkinken bekleyen bildirimleri hemen gönderir.",
+        "enable_webhook_tooltip": "Webhook iletmeyi etkinleştir",
+        "disable_webhook_tooltip": "Webhook iletmeyi devre dışı bırak",
 
         // Appearance
         "preview": "Önizleme",

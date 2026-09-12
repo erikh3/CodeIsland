@@ -17,6 +17,87 @@ enum NotchHeightMode: String, CaseIterable {
     case custom = "custom"
 }
 
+enum WebhookInactivityDuration {
+    static let minimum = 5
+    static let sliderStops = [30, 45, 60, 90, 120, 180, 300, 600]
+    static var sliderMinimum: Int { sliderStops[0] }
+    static var sliderMaximum: Int { sliderStops[sliderStops.count - 1] }
+
+    enum SliderOverflow: Equatable {
+        case below
+        case within
+        case above
+    }
+
+    static func sliderOverflow(for seconds: Int) -> SliderOverflow {
+        if seconds < sliderMinimum { return .below }
+        if seconds > sliderMaximum { return .above }
+        return .within
+    }
+
+    static func sliderPosition(for seconds: Int) -> Double {
+        let nearestIndex = sliderStops.indices.min { lhs, rhs in
+            abs(sliderStops[lhs] - seconds) < abs(sliderStops[rhs] - seconds)
+        } ?? 0
+        return Double(nearestIndex)
+    }
+
+    static func seconds(forSliderPosition position: Double) -> Int {
+        let index = min(max(Int(position.rounded()), 0), sliderStops.count - 1)
+        return sliderStops[index]
+    }
+    static let maximum = 3600
+
+    static func clamp(_ seconds: Int) -> Int {
+        min(max(seconds, minimum), maximum)
+    }
+
+    static func parse(_ input: String) -> Int? {
+        let normalized = input.lowercased()
+            .replacingOccurrences(of: "and", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        if let seconds = Int(normalized) {
+            return clamp(seconds)
+        }
+
+        let pattern = #"(\d+)\s*(minutes?|mins?|m|seconds?|secs?|s)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(normalized.startIndex..., in: normalized)
+        let matches = regex.matches(in: normalized, range: range)
+        guard !matches.isEmpty else { return nil }
+
+        var total = 0
+        var consumed = normalized
+        for match in matches.reversed() {
+            guard let valueRange = Range(match.range(at: 1), in: normalized),
+                  let unitRange = Range(match.range(at: 2), in: normalized),
+                  let value = Int(normalized[valueRange]) else { return nil }
+            let unit = normalized[unitRange]
+            let multiplier = unit.hasPrefix("m") ? 60 : 1
+            let (product, overflow) = value.multipliedReportingOverflow(by: multiplier)
+            guard !overflow else { return maximum }
+            let (sum, sumOverflow) = total.addingReportingOverflow(product)
+            guard !sumOverflow else { return maximum }
+            total = sum
+            if let consumedRange = Range(match.range, in: consumed) {
+                consumed.removeSubrange(consumedRange)
+            }
+        }
+        guard consumed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return clamp(total)
+    }
+
+    static func format(_ seconds: Int) -> String {
+        let clamped = clamp(seconds)
+        let minutes = clamped / 60
+        let remainder = clamped % 60
+        if minutes == 0 { return "\(remainder)s" }
+        if remainder == 0 { return "\(minutes)m" }
+        return "\(minutes)m \(remainder)s"
+    }
+}
+
 enum SettingsKey {
     // Language
     static let appLanguage = "appLanguage"                 // "system", "en", "zh", "zh-Hant", "de", "ja", "ko", "tr"
@@ -135,6 +216,9 @@ enum SettingsKey {
     static let webhookURL = "webhookURL"
     static let webhookEventFilter = "webhookEventFilter"  // comma-separated allow-list; empty = forward all
     static let webhookMainSessionsOnly = "webhookMainSessionsOnly"
+    static let webhookOnlyWhenInactive = "webhookOnlyWhenInactive"
+    static let webhookInactivitySeconds = "webhookInactivitySeconds"
+    static let webhookSendImmediatelyWhenLocked = "webhookSendImmediatelyWhenLocked"
 }
 
 struct SettingsDefaults {
@@ -216,6 +300,9 @@ struct SettingsDefaults {
     static let webhookURL = ""
     static let webhookEventFilter = ""
     static let webhookMainSessionsOnly = false
+    static let webhookOnlyWhenInactive = false
+    static let webhookInactivitySeconds = 60
+    static let webhookSendImmediatelyWhenLocked = true
 }
 
 @MainActor
@@ -284,6 +371,9 @@ class SettingsManager {
             SettingsKey.webhookURL: SettingsDefaults.webhookURL,
             SettingsKey.webhookEventFilter: SettingsDefaults.webhookEventFilter,
             SettingsKey.webhookMainSessionsOnly: SettingsDefaults.webhookMainSessionsOnly,
+            SettingsKey.webhookOnlyWhenInactive: SettingsDefaults.webhookOnlyWhenInactive,
+            SettingsKey.webhookInactivitySeconds: SettingsDefaults.webhookInactivitySeconds,
+            SettingsKey.webhookSendImmediatelyWhenLocked: SettingsDefaults.webhookSendImmediatelyWhenLocked,
         ])
     }
 
