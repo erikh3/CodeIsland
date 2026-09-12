@@ -398,6 +398,7 @@ private struct BehaviorPage: View {
     @AppStorage(SettingsKey.webhookEnabled) private var webhookEnabled: Bool = SettingsDefaults.webhookEnabled
     @AppStorage(SettingsKey.webhookURL) private var webhookURL: String = SettingsDefaults.webhookURL
     @AppStorage(SettingsKey.webhookEventFilter) private var webhookEventFilter: String = SettingsDefaults.webhookEventFilter
+    @AppStorage(SettingsKey.webhookMainSessionsOnly) private var webhookMainSessionsOnly: Bool = SettingsDefaults.webhookMainSessionsOnly
 
     private var pluginSessionModeBinding: Binding<String> {
         Binding(
@@ -555,6 +556,10 @@ private struct BehaviorPage: View {
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, design: .monospaced))
                         .autocorrectionDisabled(true)
+                    Toggle(l10n["webhook_main_sessions_only"], isOn: $webhookMainSessionsOnly)
+                    Text(l10n["webhook_main_sessions_only_hint"])
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     TextField(l10n["webhook_filter_placeholder"], text: $webhookEventFilter)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, design: .monospaced))

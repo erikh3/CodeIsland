@@ -134,6 +134,7 @@ enum SettingsKey {
     static let webhookEnabled = "webhookEnabled"
     static let webhookURL = "webhookURL"
     static let webhookEventFilter = "webhookEventFilter"  // comma-separated allow-list; empty = forward all
+    static let webhookMainSessionsOnly = "webhookMainSessionsOnly"
 }
 
 struct SettingsDefaults {
@@ -214,6 +215,7 @@ struct SettingsDefaults {
     static let webhookEnabled = false
     static let webhookURL = ""
     static let webhookEventFilter = ""
+    static let webhookMainSessionsOnly = false
 }
 
 @MainActor
@@ -281,6 +283,7 @@ class SettingsManager {
             SettingsKey.webhookEnabled: SettingsDefaults.webhookEnabled,
             SettingsKey.webhookURL: SettingsDefaults.webhookURL,
             SettingsKey.webhookEventFilter: SettingsDefaults.webhookEventFilter,
+            SettingsKey.webhookMainSessionsOnly: SettingsDefaults.webhookMainSessionsOnly,
         ])
     }
 

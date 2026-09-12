@@ -214,6 +214,36 @@ class HookServer {
         return RemoteManager.shared.hosts.first(where: { $0.id == hostId })?.cwdFilter
     }
 
+    nonisolated internal static func isSubsessionEvent(_ event: HookEvent) -> Bool {
+        let raw = event.rawJSON
+        if event.agentId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return true
+        }
+        if (raw["_omp_subagent"] as? Bool) == true
+            || (raw["_cursor_subagent"] as? Bool) == true
+            || (raw["_codex_subagent"] as? Bool) == true
+            || (raw["_via_plugin"] as? Bool) == true {
+            return true
+        }
+        switch EventNormalizer.normalize(event.eventName) {
+        case "SubagentStart", "SubagentStop":
+            return true
+        default:
+            break
+        }
+        if case .merge = CursorSubsessionRouter.decide(raw: raw, mode: "merge") {
+            return true
+        }
+        return codexSubagentMetadata(from: raw) != nil
+    }
+
+    nonisolated internal static func webhookScopeAllows(
+        _ event: HookEvent,
+        mainSessionsOnly: Bool
+    ) -> Bool {
+        !mainSessionsOnly || !isSubsessionEvent(event)
+    }
+
     /// Fire-and-forget POST of the hook event to a user-configured webhook URL.
     /// Wraps the raw event in a small envelope (event/source/session/cwd/tool/raw)
     /// so users on the receiving side don't need to dig through bridge-internal
@@ -221,6 +251,10 @@ class HookServer {
     private static func forwardEventToWebhook(_ event: HookEvent) {
         let defaults = UserDefaults.standard
         guard defaults.bool(forKey: SettingsKey.webhookEnabled) else { return }
+        guard webhookScopeAllows(
+            event,
+            mainSessionsOnly: defaults.bool(forKey: SettingsKey.webhookMainSessionsOnly)
+        ) else { return }
         // Trim whitespace — users routinely paste URLs with leading/trailing space
         // and URL(string:) silently rejects those (RFC 3986 forbids whitespace).
         let urlString = (defaults.string(forKey: SettingsKey.webhookURL) ?? "")
@@ -285,7 +319,7 @@ class HookServer {
         CursorSubsessionRouter.positivePpid(from: raw)
     }
 
-    private static func nonEmptyString(_ value: Any?) -> String? {
+    nonisolated private static func nonEmptyString(_ value: Any?) -> String? {
         guard let string = value as? String else { return nil }
         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -376,7 +410,7 @@ class HookServer {
         return CursorSubsessionRouter.isCursorFamilySource(source)
     }
 
-    private static func codexSubagentMetadata(from raw: [String: Any]) -> CodexSubagentMetadata? {
+    nonisolated private static func codexSubagentMetadata(from raw: [String: Any]) -> CodexSubagentMetadata? {
         guard let path = nonEmptyString(raw["transcript_path"]) else { return nil }
         return AppState.codexSubagentMetadata(inTranscriptPath: path)
     }

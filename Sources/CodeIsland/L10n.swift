@@ -166,6 +166,8 @@ final class L10n: ObservableObject {
         "webhook_url_placeholder": "https://your.webhook.example/hook",
         "webhook_filter_placeholder": "Optional: Stop,SessionEnd,PermissionRequest",
         "webhook_filter_hint": "Comma-separated event names; empty = forward every event. Names can be normalized (PreToolUse) or raw (pre_tool_use).",
+        "webhook_main_sessions_only": "Only forward main session events",
+        "webhook_main_sessions_only_hint": "Exclude events emitted by subagents and child sessions.",
 
         // Appearance
         "preview": "Preview",
@@ -515,6 +517,8 @@ final class L10n: ObservableObject {
         "webhook_url_placeholder": "https://dein.webhook.example/hook",
         "webhook_filter_placeholder": "Optional: Stop,SessionEnd,PermissionRequest",
         "webhook_filter_hint": "Kommagetrennte Ereignisnamen; leer = alle Ereignisse weiterleiten. Normalisierte Namen (PreToolUse) und rohe Namen (pre_tool_use) werden unterstützt.",
+        "webhook_main_sessions_only": "Nur Ereignisse der Hauptsitzung weiterleiten",
+        "webhook_main_sessions_only_hint": "Ereignisse von Subagenten und untergeordneten Sitzungen ausschließen.",
 
         // Appearance
         "preview": "Vorschau",
@@ -868,6 +872,8 @@ final class L10n: ObservableObject {
         "webhook_url_placeholder": "https://你的.webhook.地址/hook",
         "webhook_filter_placeholder": "可选：Stop,SessionEnd,PermissionRequest",
         "webhook_filter_hint": "逗号分隔的事件名，留空 = 转发所有事件。支持规范化名（PreToolUse）或原始名（pre_tool_use）。",
+        "webhook_main_sessions_only": "仅转发主会话事件",
+        "webhook_main_sessions_only_hint": "排除子代理和子会话发出的事件。",
 
         // Appearance
         "preview": "预览",
@@ -1221,6 +1227,8 @@ final class L10n: ObservableObject {
         "webhook_url_placeholder": "https://你的.webhook.位址/hook",
         "webhook_filter_placeholder": "可選：Stop,SessionEnd,PermissionRequest",
         "webhook_filter_hint": "以逗號分隔的事件名稱，留空 = 轉發所有事件。支援正規化名稱（PreToolUse）或原始名稱（pre_tool_use）。",
+        "webhook_main_sessions_only": "僅轉發主工作階段事件",
+        "webhook_main_sessions_only_hint": "排除子代理和子工作階段發出的事件。",
 
         // Appearance
         "preview": "預覽",
@@ -1574,6 +1582,8 @@ final class L10n: ObservableObject {
         "webhook_url_placeholder": "https://あなたの.webhook.アドレス/hook",
         "webhook_filter_placeholder": "オプション: Stop,SessionEnd,PermissionRequest",
         "webhook_filter_hint": "カンマ区切りのイベント名、空 = すべてのイベントを転送。正規化名（PreToolUse）または raw 名（pre_tool_use）対応。",
+        "webhook_main_sessions_only": "メインセッションのイベントのみ転送",
+        "webhook_main_sessions_only_hint": "サブエージェントと子セッションが発行したイベントを除外します。",
 
         // Appearance
         "preview": "プレビュー",
@@ -1927,6 +1937,8 @@ final class L10n: ObservableObject {
         "webhook_url_placeholder": "https://your.webhook.example/hook",
         "webhook_filter_placeholder": "선택: Stop,SessionEnd,PermissionRequest",
         "webhook_filter_hint": "쉼표로 구분된 이벤트명, 비어 있음 = 모든 이벤트 전달. 정규화된 이름(PreToolUse) 또는 원본(pre_tool_use) 모두 지원.",
+        "webhook_main_sessions_only": "기본 세션 이벤트만 전달",
+        "webhook_main_sessions_only_hint": "하위 에이전트와 하위 세션에서 발생한 이벤트를 제외합니다.",
 
         // Appearance
         "preview": "미리보기",
@@ -2280,6 +2292,8 @@ final class L10n: ObservableObject {
         "webhook_url_placeholder": "https://your.webhook.example/hook",
         "webhook_filter_placeholder": "İsteğe bağlı: Stop,SessionEnd,PermissionRequest",
         "webhook_filter_hint": "Virgülle ayrılmış olay adları, boş = tüm olayları iletir. Normalleştirilmiş (PreToolUse) veya ham (pre_tool_use) ad desteklenir.",
+        "webhook_main_sessions_only": "Yalnızca ana oturum olaylarını ilet",
+        "webhook_main_sessions_only_hint": "Alt ajanlar ve alt oturumlar tarafından oluşturulan olayları hariç tutar.",
 
         // Appearance
         "preview": "Önizleme",
