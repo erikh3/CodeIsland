@@ -2644,10 +2644,10 @@ private struct SessionCard: View {
                     // question block above already explains the wait (#265).
                     if session.status != .idle && !showsExternalCursorQuestion && queuedQuestionSummary == nil {
                         HStack(spacing: 4) {
-                            Text("$")
-                                .font(.system(size: fontSize, weight: .bold, design: .monospaced))
-                                .foregroundStyle(Color(red: 0.85, green: 0.47, blue: 0.34))
                             if let tool = session.currentTool {
+                                Text("$")
+                                    .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(Color(red: 0.85, green: 0.47, blue: 0.34))
                                 let toolLabel: String = {
                                     let raw = session.toolDescription ?? tool
                                     let maxLen = 60
