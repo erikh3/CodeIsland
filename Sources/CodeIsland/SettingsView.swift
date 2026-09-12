@@ -14,6 +14,7 @@ enum SettingsPage: String, Identifiable, Hashable {
     case shortcuts
     case remote
     case hooks
+    case webhooks
     case buddy
     case about
 
@@ -29,6 +30,7 @@ enum SettingsPage: String, Identifiable, Hashable {
         case .shortcuts: return "command.circle.fill"
         case .remote: return "network"
         case .hooks: return "link.circle.fill"
+        case .webhooks: return "antenna.radiowaves.left.and.right"
         case .buddy: return "dot.radiowaves.left.and.right"
         case .about: return "info.circle.fill"
         }
@@ -44,6 +46,7 @@ enum SettingsPage: String, Identifiable, Hashable {
         case .shortcuts: return .indigo
         case .remote: return .mint
         case .hooks: return .purple
+        case .webhooks: return .orange
         case .buddy: return .red
         case .about: return .cyan
         }
@@ -57,7 +60,7 @@ private struct SidebarGroup: Hashable {
 
 private let sidebarGroups: [SidebarGroup] = [
     SidebarGroup(title: nil, pages: [.general, .behavior, .appearance, .mascots, .sound, .shortcuts]),
-    SidebarGroup(title: "CodeIsland", pages: [.remote, .hooks, .buddy, .about]),
+    SidebarGroup(title: "CodeIsland", pages: [.remote, .hooks, .webhooks, .buddy, .about]),
 ]
 
 // MARK: - Main View
@@ -96,6 +99,7 @@ struct SettingsView: View {
                 case .shortcuts: ShortcutsPage()
                 case .remote: RemoteHostsPage()
                 case .hooks: HooksPage(appState: appState)
+                case .webhooks: WebhooksPage()
                 case .buddy: BuddyPage()
                 case .about: AboutPage()
                 }
@@ -104,6 +108,127 @@ struct SettingsView: View {
         .toolbar(removing: .sidebarToggle)
     }
 }
+
+// MARK: - Webhooks Page
+
+private struct WebhooksPage: View {
+    @ObservedObject private var l10n = L10n.shared
+    @AppStorage(SettingsKey.webhookEnabled) private var webhookEnabled = SettingsDefaults.webhookEnabled
+    @AppStorage(SettingsKey.webhookURL) private var webhookURL = SettingsDefaults.webhookURL
+    @AppStorage(SettingsKey.webhookEventFilter) private var webhookEventFilter = SettingsDefaults.webhookEventFilter
+    @AppStorage(SettingsKey.webhookMainSessionsOnly) private var webhookMainSessionsOnly = SettingsDefaults.webhookMainSessionsOnly
+    @AppStorage(SettingsKey.webhookOnlyWhenInactive) private var webhookOnlyWhenInactive = SettingsDefaults.webhookOnlyWhenInactive
+    @AppStorage(SettingsKey.webhookInactivitySeconds) private var webhookInactivitySeconds = SettingsDefaults.webhookInactivitySeconds
+    @AppStorage(SettingsKey.webhookSendImmediatelyWhenLocked) private var webhookSendImmediatelyWhenLocked = SettingsDefaults.webhookSendImmediatelyWhenLocked
+    @State private var webhookInactivityText = ""
+    @FocusState private var webhookInactivityFieldFocused: Bool
+
+    private func commitWebhookInactivityText() {
+        if let seconds = WebhookInactivityDuration.parse(webhookInactivityText) {
+            webhookInactivitySeconds = seconds
+        }
+        webhookInactivityText = WebhookInactivityDuration.format(webhookInactivitySeconds)
+    }
+
+    var body: some View {
+        Form {
+            Section(l10n["webhook_title"]) {
+                Text(l10n["webhook_desc"])
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle(l10n["webhook_enable"], isOn: $webhookEnabled)
+                if webhookEnabled {
+                    TextField(l10n["webhook_url_placeholder"], text: $webhookURL)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                        .autocorrectionDisabled(true)
+                    Toggle(isOn: $webhookMainSessionsOnly) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(l10n["webhook_main_sessions_only"])
+                            Text(l10n["webhook_main_sessions_only_hint"])
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Toggle(isOn: $webhookOnlyWhenInactive) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(l10n["webhook_only_when_inactive"])
+                            Text(l10n["webhook_only_when_inactive_hint"])
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if webhookOnlyWhenInactive {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(l10n["webhook_inactivity_threshold"])
+                                Spacer()
+                                TextField("", text: $webhookInactivityText)
+                                    .textFieldStyle(.roundedBorder)
+                                    .multilineTextAlignment(.trailing)
+                                    .frame(minWidth: 64, idealWidth: 88, maxWidth: 120)
+                                    .focused($webhookInactivityFieldFocused)
+                                    .onSubmit { commitWebhookInactivityText() }
+                            }
+                            Slider(
+                                value: Binding(
+                                    get: { WebhookInactivityDuration.sliderPosition(for: webhookInactivitySeconds) },
+                                    set: {
+                                        webhookInactivitySeconds = WebhookInactivityDuration.seconds(forSliderPosition: $0)
+                                        webhookInactivityText = WebhookInactivityDuration.format(webhookInactivitySeconds)
+                                    }
+                                ),
+                                in: 0...Double(WebhookInactivityDuration.sliderStops.count - 1),
+                                step: 1
+                            ) {
+                                EmptyView()
+                            } minimumValueLabel: {
+                                Image(systemName: "chevron.left.2")
+                                    .foregroundStyle(.orange)
+                                    .opacity(WebhookInactivityDuration.sliderOverflow(for: webhookInactivitySeconds) == .below ? 1 : 0)
+                                    .help(l10n["webhook_inactivity_below_slider"])
+                            } maximumValueLabel: {
+                                Image(systemName: "chevron.right.2")
+                                    .foregroundStyle(.orange)
+                                    .opacity(WebhookInactivityDuration.sliderOverflow(for: webhookInactivitySeconds) == .above ? 1 : 0)
+                                    .help(l10n["webhook_inactivity_above_slider"])
+                            }
+                            .tint(WebhookInactivityDuration.sliderOverflow(for: webhookInactivitySeconds) == .within ? .accentColor : .orange)
+                        }
+                        .onAppear {
+                            webhookInactivityText = WebhookInactivityDuration.format(webhookInactivitySeconds)
+                        }
+                        .onChange(of: webhookInactivityFieldFocused) { _, focused in
+                            if !focused { commitWebhookInactivityText() }
+                        }
+                        .onChange(of: webhookInactivitySeconds) { _, seconds in
+                            if !webhookInactivityFieldFocused {
+                                webhookInactivityText = WebhookInactivityDuration.format(seconds)
+                            }
+                        }
+                    }
+                    Toggle(isOn: $webhookSendImmediatelyWhenLocked) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(l10n["webhook_send_when_locked"])
+                            Text(l10n["webhook_send_when_locked_hint"])
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    TextField(l10n["webhook_filter_placeholder"], text: $webhookEventFilter)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                        .autocorrectionDisabled(true)
+                    Text(l10n["webhook_filter_hint"])
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
 
 // MARK: - Remote Page
 
@@ -403,10 +528,6 @@ private struct BehaviorPage: View {
     @AppStorage(SettingsKey.autoApproveSources) private var autoApproveSources: String = SettingsDefaults.autoApproveSources
     @AppStorage(SettingsKey.excludedHookCwdSubstrings) private var excludedHookCwdSubstrings: String = SettingsDefaults.excludedHookCwdSubstrings
     @AppStorage(SettingsKey.claudeConfigDir) private var claudeConfigDir: String = SettingsDefaults.claudeConfigDir
-    @AppStorage(SettingsKey.webhookEnabled) private var webhookEnabled: Bool = SettingsDefaults.webhookEnabled
-    @AppStorage(SettingsKey.webhookURL) private var webhookURL: String = SettingsDefaults.webhookURL
-    @AppStorage(SettingsKey.webhookEventFilter) private var webhookEventFilter: String = SettingsDefaults.webhookEventFilter
-    @AppStorage(SettingsKey.webhookMainSessionsOnly) private var webhookMainSessionsOnly: Bool = SettingsDefaults.webhookMainSessionsOnly
 
     private var pluginSessionModeBinding: Binding<String> {
         Binding(
@@ -429,6 +550,7 @@ private struct BehaviorPage: View {
             }
         )
     }
+
 
     var body: some View {
         Form {
@@ -602,29 +724,6 @@ private struct BehaviorPage: View {
                     .font(.system(size: 12, design: .monospaced))
             }
 
-            Section(l10n["webhook_title"]) {
-                Text(l10n["webhook_desc"])
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle(l10n["webhook_enable"], isOn: $webhookEnabled)
-                if webhookEnabled {
-                    TextField(l10n["webhook_url_placeholder"], text: $webhookURL)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                        .autocorrectionDisabled(true)
-                    Toggle(l10n["webhook_main_sessions_only"], isOn: $webhookMainSessionsOnly)
-                    Text(l10n["webhook_main_sessions_only_hint"])
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextField(l10n["webhook_filter_placeholder"], text: $webhookEventFilter)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                        .autocorrectionDisabled(true)
-                    Text(l10n["webhook_filter_hint"])
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
 
             PushNotificationsSection()
 

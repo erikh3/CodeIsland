@@ -50,6 +50,53 @@ final class NotchPanelViewTests: XCTestCase {
         )
     }
 
+    func testIdleHoveredWidthFitsFourToolbarButtons() {
+        XCTAssertEqual(
+            NotchWidthMetrics.idlePanelWidth(
+                notchWidth: 200,
+                compactWingWidth: 35,
+                hovered: false
+            ),
+            270,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            NotchWidthMetrics.idlePanelWidth(
+                notchWidth: 200,
+                compactWingWidth: 35,
+                hovered: true
+            ),
+            454,
+            accuracy: 0.001
+        )
+    }
+
+    func testActiveCollapsedWidthIsReducedTwentyPercent() {
+        XCTAssertEqual(
+            NotchWidthMetrics.activeCollapsedWidth(
+                proposedWidth: 500,
+                physicalNotchWidth: 200,
+                compactWingWidth: 35,
+                hasNotch: true
+            ),
+            400,
+            accuracy: 0.001
+        )
+    }
+
+    func testActiveCollapsedWidthStillClearsPhysicalNotch() {
+        XCTAssertEqual(
+            NotchWidthMetrics.activeCollapsedWidth(
+                proposedWidth: 300,
+                physicalNotchWidth: 200,
+                compactWingWidth: 35,
+                hasNotch: true
+            ),
+            270,
+            accuracy: 0.001
+        )
+    }
+
     func testCompactToolNameKeepsShortNamesUnchanged() {
         XCTAssertEqual(ToolNameDisplay.compact("Bash"), "Bash")
         XCTAssertEqual(ToolNameDisplay.compact("  Read  "), "Read")

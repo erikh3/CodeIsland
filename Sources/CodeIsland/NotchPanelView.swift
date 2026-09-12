@@ -18,6 +18,31 @@ enum NotchWidthMetrics {
         if hasNotch { return Swift.max(notchW, scaled) }
         return scaled
     }
+
+    static func idlePanelWidth(
+        notchWidth: CGFloat,
+        compactWingWidth: CGFloat,
+        hovered: Bool
+    ) -> CGFloat {
+        let collapsedWidth = notchWidth + compactWingWidth * 2
+        guard hovered else { return collapsedWidth }
+        let toolbarWidth: CGFloat = 4 * 22 + 3 * 4
+        let rightContentWidth: CGFloat = 13 + 8 + toolbarWidth + 6
+        let leftContentWidth = compactWingWidth
+        let sideWidth = max(leftContentWidth, rightContentWidth)
+        return notchWidth + sideWidth * 2
+    }
+
+    static func activeCollapsedWidth(
+        proposedWidth: CGFloat,
+        physicalNotchWidth: CGFloat,
+        compactWingWidth: CGFloat,
+        hasNotch: Bool
+    ) -> CGFloat {
+        let reducedWidth = proposedWidth * 0.8
+        guard hasNotch else { return reducedWidth }
+        return max(reducedWidth, physicalNotchWidth + compactWingWidth * 2)
+    }
 }
 
 // MARK: - Hover interaction state machine
@@ -189,7 +214,13 @@ struct NotchPanelView: View {
     private var panelWidth: CGFloat {
         let nw = effectiveNotchW
         let maxWidth = min(620, screenWidth - 40)
-        if showIdleIndicator { return idleHovered ? nw + compactWingWidth * 2 + 80 : nw + compactWingWidth * 2 }
+        if showIdleIndicator {
+            return min(NotchWidthMetrics.idlePanelWidth(
+                notchWidth: nw,
+                compactWingWidth: compactWingWidth,
+                hovered: idleHovered
+            ), maxWidth)
+        }
         if !isActive { return hasNotch ? nw - 20 : nw }
         if shouldShowExpanded { return min(max(nw + 200, 580), maxWidth) }
         let wing = compactWingWidth
@@ -198,7 +229,13 @@ struct NotchPanelView: View {
         let toolExtra: CGFloat = displayedToolStatus ? (hasNotch ? screenWidth * 0.03 : screenWidth * 0.04) : 0
         // Immediate hover acknowledgement: a slight widen while the expand delay runs
         let prehoverExtra: CGFloat = shouldShowPrehover ? NotchHoverInteraction.prehoverWidthDelta : 0
-        return nw + wing * 2 + extra + toolExtra + prehoverExtra
+        let proposedWidth = nw + wing * 2 + extra + toolExtra + prehoverExtra
+        return NotchWidthMetrics.activeCollapsedWidth(
+            proposedWidth: proposedWidth,
+            physicalNotchWidth: notchW,
+            compactWingWidth: wing,
+            hasNotch: hasNotch
+        )
     }
 
     var body: some View {
@@ -399,6 +436,9 @@ struct NotchPanelView: View {
                     // Completion card: mark entered on hover-in, block collapse until entered
                     if hovering {
                         appState.completionHasBeenEntered = true
+                        if case .completionCard(let sessionId) = appState.surface {
+                            appState.webhookForwarder?.acknowledgeCompletion(sessionId: sessionId)
+                        }
                     } else if appState.completionHasBeenEntered || appState.deferCollapseOnMouseLeave {
                         // Mouse entered then left — allow collapse (immediate or deferred)
                         hoverTimer?.invalidate()
@@ -627,6 +667,7 @@ private struct CompactRightWing: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
     @AppStorage(SettingsKey.showToolStatus) private var showToolStatus = SettingsDefaults.showToolStatus
+    @AppStorage(SettingsKey.webhookEnabled) private var webhookEnabled = SettingsDefaults.webhookEnabled
     @AppStorage(SettingsKey.quietHoursEnabled) private var quietHoursEnabled = SettingsDefaults.quietHoursEnabled
     @AppStorage(SettingsKey.quietHoursStart) private var quietHoursStart = SettingsDefaults.quietHoursStart
     @AppStorage(SettingsKey.quietHoursEnd) private var quietHoursEnd = SettingsDefaults.quietHoursEnd
@@ -656,6 +697,12 @@ private struct CompactRightWing: View {
             if expanded {
                 NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
                     soundEnabled.toggle()
+                }
+                NotchIconButton(
+                    icon: webhookEnabled ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash",
+                    tooltip: webhookEnabled ? l10n["disable_webhook_tooltip"] : l10n["enable_webhook_tooltip"]
+                ) {
+                    webhookEnabled.toggle()
                 }
                 NotchIconButton(icon: "gearshape", tooltip: l10n["settings"]) {
                     SettingsWindowController.shared.show()
@@ -742,6 +789,7 @@ private struct CompactRightWing: View {
             }
         }
         .padding(.trailing, 6)
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
@@ -982,6 +1030,7 @@ private struct IdleIndicatorBar: View {
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
     @AppStorage(SettingsKey.defaultSource) private var defaultSource = SettingsDefaults.defaultSource
 
+    @AppStorage(SettingsKey.webhookEnabled) private var webhookEnabled = SettingsDefaults.webhookEnabled
     var body: some View {
         HStack(spacing: 0) {
             // Left: mascot
@@ -1004,6 +1053,12 @@ private struct IdleIndicatorBar: View {
                         NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
                             soundEnabled.toggle()
                         }
+                        NotchIconButton(
+                            icon: webhookEnabled ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash",
+                            tooltip: webhookEnabled ? l10n["disable_webhook_tooltip"] : l10n["enable_webhook_tooltip"]
+                        ) {
+                            webhookEnabled.toggle()
+                        }
                         NotchIconButton(icon: "gearshape", tooltip: l10n["settings"]) {
                             SettingsWindowController.shared.show()
                         }
@@ -1013,6 +1068,7 @@ private struct IdleIndicatorBar: View {
                     }
                 }
                 .padding(.trailing, 6)
+                .fixedSize(horizontal: true, vertical: false)
                 .transition(.opacity)
             }
         }
@@ -3114,6 +3170,7 @@ private struct SessionCard: View {
             case .success:
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    appState.webhookForwarder?.acknowledgeCompletion(sessionId: sessionId)
                     switch appState.surface {
                     case .sessionList, .completionCard:
                         withAnimation(NotchAnimation.close) {

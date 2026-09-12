@@ -16,9 +16,12 @@ class HookServer {
     private let appState: AppState
     nonisolated static var socketPath: String { SocketPath.path }
     private var listener: NWListener?
+    private let webhookForwarder: WebhookForwarder
 
-    init(appState: AppState) {
+    init(appState: AppState, webhookForwarder: WebhookForwarder? = nil) {
         self.appState = appState
+        self.webhookForwarder = webhookForwarder ?? WebhookForwarder(appState: appState)
+        appState.webhookForwarder = self.webhookForwarder
     }
 
     func start() {
@@ -244,63 +247,6 @@ class HookServer {
         !mainSessionsOnly || !isSubsessionEvent(event)
     }
 
-    /// Fire-and-forget POST of the hook event to a user-configured webhook URL.
-    /// Wraps the raw event in a small envelope (event/source/session/cwd/tool/raw)
-    /// so users on the receiving side don't need to dig through bridge-internal
-    /// fields. Optional event-name allow-list filters noisy event types. (#115)
-    private static func forwardEventToWebhook(_ event: HookEvent) {
-        let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: SettingsKey.webhookEnabled) else { return }
-        guard webhookScopeAllows(
-            event,
-            mainSessionsOnly: defaults.bool(forKey: SettingsKey.webhookMainSessionsOnly)
-        ) else { return }
-        // Trim whitespace — users routinely paste URLs with leading/trailing space
-        // and URL(string:) silently rejects those (RFC 3986 forbids whitespace).
-        let urlString = (defaults.string(forKey: SettingsKey.webhookURL) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !urlString.isEmpty,
-              let endpoint = URL(string: urlString) else { return }
-
-        let normalizedName = EventNormalizer.normalize(event.eventName)
-
-        // Event filter: comma-separated allow-list. Empty = forward all.
-        // Match on either the normalized name (PreToolUse) or raw name (pre_tool_use).
-        if let filter = defaults.string(forKey: SettingsKey.webhookEventFilter),
-           !filter.trimmingCharacters(in: .whitespaces).isEmpty {
-            let allowed = filter.split(separator: ",")
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty }
-            guard allowed.contains(normalizedName) || allowed.contains(event.eventName) else { return }
-        }
-
-        let isoFormatter = ISO8601DateFormatter()
-        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-
-        let envelope: [String: Any] = [
-            "event": normalizedName,
-            "raw_event": event.eventName,
-            "session_id": event.sessionId ?? "",
-            "source": event.rawJSON["_source"] as? String ?? "",
-            "cwd": event.rawJSON["cwd"] as? String ?? "",
-            "tool_name": event.toolName ?? "",
-            "timestamp": isoFormatter.string(from: Date()),
-            "raw": event.rawJSON,
-        ]
-
-        guard let body = try? JSONSerialization.data(withJSONObject: envelope) else { return }
-
-        var request = URLRequest(url: endpoint, timeoutInterval: 5)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("CodeIsland-Webhook/1.0", forHTTPHeaderField: "User-Agent")
-        request.httpBody = body
-
-        URLSession.shared.dataTask(with: request) { _, _, _ in
-            // Fire-and-forget. Failures are intentionally swallowed: a flaky
-            // webhook should never break the hook event pipeline.
-        }.resume()
-    }
 
     private static func hiddenPluginResponse(for raw: [String: Any]) -> Data {
         // Hidden PermissionRequest must allow so the plugin's tool execution
@@ -879,10 +825,9 @@ class HookServer {
             return
         }
 
-        // User-configured webhook forwarding: fire-and-forget POST to an external URL.
-        // Runs *before* the route handlers so it doesn't add latency to user-facing
-        // permission/question UI. Disabled by default. (#115)
-        Self.forwardEventToWebhook(event)
+
+
+        webhookForwarder.submit(event, routeKind: Self.routeKind(for: event))
 
         switch Self.routeKind(for: event) {
         case .permission:
