@@ -71,10 +71,12 @@
 ### English
 - OMP `/new` now immediately shows a fresh agent card for the current session; `/clear` clears stale content while keeping the agent card visible; bundled OMP extension updated to v15 (reload by restarting any already-running OMP process after CodeIsland updates)
 - Add exact click-to-jump and smart suppression for local Herdr agent panes; CodeIsland preserves pane/server identity through hooks and app restarts, raises the hosting terminal after focus, and retains existing terminal activation when Herdr is unavailable or stale
+- Webhook forwarding can now be limited to main-session events, excluding subagent and child-session notification spam.
 
 ### 中文
 - OMP `/new` 现在立即为当前会话显示新的 agent 卡片；`/clear` 在清除过期内容的同时保留 agent 卡片可见；内置 OMP 扩展更新至 v15（CodeIsland 更新后重启任意正在运行的 OMP 进程即可生效）
 - 新增本地 Herdr Agent 面板的精确点击跳转与智能通知抑制；CodeIsland 通过 hooks 和应用重启保留面板/服务器身份，聚焦后唤起宿主终端，Herdr 不可用或目标过期时继续使用现有终端跳转逻辑
+- Webhook 转发现在可以仅限主会话事件，排除子代理和子会话产生的通知噪音。
 
 ## [v1.0.33] - 2026-09-01
 

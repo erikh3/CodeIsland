@@ -162,6 +162,7 @@ enum SettingsKey {
     static let pushAwayIdleMinutes = "pushAwayIdleMinutes"
     static let pushSummaryLength = "pushSummaryLength"
     static let pushChannels = "pushChannels"  // JSON [PushChannelConfig]; empty = nothing configured
+    static let webhookMainSessionsOnly = "webhookMainSessionsOnly"
 }
 
 struct SettingsDefaults {
@@ -259,6 +260,7 @@ struct SettingsDefaults {
     static let pushAwayIdleMinutes = 5
     static let pushSummaryLength = PushMessageFormatter.defaultSummaryLimit
     static let pushChannels = ""
+    static let webhookMainSessionsOnly = false
 }
 
 @MainActor
@@ -343,6 +345,7 @@ class SettingsManager {
             SettingsKey.pushAwayIdleMinutes: SettingsDefaults.pushAwayIdleMinutes,
             SettingsKey.pushSummaryLength: SettingsDefaults.pushSummaryLength,
             SettingsKey.pushChannels: SettingsDefaults.pushChannels,
+            SettingsKey.webhookMainSessionsOnly: SettingsDefaults.webhookMainSessionsOnly,
         ])
     }
 
