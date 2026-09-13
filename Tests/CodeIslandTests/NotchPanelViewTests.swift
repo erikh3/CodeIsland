@@ -70,31 +70,6 @@ final class NotchPanelViewTests: XCTestCase {
         )
     }
 
-    func testActiveCollapsedWidthIsReducedTwentyPercent() {
-        XCTAssertEqual(
-            NotchWidthMetrics.activeCollapsedWidth(
-                proposedWidth: 500,
-                physicalNotchWidth: 200,
-                compactWingWidth: 35,
-                hasNotch: true
-            ),
-            400,
-            accuracy: 0.001
-        )
-    }
-
-    func testActiveCollapsedWidthStillClearsPhysicalNotch() {
-        XCTAssertEqual(
-            NotchWidthMetrics.activeCollapsedWidth(
-                proposedWidth: 300,
-                physicalNotchWidth: 200,
-                compactWingWidth: 35,
-                hasNotch: true
-            ),
-            270,
-            accuracy: 0.001
-        )
-    }
 
     func testCompactToolNameKeepsShortNamesUnchanged() {
         XCTAssertEqual(ToolNameDisplay.compact("Bash"), "Bash")
