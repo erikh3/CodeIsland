@@ -1353,6 +1353,31 @@ final class AppState {
         }
     }
 
+    private func removeSupersededOmpRootSessions(for event: HookEvent, sessionId: String) {
+        guard EventNormalizer.normalize(event.eventName) == "SessionStart",
+              (event.rawJSON["_source"] as? String)?.lowercased() == "pi",
+              event.rawJSON["_omp_subagent"] as? Bool != true,
+              let paneId = event.rawJSON["_herdr_pane_id"] as? String,
+              let socketPath = event.rawJSON["_herdr_socket_path"] as? String,
+              !paneId.isEmpty,
+              !socketPath.isEmpty else {
+            return
+        }
+
+        let supersededIds: [String] = sessions.compactMap { existingId, session in
+            guard existingId != sessionId,
+                  session.source.lowercased() == "pi",
+                  session.herdrPaneId == paneId,
+                  session.herdrSocketPath == socketPath else {
+                return nil
+            }
+            return existingId
+        }
+        for supersededId in supersededIds {
+            removeSession(supersededId)
+        }
+    }
+
     func handleEvent(_ event: HookEvent) {
         // Skip events from subagent worktrees — tracked via parent's SubagentStart/Stop
         if let cwd = event.rawJSON["cwd"] as? String,
@@ -1410,6 +1435,7 @@ final class AppState {
             && event.rawJSON["transcript_path"] is NSNull {
             return
         }
+        removeSupersededOmpRootSessions(for: event, sessionId: sessionId)
 
         if sessions[sessionId] == nil {
             sessions[sessionId] = SessionSnapshot()

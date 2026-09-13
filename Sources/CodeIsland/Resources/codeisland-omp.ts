@@ -1,5 +1,5 @@
 // CodeIsland pi extension
-// version: v17
+// version: v18
 // OMP-compatible install
 
 /**
@@ -11,7 +11,7 @@
 
 import { execFile, execFileSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { getuid } from "node:process";
@@ -411,33 +411,6 @@ interface OmpAgentRegistry {
   list(): OmpAgentRef[];
 }
 
-/** Reads the provider ID from the first valid session record in a bounded transcript prefix. */
-export function readRootSessionId(
-  rootPath: string,
-  maxLines = 20,
-  readFileSyncFn: (path: string) => string = (p) => readFileSync(p, "utf8"),
-): string | null {
-  try {
-    const text = readFileSyncFn(rootPath);
-    const lines = text.split("\n");
-    const limit = Math.min(lines.length, maxLines);
-    for (let i = 0; i < limit; i++) {
-      const line = lines[i]?.trim();
-      if (!line) continue;
-      try {
-        const record = JSON.parse(line) as Record<string, unknown>;
-        if (record.type !== "session") continue;
-        if (typeof record.id === "string" && record.id.length > 0) return record.id;
-        if (typeof record.session === "string" && record.session.length > 0) return record.session;
-      } catch {
-        // Skip malformed lines.
-      }
-    }
-  } catch {
-    // The previous session may already have been removed.
-  }
-  return null;
-}
 
 /** Resolves exact OMP ancestry from the process-global agent registry. */
 export function resolveOmpIdentity(
@@ -512,6 +485,8 @@ export default function codeislandExtension(
   const startedSessions = new Set<string>();
   /** Confirmed subagent identities, keyed by raw provider session ID. */
   const identityCache = new Map<string, OmpSessionIdentity & { kind: "subagent" }>();
+  /** Root session currently represented by this extension process. */
+  let activeRootSessionId: string | null = null;
 
   /**
    * Builds the complete event payload for CodeIsland.
@@ -572,7 +547,22 @@ export default function codeislandExtension(
     if (identity.kind === "unresolved") return;
     const rawId = identity.sessionId;
     const sid = `pi-${rawId}`;
-    if (startedSessions.has(sid)) return;
+
+    if (identity.kind === "root" && activeRootSessionId !== null && activeRootSessionId !== rawId) {
+      const previousIdentity: OmpSessionIdentity = {
+        kind: "root",
+        sessionId: activeRootSessionId,
+      };
+      await sendFn(buildEvent(previousIdentity, cwd, { hook_event_name: "SessionEnd" }));
+      startedSessions.delete(`pi-${activeRootSessionId}`);
+      identityCache.delete(activeRootSessionId);
+      activeRootSessionId = null;
+    }
+
+    if (startedSessions.has(sid)) {
+      if (identity.kind === "root") activeRootSessionId = rawId;
+      return;
+    }
 
     if (identity.kind === "subagent") {
       await sendFn(
@@ -586,10 +576,10 @@ export default function codeislandExtension(
           ...(sessionName ? { session_title: sessionName } : {}),
         }),
       );
+      activeRootSessionId = rawId;
     }
     startedSessions.add(sid);
   }
-
 
   // ── Shadow "ask" tool (#244 v3: native rendering + parallel answering) ─────
   //
@@ -1007,48 +997,20 @@ export default function codeislandExtension(
       startedSessions.delete(`pi-${sessionId}`);
       return;
     }
-    // Root shutdown: emit SessionEnd and clear.
-    const identity: OmpSessionIdentity = { kind: "root", sessionId };
+
+    const rootSessionId = activeRootSessionId ?? sessionId;
+    const identity: OmpSessionIdentity = { kind: "root", sessionId: rootSessionId };
     await sendFn(
       buildEvent(identity, ctx.cwd, { hook_event_name: "SessionEnd" }),
     );
-    startedSessions.delete(`pi-${sessionId}`);
+    startedSessions.delete(`pi-${rootSessionId}`);
+    identityCache.delete(rootSessionId);
+    activeRootSessionId = null;
   });
 
-  pi.on("session_switch", async (event, ctx) => {
-    const evt = event as Record<string, unknown>;
-    if (evt["reason"] === "new") {
-      // ctx already points to the new session; previousSessionFile identifies
-      // the old session's root transcript.
-      const prevFile = evt["previousSessionFile"] as string | undefined;
-      if (prevFile) {
-        const oldRawId = readRootSessionId(prevFile);
-        if (oldRawId) {
-          const oldSid = `pi-${oldRawId}`;
-          const oldIdentity: OmpSessionIdentity = { kind: "root", sessionId: oldRawId };
-          await sendFn(buildEvent(oldIdentity, ctx.cwd as string, { hook_event_name: "SessionEnd" }));
-          identityCache.delete(oldRawId);
-          startedSessions.delete(oldSid);
-        }
-      }
-      // Immediately start the new session card — don't wait for session_start.
-      const newIdentity: OmpSessionIdentity = { kind: "root", sessionId: ctx.sessionManager.getSessionId() };
-      await ensureSessionStarted(newIdentity, ctx.cwd);
-      return;
-    }
-    // For resume/fork: end the old session only if we have a known identity for it.
-    // The current session ID is the new one — do not use it as an old ID.
-    const prevFile = evt["previousSessionFile"] as string | undefined;
-    if (prevFile) {
-      const oldRawId = readRootSessionId(prevFile);
-      if (oldRawId && startedSessions.has(`pi-${oldRawId}`)) {
-        const oldSid = `pi-${oldRawId}`;
-        const oldIdentity: OmpSessionIdentity = { kind: "root", sessionId: oldRawId };
-        await sendFn(buildEvent(oldIdentity, ctx.cwd as string, { hook_event_name: "SessionEnd" }));
-        identityCache.delete(oldRawId);
-        startedSessions.delete(oldSid);
-      }
-    }
+  pi.on("session_switch", async (_event, ctx) => {
+    const identity = resolveIdentityFromCtx(ctx);
+    await ensureSessionStarted(identity, ctx.cwd);
   });
 
   pi.on("input", async (event, ctx) => {
