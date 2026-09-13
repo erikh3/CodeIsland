@@ -1,7 +1,3 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-
 import { describe, expect, test } from "bun:test";
 
 // The module reads HOME while loading; dynamic import isolates the no-bridge boundary.
@@ -9,7 +5,6 @@ const originalHome = process.env.HOME;
 process.env.HOME = "/tmp/codeisland-omp-extension-tests-no-bridge";
 const {
   default: codeislandExtension,
-  readRootSessionId,
   resolveOmpIdentity,
 } = await import("../../Sources/CodeIsland/Resources/codeisland-omp?subagent-tests");
 if (originalHome === undefined) {
@@ -17,117 +12,6 @@ if (originalHome === undefined) {
 } else {
   process.env.HOME = originalHome;
 }
-
-// ── readRootSessionId ─────────────────────────────────────────────────────────
-
-describe("readRootSessionId", () => {
-  test("returns the first session value from a valid transcript", () => {
-    const transcript = [
-      '{"type":"header","version":1}',
-      '{"type":"session","session":"root-session-abc"}',
-      '{"type":"session_init","agent":"task"}',
-    ].join("\n");
-    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("root-session-abc");
-  });
-
-  test("skips malformed lines before a valid record", () => {
-    const transcript = [
-      "not-json",
-      "{broken",
-      '{"type":"session","session":"good-session"}',
-    ].join("\n");
-    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("good-session");
-  });
-
-  test("returns null when no session record exists within maxLines", () => {
-    const lines = Array.from({ length: 25 }, (_, i) =>
-      JSON.stringify({ type: "message", index: i }),
-    );
-    const transcript = lines.join("\n");
-    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBeNull();
-  });
-
-  test("respects the maxLines bound", () => {
-    const transcript = [
-      '{"type":"header"}',
-      '{"type":"session","session":"too-late"}',
-    ].join("\n");
-    // maxLines=1 means only the first line is checked
-    expect(readRootSessionId("/fake/root.jsonl", 1, () => transcript)).toBeNull();
-  });
-
-  test("returns null when the file cannot be read", () => {
-    expect(readRootSessionId("/nonexistent/path.jsonl", 20, () => {
-      throw new Error("ENOENT");
-    })).toBeNull();
-  });
-
-  test("skips session records with empty string value", () => {
-    const transcript = [
-      '{"type":"session","session":""}',
-      '{"type":"session","session":"valid"}',
-    ].join("\n");
-    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("valid");
-  });
-
-  test("skips records with session field but wrong type", () => {
-    const transcript = [
-      '{"type":"header","session":"should-be-ignored"}',
-      '{"type":"session_init","session":"also-ignored"}',
-      '{"type":"session","session":"correct"}',
-    ].join("\n");
-    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("correct");
-  });
-
-  // ── OMP 18.0.10 regression: id field on type=session records ─────────────
-
-  test("OMP 18.0.10: reads id from {type:session,version:3,id}", () => {
-    const transcript = JSON.stringify({
-      type: "session",
-      version: 3,
-      id: "01a04d4e-f1b2-4c3d-8e5f-a6b7c8d9e0f1",
-    });
-    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe(
-      "01a04d4e-f1b2-4c3d-8e5f-a6b7c8d9e0f1",
-    );
-  });
-
-  test("id takes precedence over session when both are present on type=session", () => {
-    const transcript = JSON.stringify({
-      type: "session",
-      id: "id-wins",
-      session: "session-loses",
-    });
-    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("id-wins");
-  });
-
-  test("id on a non-session type record is ignored; real session below is returned", () => {
-    const transcript = [
-      JSON.stringify({ type: "header", id: "bad-id", version: 3 }),
-      JSON.stringify({ type: "session_init", id: "also-bad" }),
-      JSON.stringify({ type: "session", id: "correct-id" }),
-    ].join("\n");
-    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("correct-id");
-  });
-
-  test("empty id falls through to legacy session field", () => {
-    const transcript = JSON.stringify({
-      type: "session",
-      id: "",
-      session: "legacy-fallback",
-    });
-    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("legacy-fallback");
-  });
-
-  test("both id and session empty on type=session: skips to next record", () => {
-    const transcript = [
-      JSON.stringify({ type: "session", id: "", session: "" }),
-      JSON.stringify({ type: "session", id: "second-id" }),
-    ].join("\n");
-    expect(readRootSessionId("/fake/root.jsonl", 20, () => transcript)).toBe("second-id");
-  });
-});
-// ── resolveOmpIdentity ────────────────────────────────────────────────────────
 
 interface RegistrySessionManager {
   getSessionId(): string;
@@ -456,123 +340,77 @@ describe("session event emission", () => {
     expect(endEvents[0]!._omp_subagent).toBeUndefined();
   });
 
-  // ── session_switch (/new) ──────────────────────────────────────────────────
+  // ── root session identity handoff ───────────────────────────────────────────
 
-  test("session_switch reason=new ends pi-old-root and immediately starts pi-new-root", async () => {
-    // Write a temp previous-session transcript that readRootSessionId can parse.
-    const tmpDir = mkdtempSync(join(tmpdir(), "ci-omp-switch-test-"));
-    const prevFile = join(tmpDir, "OldRoot.jsonl");
-    try {
-      writeFileSync(prevFile, JSON.stringify({ type: "session", session: "old-root" }));
-
-      const sent: Record<string, unknown>[] = [];
-      const { handlers } = makeExtensionApi(sent);
-
-      // Establish the old session in startedSessions via session_start.
-      const oldCtx = makeRootCtx("old-root");
-      await handlers.get("session_start")!({}, oldCtx);
-      expect(sent.filter((e) => e.hook_event_name === "SessionStart")).toHaveLength(1);
-
-      sent.length = 0; // isolate switch side-effects
-
-      // OMP fires session_switch after the context already points to new-root.
-      const newCtx = makeRootCtx("new-root");
-      await handlers.get("session_switch")!(
-        { reason: "new", previousSessionFile: prevFile },
-        newCtx,
-      );
-
-      // SessionEnd must be emitted for the old session.
-      const endEvents = sent.filter((e) => e.hook_event_name === "SessionEnd");
-      expect(endEvents).toHaveLength(1);
-      expect(endEvents[0]!.session_id).toBe("pi-old-root");
-      expect(endEvents[0]!._omp_subagent).toBeUndefined();
-
-      // No SessionEnd for the new session.
-      expect(endEvents.every((e) => e.session_id !== "pi-new-root")).toBe(true);
-
-      // SessionStart for the new session must be emitted in the same switch handling.
-      const startEvents = sent.filter((e) => e.hook_event_name === "SessionStart");
-      expect(startEvents).toHaveLength(1);
-      expect(startEvents[0]!.session_id).toBe("pi-new-root");
-      expect(startEvents[0]!._omp_subagent).toBeUndefined();
-
-      // SessionEnd must precede SessionStart.
-      const endIdx = sent.indexOf(endEvents[0]!);
-      const startIdx = sent.indexOf(startEvents[0]!);
-      expect(endIdx).toBeLessThan(startIdx);
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  test("session_switch reason=new: subsequent session_start produces no duplicate SessionStart", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "ci-omp-switch-test-"));
-    const prevFile = join(tmpDir, "OldRoot.jsonl");
-    try {
-      writeFileSync(prevFile, JSON.stringify({ type: "session", session: "old-root" }));
-
-      const sent: Record<string, unknown>[] = [];
-      const { handlers } = makeExtensionApi(sent);
-
-      // Establish old session.
-      await handlers.get("session_start")!({}, makeRootCtx("old-root"));
-      sent.length = 0;
-
-      // Switch — context is new-root; switch itself emits SessionStart for new-root.
-      const newCtx = makeRootCtx("new-root");
-      await handlers.get("session_switch")!(
-        { reason: "new", previousSessionFile: prevFile },
-        newCtx,
-      );
-
-      // Confirm the switch emitted exactly one SessionStart.
-      const afterSwitch = sent.filter((e) => e.hook_event_name === "SessionStart");
-      expect(afterSwitch).toHaveLength(1);
-      expect(afterSwitch[0]!.session_id).toBe("pi-new-root");
-
-      sent.length = 0;
-
-      // A subsequent session_start must not emit a second SessionStart — the
-      // session is already in startedSessions from the switch.
-      await handlers.get("session_start")!({}, newCtx);
-      const startEvents = sent.filter((e) => e.hook_event_name === "SessionStart");
-      expect(startEvents).toHaveLength(0);
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  test("session_switch reason=new with missing previousSessionFile still starts new-root", async () => {
+  test("session_switch ends pi-old-root and immediately starts pi-new-root", async () => {
     const sent: Record<string, unknown>[] = [];
     const { handlers } = makeExtensionApi(sent);
 
-    // No previous file provided — handler must not crash and must still emit
-    // SessionStart for the current new-root session.
+    await handlers.get("session_start")!({}, makeRootCtx("old-root"));
+    sent.length = 0;
     await handlers.get("session_switch")!({ reason: "new" }, makeRootCtx("new-root"));
 
-    const startEvents = sent.filter((e) => e.hook_event_name === "SessionStart");
-    expect(startEvents).toHaveLength(1);
-    expect(startEvents[0]!.session_id).toBe("pi-new-root");
-    expect(sent.filter((e) => e.hook_event_name === "SessionEnd")).toHaveLength(0);
+    expect(sent.map((event) => [event.hook_event_name, event.session_id])).toEqual([
+      ["SessionEnd", "pi-old-root"],
+      ["SessionStart", "pi-new-root"],
+    ]);
   });
 
-  test("session_switch reason=new with unreadable previousSessionFile still starts new-root", async () => {
+  test("session_switch followed by session_start does not duplicate SessionStart", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { handlers } = makeExtensionApi(sent);
+    const newCtx = makeRootCtx("new-root");
+
+    await handlers.get("session_start")!({}, makeRootCtx("old-root"));
+    await handlers.get("session_switch")!({ reason: "new" }, newCtx);
+    sent.length = 0;
+    await handlers.get("session_start")!({}, newCtx);
+
+    expect(sent).toHaveLength(0);
+  });
+
+
+  test("session_switch handles every reason as a root identity handoff", async () => {
+    for (const reason of ["resume", "fork", "fresh", "future-command"]) {
+      const sent: Record<string, unknown>[] = [];
+      const { handlers } = makeExtensionApi(sent);
+      await handlers.get("session_start")!({}, makeRootCtx(`${reason}-old`));
+      sent.length = 0;
+
+      await handlers.get("session_switch")!({ reason }, makeRootCtx(`${reason}-new`));
+
+      expect(sent.map((event) => [event.hook_event_name, event.session_id])).toEqual([
+        ["SessionEnd", `pi-${reason}-old`],
+        ["SessionStart", `pi-${reason}-new`],
+      ]);
+    }
+  });
+
+  test("session_start heals a root identity change without session_switch", async () => {
     const sent: Record<string, unknown>[] = [];
     const { handlers } = makeExtensionApi(sent);
 
-    await handlers.get("session_switch")!(
-      { reason: "new", previousSessionFile: "/tmp/ci-omp-nonexistent-file.jsonl" },
-      makeRootCtx("new-root"),
-    );
+    await handlers.get("session_start")!({}, makeRootCtx("temporary-root"));
+    sent.length = 0;
+    await handlers.get("session_start")!({}, makeRootCtx("persisted-root"));
 
-    const startEvents = sent.filter((e) => e.hook_event_name === "SessionStart");
-    expect(startEvents).toHaveLength(1);
-    expect(startEvents[0]!.session_id).toBe("pi-new-root");
-    expect(sent.filter((e) => e.hook_event_name === "SessionEnd")).toHaveLength(0);
+    expect(sent.map((event) => [event.hook_event_name, event.session_id])).toEqual([
+      ["SessionEnd", "pi-temporary-root"],
+      ["SessionStart", "pi-persisted-root"],
+    ]);
   });
 
-  // ── OMP 18.0.10 regression ────────────────────────────────────────────────
+  test("session_switch with an unchanged root ID emits nothing", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const { handlers } = makeExtensionApi(sent);
+    const ctx = makeRootCtx("stable-root");
+
+    await handlers.get("session_start")!({}, ctx);
+    sent.length = 0;
+    await handlers.get("session_switch")!({ reason: "fresh" }, ctx);
+
+    expect(sent).toHaveLength(0);
+  });
 
 });
 
