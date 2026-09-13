@@ -33,16 +33,6 @@ enum NotchWidthMetrics {
         return notchWidth + sideWidth * 2
     }
 
-    static func activeCollapsedWidth(
-        proposedWidth: CGFloat,
-        physicalNotchWidth: CGFloat,
-        compactWingWidth: CGFloat,
-        hasNotch: Bool
-    ) -> CGFloat {
-        let reducedWidth = proposedWidth * 0.8
-        guard hasNotch else { return reducedWidth }
-        return max(reducedWidth, physicalNotchWidth + compactWingWidth * 2)
-    }
 }
 
 // MARK: - Hover interaction state machine
@@ -229,13 +219,7 @@ struct NotchPanelView: View {
         let toolExtra: CGFloat = displayedToolStatus ? (hasNotch ? screenWidth * 0.03 : screenWidth * 0.04) : 0
         // Immediate hover acknowledgement: a slight widen while the expand delay runs
         let prehoverExtra: CGFloat = shouldShowPrehover ? NotchHoverInteraction.prehoverWidthDelta : 0
-        let proposedWidth = nw + wing * 2 + extra + toolExtra + prehoverExtra
-        return NotchWidthMetrics.activeCollapsedWidth(
-            proposedWidth: proposedWidth,
-            physicalNotchWidth: notchW,
-            compactWingWidth: wing,
-            hasNotch: hasNotch
-        )
+        return nw + wing * 2 + extra + toolExtra + prehoverExtra
     }
 
     var body: some View {
