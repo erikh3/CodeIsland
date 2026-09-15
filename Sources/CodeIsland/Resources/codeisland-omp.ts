@@ -1,5 +1,5 @@
 // CodeIsland pi extension
-// version: v18
+// version: v19
 // OMP-compatible install
 
 /**
@@ -404,11 +404,21 @@ interface OmpAgentRef {
   kind: "main" | "sub" | "advisor";
   parentId?: string;
   session: OmpRegistrySession | null;
+  /** Lifecycle state: running | idle (live) | parked (disposed) | aborted (killed). */
+  status?: "running" | "idle" | "parked" | "aborted";
+}
+
+/** Registry lifecycle notification (subset of OMP's RegistryEvent). */
+interface OmpRegistryEvent {
+  type: "registered" | "status_changed" | "metadata_changed" | "removed";
+  ref: OmpAgentRef;
 }
 
 interface OmpAgentRegistry {
   get(id: string): OmpAgentRef | undefined;
   list(): OmpAgentRef[];
+  /** Subscribe to lifecycle changes; returns an unsubscribe handle. Absent on older OMP. */
+  onChange?(listener: (event: OmpRegistryEvent) => void): () => void;
 }
 
 
@@ -486,6 +496,15 @@ export default function codeislandExtension(
   const identityCache = new Map<string, OmpSessionIdentity & { kind: "subagent" }>();
   /** Root session currently represented by this extension process. */
   let activeRootSessionId: string | null = null;
+  /**
+   * Confirmed subagents we have emitted SubagentStart for, keyed by registry
+   * agent id. Drives the registry-driven SubagentStop teardown below.
+   */
+  const subagentByAgentId = new Map<string, OmpSessionIdentity & { kind: "subagent" }>();
+  /** Last cwd seen per subagent, for the SubagentStop payload. */
+  const subagentCwd = new Map<string, string>();
+  /** Agent ids already torn down, so a removed+parked pair cannot double-emit. */
+  const stoppedAgentIds = new Set<string>();
 
   /**
    * Builds the complete event payload for CodeIsland.
@@ -564,6 +583,11 @@ export default function codeislandExtension(
     }
 
     if (identity.kind === "subagent") {
+      // Record for registry-driven teardown (SubagentStop). A relaunched id
+      // clears its prior stop tombstone so it can be torn down again.
+      subagentByAgentId.set(identity.agentId, identity);
+      subagentCwd.set(identity.agentId, cwd);
+      stoppedAgentIds.delete(identity.agentId);
       await sendFn(
         buildEvent(identity, cwd, { hook_event_name: "SubagentStart" }),
       );
@@ -579,6 +603,40 @@ export default function codeislandExtension(
     }
     startedSessions.add(sid);
   }
+
+  /**
+   * Emits SubagentStop for a subagent the registry reports as settled
+   * (parked / aborted / removed). This is the authoritative teardown: it fires
+   * even when the per-child `agent_end` -> Stop was never delivered (deferred,
+   * parked, or hard-killed task children), which otherwise leaves the parent
+   * card pinned on the "Agent" projection. Idempotent and safe to race with the
+   * `agent_end` Stop path: CodeIsland tombstones the agent id on first teardown.
+   */
+  async function emitSubagentStop(agentId: string): Promise<void> {
+    const identity = subagentByAgentId.get(agentId);
+    if (!identity || stoppedAgentIds.has(agentId)) return;
+    stoppedAgentIds.add(agentId);
+    const cwd = subagentCwd.get(agentId) ?? process.cwd();
+    await sendFn(buildEvent(identity, cwd, { hook_event_name: "SubagentStop" }));
+    subagentByAgentId.delete(agentId);
+    subagentCwd.delete(agentId);
+    identityCache.delete(identity.sessionId);
+    startedSessions.delete(`pi-${identity.sessionId}`);
+  }
+
+  // A finished task child stays registered as `idle` (revivable) and is only
+  // torn down when its session is disposed (`parked`), hard-killed (`aborted`),
+  // or explicitly released (`removed`). `idle` is deliberately NOT a settle
+  // signal: a between-turns live subagent must keep its card. This mirrors the
+  // Agent Hub roster exactly, so the island and the roster can never disagree.
+  agentRegistry.onChange?.((event) => {
+    const ref = event.ref;
+    if (ref.kind !== "sub") return;
+    const settled = event.type === "removed"
+      || (event.type === "status_changed"
+        && (ref.status === "parked" || ref.status === "aborted"));
+    if (settled) void emitSubagentStop(ref.id);
+  });
 
   // ── Shadow "ask" tool (#244 v3: native rendering + parallel answering) ─────
   //
