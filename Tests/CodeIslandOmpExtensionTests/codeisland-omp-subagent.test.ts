@@ -22,12 +22,31 @@ interface RegistryRef {
   kind: "main" | "sub" | "advisor";
   parentId?: string;
   session: { sessionManager: RegistrySessionManager } | null;
+  status?: "running" | "idle" | "parked" | "aborted";
 }
 
-function registry(refs: RegistryRef[]) {
+type RegistryEventType = "registered" | "status_changed" | "metadata_changed" | "removed";
+
+/** Test registry with a live `onChange` fan-out and an `emit` test seam. */
+interface FakeRegistry {
+  get: (id: string) => RegistryRef | undefined;
+  list: () => RegistryRef[];
+  onChange: (listener: (event: { type: RegistryEventType; ref: RegistryRef }) => void) => () => void;
+  emit: (type: RegistryEventType, ref: RegistryRef) => void;
+}
+
+function registry(refs: RegistryRef[]): FakeRegistry {
+  const listeners = new Set<(event: { type: RegistryEventType; ref: RegistryRef }) => void>();
   return {
     get: (id: string) => refs.find((ref) => ref.id === id),
     list: () => refs,
+    onChange: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    emit: (type, ref) => {
+      for (const listener of listeners) listener({ type, ref });
+    },
   };
 }
 
@@ -101,9 +120,11 @@ function makeExtensionApi(
   api: Parameters<typeof codeislandExtension>[0];
   handlers: Map<string, (event: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<void>>;
   tools: Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>;
+  registry: FakeRegistry;
 } {
   const handlers = new Map<string, (event: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<void>>();
   const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
+  const agentRegistry = registry(registryRefs);
   const api = {
     zod: {
       string: fakeSchema,
@@ -113,7 +134,7 @@ function makeExtensionApi(
       object: fakeSchema,
     },
     pi: {
-      AgentRegistry: { global: () => registry(registryRefs) },
+      AgentRegistry: { global: () => agentRegistry },
       AskTool: class { constructor(_: unknown) {} readonly name = "ask"; readonly label = "Ask"; readonly description = ""; readonly parameters = fakeSchema(); readonly strict = true; readonly approval = "read"; readonly concurrency = "exclusive"; async execute() { return { content: [{ type: "text", text: "User selected: Option A" }], details: { question: "q", options: ["Option A"], multi: false, selectedOptions: ["Option A"] } }; } },
       askToolRenderer: { mergeCallAndResult: true, renderCall: () => null, renderResult: () => null },
       settings: {},
@@ -126,7 +147,7 @@ function makeExtensionApi(
   } as never;
   const capturer = sendFn ?? ((payload: object) => { events.push(payload as Record<string, unknown>); return Promise.resolve(true); });
   codeislandExtension(api, capturer);
-  return { api, handlers, tools };
+  return { api, handlers, tools, registry: agentRegistry };
 }
 
 function makeRootCtx(sessionId: string, cwd = "/project"): Record<string, unknown> {
@@ -257,6 +278,95 @@ describe("lifecycle event wire contract", () => {
     const r = result as { content: { type: string; text: string }[] };
     expect(r.content.length).toBeGreaterThan(0);
     expect(sent).toHaveLength(0);
+  });
+});
+
+// ── Registry-driven SubagentStop teardown ─────────────────────────────────────
+
+describe("registry-driven SubagentStop", () => {
+  // Builds a started subagent: emits SubagentStart, returns the harness plus a
+  // handle to fire registry lifecycle events for that child's ref.
+  async function startedSubagent(agentId = "Parent.Child") {
+    const sent: Record<string, unknown>[] = [];
+    const ctx = makeChildCtx("nested-session", [{ type: "session_init", agent: "reviewer" }]);
+    const rootManager = { getSessionId: () => "root-provider-id" };
+    const parentManager = { getSessionId: () => "parent-provider-id" };
+    const childRef: RegistryRef = { id: agentId, kind: "sub", parentId: "Parent", session: { sessionManager: ctx.sessionManager }, status: "running" };
+    const refs: RegistryRef[] = [
+      { id: "Main", kind: "main", session: { sessionManager: rootManager } },
+      { id: "Parent", kind: "sub", parentId: "Main", session: { sessionManager: parentManager } },
+      childRef,
+    ];
+    const { handlers, registry: reg } = makeExtensionApi(sent, undefined, refs);
+    await handlers.get("session_start")!({}, ctx);
+    expect(sent.map((e) => e.hook_event_name)).toContain("SubagentStart");
+    sent.length = 0;
+    return { sent, reg, childRef, agentId };
+  }
+
+  test("parked status emits SubagentStop routed to the parent", async () => {
+    const { sent, reg, childRef, agentId } = await startedSubagent();
+    childRef.status = "parked";
+    reg.emit("status_changed", childRef);
+    await Promise.resolve();
+
+    const stops = sent.filter((e) => e.hook_event_name === "SubagentStop");
+    expect(stops).toHaveLength(1);
+    expect(stops[0]!._omp_subagent).toBe(true);
+    expect(stops[0]!._omp_agent_id).toBe(agentId);
+    expect(stops[0]!._omp_parent_session_id).toBe("pi-root-provider-id");
+  });
+
+  test("aborted status emits SubagentStop", async () => {
+    const { sent, reg, childRef } = await startedSubagent();
+    childRef.status = "aborted";
+    reg.emit("status_changed", childRef);
+    await Promise.resolve();
+
+    expect(sent.filter((e) => e.hook_event_name === "SubagentStop")).toHaveLength(1);
+  });
+
+  test("removed emits SubagentStop", async () => {
+    const { sent, reg, childRef } = await startedSubagent();
+    reg.emit("removed", childRef);
+    await Promise.resolve();
+
+    expect(sent.filter((e) => e.hook_event_name === "SubagentStop")).toHaveLength(1);
+  });
+
+  test("idle status does NOT emit SubagentStop (live, revivable child keeps its card)", async () => {
+    const { sent, reg, childRef } = await startedSubagent();
+    childRef.status = "idle";
+    reg.emit("status_changed", childRef);
+    await Promise.resolve();
+
+    expect(sent.filter((e) => e.hook_event_name === "SubagentStop")).toHaveLength(0);
+  });
+
+  test("a settle for a main/root ref never emits SubagentStop", async () => {
+    const { sent, reg } = await startedSubagent();
+    reg.emit("removed", { id: "Main", kind: "main", session: null, status: "parked" });
+    await Promise.resolve();
+
+    expect(sent.filter((e) => e.hook_event_name === "SubagentStop")).toHaveLength(0);
+  });
+
+  test("removed then parked emits SubagentStop only once (idempotent teardown)", async () => {
+    const { sent, reg, childRef } = await startedSubagent();
+    reg.emit("removed", childRef);
+    childRef.status = "parked";
+    reg.emit("status_changed", childRef);
+    await Promise.resolve();
+
+    expect(sent.filter((e) => e.hook_event_name === "SubagentStop")).toHaveLength(1);
+  });
+
+  test("a settle for an unknown (never-started) subagent id emits nothing", async () => {
+    const { sent, reg } = await startedSubagent();
+    reg.emit("removed", { id: "Ghost.Unknown", kind: "sub", parentId: "Parent", session: null, status: "parked" });
+    await Promise.resolve();
+
+    expect(sent.filter((e) => e.hook_event_name === "SubagentStop")).toHaveLength(0);
   });
 });
 
