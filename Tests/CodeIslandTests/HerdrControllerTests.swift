@@ -22,9 +22,9 @@ final class HerdrControllerTests: XCTestCase {
         XCTAssertNil(HerdrController.identity(from: session))
     }
 
-    func testFocusUsesCapturedSocketAndTimeout() throws {
+    func testFocusProjectsAgentWorkspaceToAttachedClients() throws {
         let binary = try temporaryExecutable()
-        var invocation: Invocation?
+        var invocations: [Invocation] = []
         let identity = HerdrRoutingIdentity(
             paneId: "w2:p1",
             socketPath: "/tmp/named/herdr.sock",
@@ -32,15 +32,24 @@ final class HerdrControllerTests: XCTestCase {
         )
 
         let focused = HerdrController.focus(identity) { path, args, env, timeout in
-            invocation = Invocation(path: path, args: args, env: env, timeout: timeout)
+            invocations.append(Invocation(path: path, args: args, env: env, timeout: timeout))
+            if args.first == "agent" {
+                return Data(#"{"result":{"agent":{"workspace_id":"w2"}}}"#.utf8)
+            }
             return Data()
         }
 
         XCTAssertTrue(focused)
-        XCTAssertEqual(invocation?.path, binary.path)
-        XCTAssertEqual(invocation?.args, ["agent", "focus", "w2:p1"])
-        XCTAssertEqual(invocation?.env["HERDR_SOCKET_PATH"], "/tmp/named/herdr.sock")
-        XCTAssertEqual(invocation?.timeout, 2)
+        XCTAssertEqual(invocations.map(\.path), [binary.path, binary.path])
+        XCTAssertEqual(invocations.map(\.args), [
+            ["agent", "focus", "w2:p1"],
+            ["workspace", "focus", "w2"],
+        ])
+        XCTAssertEqual(invocations.map { $0.env["HERDR_SOCKET_PATH"] }, [
+            "/tmp/named/herdr.sock",
+            "/tmp/named/herdr.sock",
+        ])
+        XCTAssertEqual(invocations.map(\.timeout), [2, 2])
     }
 
     func testIsFocusedParsesAgentResponse() throws {
@@ -74,6 +83,12 @@ final class HerdrControllerTests: XCTestCase {
             Data(#"{"result":{"agent":{"focused":false}}}"#.utf8)
         })
         XCTAssertFalse(HerdrController.isFocused(identity) { _, _, _, _ in Data("nope".utf8) })
+        XCTAssertFalse(HerdrController.focus(identity) { _, args, _, _ in
+            args.first == "agent"
+                ? Data(#"{"result":{"agent":{"workspace_id":"w1"}}}"#.utf8)
+                : nil
+        })
+        XCTAssertFalse(HerdrController.focus(identity) { _, _, _, _ in Data() })
         XCTAssertFalse(HerdrController.focus(identity) { _, _, _, _ in nil })
     }
 
