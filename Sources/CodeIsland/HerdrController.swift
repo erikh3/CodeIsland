@@ -39,10 +39,23 @@ enum HerdrController {
         _ identity: HerdrRoutingIdentity,
         runner: Runner = productionRunner
     ) -> Bool {
-        guard let executable = executable(for: identity) else { return false }
+        guard let executable = executable(for: identity),
+              let focusData = runner(
+                executable,
+                ["agent", "focus", identity.paneId],
+                ["HERDR_SOCKET_PATH": identity.socketPath],
+                2
+              ),
+              let json = try? JSONSerialization.jsonObject(with: focusData) as? [String: Any],
+              let result = json["result"] as? [String: Any],
+              let agent = result["agent"] as? [String: Any],
+              let workspaceId = agent["workspace_id"] as? String,
+              !workspaceId.isEmpty else {
+            return false
+        }
         return runner(
             executable,
-            ["agent", "focus", identity.paneId],
+            ["workspace", "focus", workspaceId],
             ["HERDR_SOCKET_PATH": identity.socketPath],
             2
         ) != nil
