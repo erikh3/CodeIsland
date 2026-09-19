@@ -135,8 +135,8 @@ function makeExtensionApi(
     },
     pi: {
       AgentRegistry: { global: () => agentRegistry },
+      Text: class { constructor(readonly text: string) {} },
       AskTool: class { constructor(_: unknown) {} readonly name = "ask"; readonly label = "Ask"; readonly description = ""; readonly parameters = fakeSchema(); readonly strict = true; readonly approval = "read"; readonly concurrency = "exclusive"; async execute() { return { content: [{ type: "text", text: "User selected: Option A" }], details: { question: "q", options: ["Option A"], multi: false, selectedOptions: ["Option A"] } }; } },
-      askToolRenderer: { mergeCallAndResult: true, renderCall: () => null, renderResult: () => null },
       settings: {},
     },
     getSessionName: () => undefined as string | undefined,

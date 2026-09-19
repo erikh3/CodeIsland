@@ -1,5 +1,5 @@
 // CodeIsland pi extension
-// version: v19
+// version: v20
 // OMP-compatible install
 
 /**
@@ -476,8 +476,26 @@ export default function codeislandExtension(
   pi: ExtensionAPI,
   sendFn: (payload: object) => Promise<boolean> = sendToSocket,
 ) {
-  const askToolRenderer = pi.pi.askToolRenderer;
   const agentRegistry = pi.pi.AgentRegistry.global();
+
+  const askToolRenderer = {
+    mergeCallAndResult: true,
+    renderCall(args: { questions?: RawQuestion[] }) {
+      const questions = Array.isArray(args.questions) ? args.questions : [];
+      const lines = questions.flatMap((question) => [
+        `Ask: ${question.question}`,
+        ...question.options.map((option) => `  ○ ${option.label}`),
+      ]);
+      return new pi.pi.Text(lines.join("\n") || "Ask", 0, 0);
+    },
+    renderResult(result: AgentToolResult<CompatibleAskToolDetails>) {
+      const text = result.content
+        .filter((content): content is { type: "text"; text: string } => content.type === "text")
+        .map((content) => content.text)
+        .join("\n");
+      return new pi.pi.Text(text || "Ask completed", 0, 0);
+    },
+  };
   class ToolAbortError extends Error {
     override name = "ToolAbortError";
   }
@@ -872,14 +890,10 @@ export default function codeislandExtension(
   // info first, only ask on major tradeoffs, never hand-write "Other", etc.).
   const nativeAskMetadata = createNativeAskTool();
 
-  // OMP 18.2.x moved the tool renderers into @oh-my-pi/pi-tui and no longer
-  // exports this one. It only affects how the shadow Ask tool is drawn in the
-  // terminal, so its absence must not stop the extension from loading.
-  const { askToolRenderer } = pi.pi as typeof pi.pi & {
-    askToolRenderer?: Pick<
-      ToolDefinition<typeof askParameters, CompatibleAskToolDetails>,
-      "renderCall" | "renderResult"
-    > & { mergeCallAndResult: boolean };
+  const askRendererFields = {
+    mergeCallAndResult: askToolRenderer.mergeCallAndResult,
+    renderCall: askToolRenderer.renderCall,
+    renderResult: askToolRenderer.renderResult,
   };
 
   const askToolDefinition: ToolDefinition<
@@ -898,13 +912,7 @@ export default function codeislandExtension(
     strict: true,
     approval: "read",
     concurrency: "exclusive",
-    ...(askToolRenderer
-      ? {
-          mergeCallAndResult: askToolRenderer.mergeCallAndResult,
-          renderCall: askToolRenderer.renderCall,
-          renderResult: askToolRenderer.renderResult,
-        }
-      : {}),
+    ...askRendererFields,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const sessionId = ctx.sessionManager.getSessionId();
       const sid = `pi-${sessionId}`;

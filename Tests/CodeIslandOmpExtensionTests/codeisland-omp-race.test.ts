@@ -169,7 +169,13 @@ describe("OMP Ask racing settlement", () => {
         selectedOptions: ["Beta"],
       },
     };
+    class FakeText {
+      constructor(readonly text: string) {}
+    }
     let registeredTool: {
+      mergeCallAndResult?: boolean;
+      renderCall?: (...args: unknown[]) => unknown;
+      renderResult?: (...args: unknown[]) => unknown;
       execute: (...args: unknown[]) => Promise<unknown>;
     } | undefined;
     let contextAborted = false;
@@ -190,11 +196,6 @@ describe("OMP Ask racing settlement", () => {
       }
     }
 
-    const renderer = {
-      mergeCallAndResult: true,
-      renderCall: () => null,
-      renderResult: () => null,
-    };
     const zod = {
       string: fakeSchema,
       number: fakeSchema,
@@ -207,7 +208,7 @@ describe("OMP Ask racing settlement", () => {
       pi: {
         AgentRegistry: { global: () => ({ get: () => undefined, list: () => [] }) },
         AskTool: FakeAskTool,
-        askToolRenderer: renderer,
+        Text: FakeText,
         settings: {},
       },
       getSessionName: () => undefined,
@@ -219,6 +220,19 @@ describe("OMP Ask racing settlement", () => {
     codeislandExtension(extensionApi as never);
 
     expect(registeredTool).toBeDefined();
+    expect(registeredTool!.mergeCallAndResult).toBe(true);
+    expect(registeredTool!.renderCall).toBeFunction();
+    expect(registeredTool!.renderResult).toBeFunction();
+    const renderedCall = registeredTool!.renderCall!({
+      questions: [{
+        id: "choice",
+        question: "PR candidate smoke?",
+        options: [{ label: "Alpha" }, { label: "Beta" }],
+      }],
+    });
+    expect(renderedCall).toBeInstanceOf(FakeText);
+    expect((renderedCall as FakeText).text).toContain("Ask: PR candidate smoke?");
+    expect((renderedCall as FakeText).text).toContain("○ Beta");
     const result = await registeredTool!.execute(
       "ask-fallback-smoke",
       {
