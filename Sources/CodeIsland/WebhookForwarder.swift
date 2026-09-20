@@ -1,6 +1,12 @@
 import Foundation
 import CodeIslandCore
 
+enum WebhookDeliveryState: Equatable {
+    case disabled
+    case active
+    case waitingForInactivity(progress: Double, remainingSeconds: Int)
+}
+
 @MainActor
 final class WebhookForwarder {
     enum AttentionKind: Equatable {
@@ -119,6 +125,40 @@ final class WebhookForwarder {
             item.task.cancel()
         }
         pending.removeAll()
+    }
+
+    func currentDeliveryState() async -> WebhookDeliveryState {
+        let config = configurationProvider()
+        guard config.onlyWhenInactive else { return .active }
+        if presenceMonitor.isSessionLocked && config.sendImmediatelyWhenLocked {
+            return .active
+        }
+        let idle = await presenceMonitor.idleSeconds()
+        return Self.resolveDeliveryState(
+            onlyWhenInactive: config.onlyWhenInactive,
+            sendImmediatelyWhenLocked: config.sendImmediatelyWhenLocked,
+            isSessionLocked: presenceMonitor.isSessionLocked,
+            inactivitySeconds: config.inactivitySeconds,
+            idleSeconds: idle
+        )
+    }
+
+    nonisolated static func resolveDeliveryState(
+        onlyWhenInactive: Bool,
+        sendImmediatelyWhenLocked: Bool = false,
+        isSessionLocked: Bool = false,
+        inactivitySeconds: TimeInterval,
+        idleSeconds: TimeInterval
+    ) -> WebhookDeliveryState {
+        guard onlyWhenInactive, inactivitySeconds > 0 else { return .active }
+        if isSessionLocked && sendImmediatelyWhenLocked { return .active }
+        guard idleSeconds < inactivitySeconds else { return .active }
+        let remaining = inactivitySeconds - idleSeconds
+        let progress = max(0.0, min(1.0, idleSeconds / inactivitySeconds))
+        return .waitingForInactivity(
+            progress: progress,
+            remainingSeconds: Int(ceil(remaining))
+        )
     }
 
     private func waitAndSend(sequence: UInt64) async {

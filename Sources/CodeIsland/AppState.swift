@@ -130,7 +130,7 @@ final class AppState {
     var questionTerminalFrontmostDetector: (SessionSnapshot) -> Bool =
         TerminalVisibilityDetector.isTerminalFrontmostForSession
     @ObservationIgnored
-    weak var webhookForwarder: WebhookForwarder?
+    var webhookForwarder: WebhookForwarder?
 
     func recordHookEvent(
         source: String?,
