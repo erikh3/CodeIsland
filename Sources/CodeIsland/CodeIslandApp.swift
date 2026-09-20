@@ -5,8 +5,10 @@ enum CodeIslandApp {
     @MainActor
     static func main() {
         let application = NSApplication.shared
-        let delegate = AppDelegate()
-        application.delegate = delegate
-        application.run()
+        let appDelegate = AppDelegate()
+        application.delegate = appDelegate
+        withExtendedLifetime(appDelegate) {
+            application.run()
+        }
     }
 }
