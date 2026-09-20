@@ -1029,8 +1029,10 @@ private struct WebhookStatusButton: View {
     var appState: AppState
     @AppStorage(SettingsKey.webhookEnabled) private var webhookEnabled = SettingsDefaults.webhookEnabled
     @ObservedObject private var l10n = L10n.shared
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @State private var deliveryState: WebhookDeliveryState? = nil
     @State private var hovering = false
+    @State private var activationEffect = 0
 
     private var effectiveDeliveryState: WebhookDeliveryState {
         deliveryState ?? .active
@@ -1055,6 +1057,15 @@ private struct WebhookStatusButton: View {
         return l10n["webhook_status_active"]
     }
 
+    private func updateDeliveryState(_ next: WebhookDeliveryState) {
+        let previous = deliveryState
+        deliveryState = next
+        guard let previous,
+              case .waitingForInactivity = previous,
+              next == .active else { return }
+        activationEffect += 1
+    }
+
     var body: some View {
         Button {
             webhookEnabled.toggle()
@@ -1074,11 +1085,21 @@ private struct WebhookStatusButton: View {
                             .frame(width: 20, height: 20)
                             .rotationEffect(.degrees(-90))
                             .animation(.linear(duration: 0.1), value: trimValue)
-                    } else {
-                        Circle()
-                            .stroke(Color.white.opacity(hovering ? 1.0 : 0.95), lineWidth: 2)
-                            .frame(width: 20, height: 20)
                     }
+                    Circle()
+                        .stroke(Color.white.opacity(hovering ? 1.0 : 0.95), lineWidth: 2)
+                        .frame(width: 20, height: 20)
+                        .keyframeAnimator(initialValue: 0.0, trigger: activationEffect) { content, opacity in
+                            content.opacity(opacity)
+                        } keyframes: { _ in
+                            KeyframeTrack {
+                                MoveKeyframe(1.0)
+                                CubicKeyframe(
+                                    0.0,
+                                    duration: accessibilityReduceMotion ? 0.48 : 0.72
+                                )
+                            }
+                        }
                 }
                 Image(systemName: webhookEnabled
                     ? "antenna.radiowaves.left.and.right"
@@ -1086,6 +1107,27 @@ private struct WebhookStatusButton: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.white.opacity(
                         isWaiting ? 0.45 : (hovering ? 1.0 : 0.85)))
+                    .scaleEffect(accessibilityReduceMotion ? 1.0 : (isWaiting ? 0.82 : 1.0))
+                    .animation(
+                        .easeOut(duration: accessibilityReduceMotion ? 0.48 : 0.72),
+                        value: isWaiting
+                    )
+                    .keyframeAnimator(
+                        initialValue: 0.0,
+                        trigger: accessibilityReduceMotion ? 0 : activationEffect
+                    ) { content, pulse in
+                        content.overlay {
+                            Image(systemName: "antenna.radiowaves.left.and.right")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color.white.opacity(0.65 * pulse))
+                                .scaleEffect(0.82 + 0.18 * pulse)
+                        }
+                    } keyframes: { _ in
+                        KeyframeTrack {
+                            CubicKeyframe(1.0, duration: 0.36)
+                            CubicKeyframe(0.0, duration: 0.36)
+                        }
+                    }
             }
             .frame(width: 22, height: 22)
             .contentShape(Circle())
@@ -1099,7 +1141,7 @@ private struct WebhookStatusButton: View {
             guard webhookEnabled else { return }
             while !Task.isCancelled {
                 if let forwarder = appState.webhookForwarder {
-                    deliveryState = await forwarder.currentDeliveryState()
+                    updateDeliveryState(await forwarder.currentDeliveryState())
                 }
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
