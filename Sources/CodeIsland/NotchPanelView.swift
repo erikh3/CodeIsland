@@ -138,6 +138,7 @@ struct NotchPanelView: View {
     @AppStorage(SettingsKey.hideWhenNoSession) private var hideWhenNoSession = SettingsDefaults.hideWhenNoSession
     @AppStorage(SettingsKey.showToolStatus) private var showToolStatus = SettingsDefaults.showToolStatus
     @AppStorage(SettingsKey.collapsedWidthScale) private var collapsedWidthScale = SettingsDefaults.collapsedWidthScale
+    @AppStorage(SettingsKey.webhookEnabled) private var webhookEnabled = SettingsDefaults.webhookEnabled
     @AppStorage(SettingsKey.hapticOnHover) private var hapticOnHover = SettingsDefaults.hapticOnHover
     @AppStorage(SettingsKey.hapticIntensity) private var hapticIntensity = SettingsDefaults.hapticIntensity
     @AppStorage(SettingsKey.showSessionRecap) private var showSessionRecap = SettingsDefaults.showSessionRecap
@@ -217,9 +218,10 @@ struct NotchPanelView: View {
         let extra: CGFloat = appState.status == .idle ? 0 : 20
         // Reserve space for tool status — proportional to screen width
         let toolExtra: CGFloat = displayedToolStatus ? (hasNotch ? screenWidth * 0.03 : screenWidth * 0.04) : 0
+        let webhookExtra: CGFloat = webhookEnabled && hasNotch ? 28 : 0
         // Immediate hover acknowledgement: a slight widen while the expand delay runs
         let prehoverExtra: CGFloat = shouldShowPrehover ? NotchHoverInteraction.prehoverWidthDelta : 0
-        return nw + wing * 2 + extra + toolExtra + prehoverExtra
+        return nw + wing * 2 + extra + toolExtra + webhookExtra + prehoverExtra
     }
 
     var body: some View {
@@ -228,7 +230,13 @@ struct NotchPanelView: View {
                 if showBar {
                     // Active: compact bar — wider version when expanded
                     HStack(spacing: 0) {
-                        CompactLeftWing(appState: appState, expanded: shouldShowExpanded, mascotSize: mascotSize, hasNotch: hasNotch, showToolStatus: showToolStatus)
+                        CompactLeftWing(
+                            appState: appState,
+                            expanded: shouldShowExpanded,
+                            mascotSize: mascotSize,
+                            hasNotch: hasNotch,
+                            showToolStatus: showToolStatus
+                        )
                         if hasNotch && !shouldShowExpanded {
                             Spacer(minLength: effectiveNotchW)
                         } else if !shouldShowExpanded && showToolStatus {
@@ -237,7 +245,12 @@ struct NotchPanelView: View {
                         } else {
                             Spacer(minLength: 0)
                         }
-                        CompactRightWing(appState: appState, expanded: shouldShowExpanded, hasNotch: hasNotch)
+                        CompactRightWing(
+                            appState: appState,
+                            expanded: shouldShowExpanded,
+                            hasNotch: hasNotch,
+                            showWebhookStatus: webhookEnabled
+                        )
                     }
                     .frame(height: notchHeight)
                     // Recap on hover while collapsed — shows whenever hover
@@ -649,6 +662,7 @@ private struct CompactRightWing: View {
     var appState: AppState
     let expanded: Bool
     let hasNotch: Bool
+    let showWebhookStatus: Bool
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
     @AppStorage(SettingsKey.showToolStatus) private var showToolStatus = SettingsDefaults.showToolStatus
@@ -690,6 +704,14 @@ private struct CompactRightWing: View {
                     NSApplication.shared.terminate(nil)
                 }
             } else {
+                if showWebhookStatus {
+                    WebhookStatusButton(appState: appState)
+                        .offset(x: 22)
+                    if hasNotch {
+                        Spacer(minLength: 0)
+                    }
+                }
+
                 // Quiet hours active — explains why event sounds are silent.
                 if inQuietHours {
                     Image(systemName: "moon.fill")
@@ -767,8 +789,15 @@ private struct CompactRightWing: View {
                 }
             }
         }
+        .frame(
+            width: !expanded && showWebhookStatus && hasNotch ? 96 : nil,
+            alignment: .leading
+        )
         .padding(.trailing, 6)
-        .fixedSize(horizontal: true, vertical: false)
+        .fixedSize(
+            horizontal: expanded || !showWebhookStatus || !hasNotch,
+            vertical: false
+        )
     }
 }
 
