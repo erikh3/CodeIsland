@@ -147,6 +147,166 @@ final class WebhookForwarderTests: XCTestCase {
         XCTAssertEqual(sent.count, 1)
     }
 
+    // MARK: - WebhookDeliveryState resolver
+
+    func testResolverAlwaysModeReturnsActive() {
+        let state = WebhookForwarder.resolveDeliveryState(
+            onlyWhenInactive: false,
+            inactivitySeconds: 60,
+            idleSeconds: 0
+        )
+        XCTAssertEqual(state, .active)
+    }
+
+    func testResolverLockedImmediateDeliveryReturnsActive() {
+        let state = WebhookForwarder.resolveDeliveryState(
+            onlyWhenInactive: true,
+            sendImmediatelyWhenLocked: true,
+            isSessionLocked: true,
+            inactivitySeconds: 60,
+            idleSeconds: 0
+        )
+        XCTAssertEqual(state, .active)
+    }
+
+    func testResolverIdleAtThresholdReturnsActive() {
+        let state = WebhookForwarder.resolveDeliveryState(
+            onlyWhenInactive: true,
+            inactivitySeconds: 60,
+            idleSeconds: 60
+        )
+        XCTAssertEqual(state, .active)
+    }
+
+    func testResolverIdleAboveThresholdReturnsActive() {
+        let state = WebhookForwarder.resolveDeliveryState(
+            onlyWhenInactive: true,
+            inactivitySeconds: 60,
+            idleSeconds: 90
+        )
+        XCTAssertEqual(state, .active)
+    }
+
+    func testResolverWaitingProgressAndRemainingSeconds() {
+        let state = WebhookForwarder.resolveDeliveryState(
+            onlyWhenInactive: true,
+            inactivitySeconds: 60,
+            idleSeconds: 45
+        )
+        XCTAssertEqual(state, .waitingForInactivity(progress: 0.75, remainingSeconds: 15))
+    }
+
+    func testResolverRemainingSecondsIsCeiled() {
+        // idle=44.5, remaining=15.5 → ceil → 16
+        let state = WebhookForwarder.resolveDeliveryState(
+            onlyWhenInactive: true,
+            inactivitySeconds: 60,
+            idleSeconds: 44.5
+        )
+        if case let .waitingForInactivity(_, remaining) = state {
+            XCTAssertEqual(remaining, 16)
+        } else {
+            XCTFail("Expected waitingForInactivity, got \(state)")
+        }
+    }
+
+    func testResolverProgressClampedToOne() {
+        // Passing idleSeconds slightly above threshold still returns .active; progress never exceeds 1.
+        // Verify by passing exactly threshold - epsilon still gives progress < 1.
+        let state = WebhookForwarder.resolveDeliveryState(
+            onlyWhenInactive: true,
+            inactivitySeconds: 60,
+            idleSeconds: 59.9
+        )
+        if case let .waitingForInactivity(progress, _) = state {
+            XCTAssertLessThanOrEqual(progress, 1.0)
+            XCTAssertGreaterThanOrEqual(progress, 0.0)
+        } else {
+            XCTFail("Expected waitingForInactivity, got \(state)")
+        }
+    }
+
+    func testResolverZeroThresholdReturnsActive() {
+        // Zero inactivitySeconds is degenerate — guard produces .active, never divide-by-zero.
+        let state = WebhookForwarder.resolveDeliveryState(
+            onlyWhenInactive: true,
+            inactivitySeconds: 0,
+            idleSeconds: 0
+        )
+        XCTAssertEqual(state, .active)
+    }
+
+    func testCurrentDeliveryStateAlwaysModeReturnsActiveWithoutQueryingIdle() async throws {
+        var idleCalled = false
+        let monitor = UserPresenceMonitor(idleSecondsProvider: { idleCalled = true; return 0 }, observeSystem: false)
+        let forwarder = WebhookForwarder(
+            appState: AppState(),
+            presenceMonitor: monitor,
+            configurationProvider: {
+                WebhookForwarder.Configuration(
+                    enabled: true,
+                    endpoint: URL(string: "https://example.invalid/hook"),
+                    eventFilter: [],
+                    mainSessionsOnly: false,
+                    onlyWhenInactive: false,
+                    sendImmediatelyWhenLocked: false,
+                    inactivitySeconds: 60
+                )
+            },
+            sender: { _ in }
+        )
+        let state = await forwarder.currentDeliveryState()
+        XCTAssertEqual(state, .active)
+        XCTAssertFalse(idleCalled, "Should not query idle time when onlyWhenInactive is false")
+    }
+
+    func testCurrentDeliveryStateWaitingWhenUserIsActive() async throws {
+        let monitor = UserPresenceMonitor(idleSecondsProvider: { 10 }, observeSystem: false)
+        let forwarder = WebhookForwarder(
+            appState: AppState(),
+            presenceMonitor: monitor,
+            configurationProvider: {
+                WebhookForwarder.Configuration(
+                    enabled: true,
+                    endpoint: URL(string: "https://example.invalid/hook"),
+                    eventFilter: [],
+                    mainSessionsOnly: false,
+                    onlyWhenInactive: true,
+                    sendImmediatelyWhenLocked: false,
+                    inactivitySeconds: 60
+                )
+            },
+            sender: { _ in }
+        )
+        let state = await forwarder.currentDeliveryState()
+        XCTAssertEqual(state, .waitingForInactivity(
+            progress: 10.0 / 60.0,
+            remainingSeconds: 50
+        ))
+    }
+
+    func testCurrentDeliveryStateActiveWhenUserExceedsThreshold() async throws {
+        let monitor = UserPresenceMonitor(idleSecondsProvider: { 61 }, observeSystem: false)
+        let forwarder = WebhookForwarder(
+            appState: AppState(),
+            presenceMonitor: monitor,
+            configurationProvider: {
+                WebhookForwarder.Configuration(
+                    enabled: true,
+                    endpoint: URL(string: "https://example.invalid/hook"),
+                    eventFilter: [],
+                    mainSessionsOnly: false,
+                    onlyWhenInactive: true,
+                    sendImmediatelyWhenLocked: false,
+                    inactivitySeconds: 60
+                )
+            },
+            sender: { _ in }
+        )
+        let state = await forwarder.currentDeliveryState()
+        XCTAssertEqual(state, .active)
+    }
+
     private func makeForwarder(
         monitor: UserPresenceMonitor,
         sent: LockedRequests,

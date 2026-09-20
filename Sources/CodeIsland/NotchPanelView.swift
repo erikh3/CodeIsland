@@ -264,7 +264,8 @@ struct NotchPanelView: View {
                         notchW: effectiveNotchW,
                         notchHeight: notchHeight,
                         hasNotch: hasNotch,
-                        hovered: idleHovered
+                        hovered: idleHovered,
+                        appState: appState
                     )
                 } else {
                     // Idle: just the notch shell
@@ -651,7 +652,6 @@ private struct CompactRightWing: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
     @AppStorage(SettingsKey.showToolStatus) private var showToolStatus = SettingsDefaults.showToolStatus
-    @AppStorage(SettingsKey.webhookEnabled) private var webhookEnabled = SettingsDefaults.webhookEnabled
     @AppStorage(SettingsKey.quietHoursEnabled) private var quietHoursEnabled = SettingsDefaults.quietHoursEnabled
     @AppStorage(SettingsKey.quietHoursStart) private var quietHoursStart = SettingsDefaults.quietHoursStart
     @AppStorage(SettingsKey.quietHoursEnd) private var quietHoursEnd = SettingsDefaults.quietHoursEnd
@@ -682,12 +682,7 @@ private struct CompactRightWing: View {
                 NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
                     soundEnabled.toggle()
                 }
-                NotchIconButton(
-                    icon: webhookEnabled ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash",
-                    tooltip: webhookEnabled ? l10n["disable_webhook_tooltip"] : l10n["enable_webhook_tooltip"]
-                ) {
-                    webhookEnabled.toggle()
-                }
+                WebhookStatusButton(appState: appState)
                 NotchIconButton(icon: "gearshape", tooltip: l10n["settings"]) {
                     SettingsWindowController.shared.show()
                 }
@@ -1001,6 +996,88 @@ private struct NotchIconButton: View {
     }
 }
 
+private struct WebhookStatusButton: View {
+    var appState: AppState
+    @AppStorage(SettingsKey.webhookEnabled) private var webhookEnabled = SettingsDefaults.webhookEnabled
+    @ObservedObject private var l10n = L10n.shared
+    @State private var deliveryState: WebhookDeliveryState? = nil
+    @State private var hovering = false
+
+    private var effectiveDeliveryState: WebhookDeliveryState {
+        deliveryState ?? .active
+    }
+
+    private var isWaiting: Bool {
+        guard webhookEnabled else { return false }
+        if case .waitingForInactivity = effectiveDeliveryState { return true }
+        return false
+    }
+
+    private var trimValue: Double {
+        if case .waitingForInactivity(let p, _) = effectiveDeliveryState { return p }
+        return 0
+    }
+
+    private var tooltip: String {
+        guard webhookEnabled else { return l10n["enable_webhook_tooltip"] }
+        if case .waitingForInactivity(_, let s) = effectiveDeliveryState {
+            return String(format: l10n["webhook_status_waiting"], s)
+        }
+        return l10n["webhook_status_active"]
+    }
+
+    var body: some View {
+        Button {
+            webhookEnabled.toggle()
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(Color.white.opacity(hovering ? 0.2 : 0.08))
+                if webhookEnabled {
+                    if isWaiting {
+                        Circle()
+                            .stroke(Color.white.opacity(0.16), lineWidth: 2)
+                            .frame(width: 20, height: 20)
+                        Circle()
+                            .trim(from: 0, to: trimValue)
+                            .stroke(Color.white.opacity(0.75),
+                                    style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                            .frame(width: 20, height: 20)
+                            .rotationEffect(.degrees(-90))
+                            .animation(.linear(duration: 0.1), value: trimValue)
+                    } else {
+                        Circle()
+                            .stroke(Color.white.opacity(hovering ? 1.0 : 0.95), lineWidth: 2)
+                            .frame(width: 20, height: 20)
+                    }
+                }
+                Image(systemName: webhookEnabled
+                    ? "antenna.radiowaves.left.and.right"
+                    : "antenna.radiowaves.left.and.right.slash")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(
+                        isWaiting ? 0.45 : (hovering ? 1.0 : 0.85)))
+            }
+            .frame(width: 22, height: 22)
+            .contentShape(Circle())
+            .scaleEffect(hovering ? 1.1 : 1.0)
+        }
+        .buttonStyle(.plain)
+        .onHover { h in withAnimation(NotchAnimation.micro) { hovering = h } }
+        .help(tooltip)
+        .task(id: webhookEnabled) {
+            deliveryState = nil
+            guard webhookEnabled else { return }
+            while !Task.isCancelled {
+                if let forwarder = appState.webhookForwarder {
+                    deliveryState = await forwarder.currentDeliveryState()
+                }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+    }
+}
+
 // MARK: - Idle Indicator Bar
 
 private struct IdleIndicatorBar: View {
@@ -1010,11 +1087,11 @@ private struct IdleIndicatorBar: View {
     let notchHeight: CGFloat
     let hasNotch: Bool
     let hovered: Bool
+    var appState: AppState
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
     @AppStorage(SettingsKey.defaultSource) private var defaultSource = SettingsDefaults.defaultSource
 
-    @AppStorage(SettingsKey.webhookEnabled) private var webhookEnabled = SettingsDefaults.webhookEnabled
     var body: some View {
         HStack(spacing: 0) {
             // Left: mascot
@@ -1037,12 +1114,7 @@ private struct IdleIndicatorBar: View {
                         NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
                             soundEnabled.toggle()
                         }
-                        NotchIconButton(
-                            icon: webhookEnabled ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash",
-                            tooltip: webhookEnabled ? l10n["disable_webhook_tooltip"] : l10n["enable_webhook_tooltip"]
-                        ) {
-                            webhookEnabled.toggle()
-                        }
+                        WebhookStatusButton(appState: appState)
                         NotchIconButton(icon: "gearshape", tooltip: l10n["settings"]) {
                             SettingsWindowController.shared.show()
                         }

@@ -307,6 +307,8 @@ final class L10n: ObservableObject {
         "webhook_send_when_locked_hint": "Send pending notifications immediately while the MacBook lock screen is active.",
         "enable_webhook_tooltip": "Enable webhook forwarding",
         "disable_webhook_tooltip": "Disable webhook forwarding",
+        "webhook_status_active": "Active",
+        "webhook_status_waiting": "Active in %d seconds",
 
         // Appearance
         "preview": "Preview",
@@ -823,6 +825,8 @@ final class L10n: ObservableObject {
         "webhook_send_when_locked_hint": "Ausstehende Benachrichtigungen sofort senden, während der MacBook-Sperrbildschirm aktiv ist.",
         "enable_webhook_tooltip": "Webhook-Weiterleitung aktivieren",
         "disable_webhook_tooltip": "Webhook-Weiterleitung deaktivieren",
+        "webhook_status_active": "Aktiv",
+        "webhook_status_waiting": "Aktiv in %d Sekunden",
 
         // Appearance
         "preview": "Vorschau",
@@ -1343,6 +1347,8 @@ final class L10n: ObservableObject {
         "webhook_send_when_locked_hint": "MacBook 锁定屏幕处于显示状态时立即发送待处理通知。",
         "enable_webhook_tooltip": "启用 Webhook 转发",
         "disable_webhook_tooltip": "停用 Webhook 转发",
+        "webhook_status_active": "活跃",
+        "webhook_status_waiting": "%d 秒后活跃",
 
         // Appearance
         "preview": "预览",
@@ -1863,6 +1869,8 @@ final class L10n: ObservableObject {
         "webhook_send_when_locked_hint": "MacBook 鎖定畫面正在顯示時，立即傳送待處理通知。",
         "enable_webhook_tooltip": "啟用 Webhook 轉發",
         "disable_webhook_tooltip": "停用 Webhook 轉發",
+        "webhook_status_active": "活躍",
+        "webhook_status_waiting": "%d 秒後活躍",
 
         // Appearance
         "preview": "預覽",
@@ -2383,6 +2391,8 @@ final class L10n: ObservableObject {
         "webhook_send_when_locked_hint": "MacBook のロック画面が表示されている間は、保留中の通知をすぐに送信します。",
         "enable_webhook_tooltip": "Webhook 転送を有効化",
         "disable_webhook_tooltip": "Webhook 転送を無効化",
+        "webhook_status_active": "アクティブ",
+        "webhook_status_waiting": "%d 秒後にアクティブ",
 
         // Appearance
         "preview": "プレビュー",
@@ -2903,6 +2913,8 @@ final class L10n: ObservableObject {
         "webhook_send_when_locked_hint": "MacBook 잠금 화면이 표시되는 동안 대기 중인 알림을 즉시 전송합니다.",
         "enable_webhook_tooltip": "Webhook 전달 활성화",
         "disable_webhook_tooltip": "Webhook 전달 비활성화",
+        "webhook_status_active": "활성",
+        "webhook_status_waiting": "%d초 후 활성",
 
         // Appearance
         "preview": "미리보기",
@@ -3423,6 +3435,8 @@ final class L10n: ObservableObject {
         "webhook_send_when_locked_hint": "MacBook kilit ekranı etkinken bekleyen bildirimleri hemen gönderir.",
         "enable_webhook_tooltip": "Webhook iletmeyi etkinleştir",
         "disable_webhook_tooltip": "Webhook iletmeyi devre dışı bırak",
+        "webhook_status_active": "Aktif",
+        "webhook_status_waiting": "%d saniye sonra aktif",
 
         // Appearance
         "preview": "Önizleme",
