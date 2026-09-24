@@ -458,12 +458,13 @@ struct TerminalVisibilityDetector {
          .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
-    /// Run AppleScript synchronously and return the string result.
+    /// Run AppleScript synchronously on the calling (background) thread and
+    /// return its result as text; nil when it fails. Out of process instead of
+    /// NSAppleScript, which is main-thread-only — see AppleScriptRunner. Capped
+    /// at 5 s like the CLI probes below: an unanswered check reads as "not
+    /// visible", which shows the notification rather than swallowing it.
     private static func runAppleScriptSync(_ source: String) -> String? {
-        guard let script = NSAppleScript(source: source) else { return nil }
-        var error: NSDictionary?
-        let result = script.executeAndReturnError(&error)
-        return result.stringValue
+        AppleScriptRunner.osascript.evaluate(source, 5)
     }
 
     private static func findBinary(_ name: String, extraPaths: [String] = []) -> String? {

@@ -1,13 +1,14 @@
 import Foundation
 
-/// Runs the AppleScript behind click-to-jump (`TerminalActivator`).
+/// Runs the AppleScript behind click-to-jump (`TerminalActivator`) and the
+/// tab-level Smart Suppress check (`TerminalVisibilityDetector`).
 ///
 /// Always out of process, in `/usr/bin/osascript`. NSAppleScript is one of the
 /// classes Apple's Thread Programming Guide ("Thread Safety Summary") says may
-/// only be used from the main thread, yet jumps ran it on background queues —
-/// alongside the Smart Suppress probe, so scripts could be executing on
-/// several threads at once. A child process has its own main thread and
-/// shares nothing with ours.
+/// only be used from the main thread, yet both paths ran it on background
+/// queues — a jump, its validation retries and a Smart Suppress probe could be
+/// executing scripts on several threads at once. A child process has its own
+/// main thread and shares nothing with ours.
 ///
 /// Automation permission is unaffected: macOS attributes a child's Apple Events
 /// to its responsible process, the app that spawned it, so the consent prompt
