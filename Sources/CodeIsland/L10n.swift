@@ -247,6 +247,8 @@ final class L10n: ObservableObject {
         "quiet_hours_desc": "Mute all sound effects during this time window. If the start time is later than the end time, the window spans midnight.",
         "quiet_hours_start": "From",
         "quiet_hours_end": "Until",
+        "auto_mute_when_away": "Mute when away",
+        "auto_mute_when_away_desc": "Silence event sounds while the screen is locked, the screen saver is running or the display is asleep. Sound previews in Settings still play.",
 
         // Hooks
         "cli_status": "CLI Status",
@@ -608,6 +610,8 @@ final class L10n: ObservableObject {
         "quiet_hours_desc": "Alle Soundeffekte in diesem Zeitfenster stummschalten. Liegt die Startzeit nach der Endzeit, erstreckt sich das Fenster über Mitternacht.",
         "quiet_hours_start": "Von",
         "quiet_hours_end": "Bis",
+        "auto_mute_when_away": "Stumm, wenn abwesend",
+        "auto_mute_when_away_desc": "Ereignistöne stummschalten, solange der Bildschirm gesperrt ist, der Bildschirmschoner läuft oder der Monitor ruht. Hörproben in den Einstellungen spielen weiterhin.",
 
         // Hooks
         "cli_status": "CLI-Status",
@@ -973,6 +977,8 @@ final class L10n: ObservableObject {
         "quiet_hours_desc": "在该时间段内不播放任何音效。开始时间晚于结束时间时，时段跨越午夜。",
         "quiet_hours_start": "开始",
         "quiet_hours_end": "结束",
+        "auto_mute_when_away": "离开时静音",
+        "auto_mute_when_away_desc": "屏幕锁定、屏保运行或显示器休眠期间不播放事件音效。设置里的试听不受影响。",
 
         // Hooks
         "cli_status": "CLI 状态",
@@ -1338,6 +1344,8 @@ final class L10n: ObservableObject {
         "quiet_hours_desc": "在該時間段內不播放任何音效。開始時間晚於結束時間時，時段跨越午夜。",
         "quiet_hours_start": "開始",
         "quiet_hours_end": "結束",
+        "auto_mute_when_away": "離開時靜音",
+        "auto_mute_when_away_desc": "螢幕鎖定、螢幕保護程式執行或顯示器睡眠期間不播放事件音效。設定裡的試聽不受影響。",
 
         // Hooks
         "cli_status": "CLI 狀態",
@@ -1703,6 +1711,8 @@ final class L10n: ObservableObject {
         "quiet_hours_desc": "この時間帯はすべての効果音をミュートします。開始時刻が終了時刻より遅い場合、時間帯は深夜をまたぎます。",
         "quiet_hours_start": "開始",
         "quiet_hours_end": "終了",
+        "auto_mute_when_away": "離席中はミュート",
+        "auto_mute_when_away_desc": "画面ロック中、スクリーンセーバー実行中、ディスプレイのスリープ中はイベント音を鳴らしません。設定画面の試聴は引き続き再生されます。",
 
         // Hooks
         "cli_status": "CLI 状態",
@@ -2068,6 +2078,8 @@ final class L10n: ObservableObject {
         "quiet_hours_desc": "이 시간대에는 모든 효과음을 음소거합니다. 시작 시각이 종료 시각보다 늦으면 자정을 넘는 시간대로 적용됩니다.",
         "quiet_hours_start": "시작",
         "quiet_hours_end": "종료",
+        "auto_mute_when_away": "자리 비움 시 음소거",
+        "auto_mute_when_away_desc": "화면이 잠겨 있거나 화면 보호기가 실행 중이거나 디스플레이가 잠자기 상태일 때 이벤트 효과음을 끕니다. 설정의 미리 듣기는 계속 재생됩니다.",
 
         // Hooks
         "cli_status": "CLI 상태",
@@ -2433,6 +2445,8 @@ final class L10n: ObservableObject {
         "quiet_hours_desc": "Bu zaman aralığında tüm ses efektleri kapatılır. Başlangıç saati bitiş saatinden sonraysa aralık gece yarısını kapsar.",
         "quiet_hours_start": "Başlangıç",
         "quiet_hours_end": "Bitiş",
+        "auto_mute_when_away": "Uzaktayken sessiz",
+        "auto_mute_when_away_desc": "Ekran kilitliyken, ekran koruyucu çalışırken veya ekran uyku modundayken olay seslerini kapatır. Ayarlardaki ses önizlemeleri çalmaya devam eder.",
 
         // Hooks
         "cli_status": "CLI Durumu",

@@ -56,6 +56,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Watch system sleep/wake so the mascot animations pause and re-anchor
         // their periodic schedules instead of pinning a core after wake (#225).
         MascotAnimationGate.shared.start()
+        // Lock / screen saver / display sleep → event sounds hold off.
+        SceneMuteMonitor.shared.start()
 
         panelController = PanelWindowController(appState: appState)
         panelController?.showPanel()

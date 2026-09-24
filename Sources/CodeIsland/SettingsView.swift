@@ -1302,6 +1302,7 @@ private struct SoundPage: View {
     @AppStorage(SettingsKey.quietHoursEnabled) private var quietHoursEnabled = SettingsDefaults.quietHoursEnabled
     @AppStorage(SettingsKey.quietHoursStart) private var quietHoursStart = SettingsDefaults.quietHoursStart
     @AppStorage(SettingsKey.quietHoursEnd) private var quietHoursEnd = SettingsDefaults.quietHoursEnd
+    @AppStorage(SettingsKey.autoMuteWhenAway) private var autoMuteWhenAway = SettingsDefaults.autoMuteWhenAway
 
     /// DatePicker works in wall-clock Dates; storage is minutes since midnight.
     private func timeBinding(_ minutes: Binding<Int>) -> Binding<Date> {
@@ -1387,6 +1388,12 @@ private struct SoundPage: View {
                             )
                         }
                         .datePickerStyle(.field)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Toggle(l10n["auto_mute_when_away"], isOn: $autoMuteWhenAway)
+                        Text(l10n["auto_mute_when_away_desc"])
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
                     }
                 }
             }

@@ -61,7 +61,7 @@ class SoundManager {
     /// `sessionId` scopes the turn-failure debounce; nil shares one bucket.
     func handleEvent(_ eventName: String, sessionId: String? = nil, now: Date = Date()) {
         guard defaults.bool(forKey: SettingsKey.soundEnabled) else { return }
-        guard !quietHoursActive else { return }
+        guard !isEventSoundDeferred else { return }
         guard let entry = Self.eventSounds.first(where: { $0.event == eventName }) else { return }
         guard defaults.bool(forKey: entry.key) else { return }
         if eventName == EventSoundRouting.turnFailed,
@@ -74,7 +74,7 @@ class SoundManager {
     /// Play boot sound on app launch
     func playBoot() {
         guard defaults.bool(forKey: SettingsKey.soundEnabled) else { return }
-        guard !quietHoursActive else { return }
+        guard !isEventSoundDeferred else { return }
         guard defaults.bool(forKey: SettingsKey.soundBoot) else { return }
         emit("8bit_boot")
     }
@@ -88,7 +88,25 @@ class SoundManager {
         return m >= start || m < end
     }
 
+    /// Whether event sounds are held back right now for a reason that will
+    /// pass on its own — quiet hours, or nobody at the screen (locked, screen
+    /// saver, displays asleep). Distinct from the master toggle and the
+    /// per-event toggles, which are standing choices: follow-up reminders
+    /// wait out a deferral and catch up afterwards, but never a choice.
     /// Settings previews stay audible: only event-driven sounds are gated.
+    var isEventSoundDeferred: Bool {
+        quietHoursActive || awayMuteActive
+    }
+
+    /// Scene auto-mute, on unless the user turned it off. Read through
+    /// `object(forKey:)` so an unregistered default still means "on".
+    private var awayMuteActive: Bool {
+        let enabled = defaults.object(forKey: SettingsKey.autoMuteWhenAway) == nil
+            ? SettingsDefaults.autoMuteWhenAway
+            : defaults.bool(forKey: SettingsKey.autoMuteWhenAway)
+        return enabled && SceneMuteMonitor.shared.isQuietScene
+    }
+
     private var quietHoursActive: Bool {
         guard defaults.bool(forKey: SettingsKey.quietHoursEnabled) else { return false }
         let comps = Calendar.current.dateComponents([.hour, .minute], from: Date())
