@@ -296,7 +296,37 @@ final class AppState {
             if surface != oldValue {
                 followUps.surfaceChanged(surface)
             }
+            switch surface {
+            case .approvalCard(let sid): cardRequestId = pendingPermission(forSession: sid)?.id
+            case .questionCard(let sid): cardRequestId = pendingQuestion(forSession: sid)?.id
+            case .collapsed, .sessionList, .completionCard: cardRequestId = nil
+            }
         }
+    }
+
+    /// The request the approval / question card on screen was opened for.
+    /// While that very request still waits, re-evaluating the queue leaves
+    /// the card alone — it may be one the user picked that is not the head.
+    /// Once it is answered, the session's next request filling the same card
+    /// is weighed like any other.
+    @ObservationIgnored
+    private var cardRequestId: UUID?
+
+    /// Index of the approval the card on screen still shows, when it is
+    /// still waiting and visible.
+    private var shownApprovalIndex: Int? {
+        guard let cardRequestId, case .approvalCard(let sid) = surface,
+              !dismissedPermissionSessionIds.contains(sid),
+              pendingPermission(forSession: sid)?.id == cardRequestId else { return nil }
+        return permissionQueue.firstIndex { $0.id == cardRequestId }
+    }
+
+    /// The session of the question card on screen, when the question it was
+    /// opened for still waits.
+    private var shownQuestionSessionId: String? {
+        guard let cardRequestId, case .questionCard(let sid) = surface,
+              pendingQuestion(forSession: sid)?.id == cardRequestId else { return nil }
+        return sid
     }
 
     /// Local-transcript token usage shown in the session-list footer.
@@ -2882,15 +2912,21 @@ final class AppState {
         let hasPending: Bool
         if let idx = nextVisiblePermissionIndex() {
             hasPending = true
+            // An approval card still showing the request it was opened for
+            // stays — the user may have picked it (session list, reminder)
+            // over the head. It becomes the head, so whatever mirrors the
+            // head (Buddy) agrees with the screen.
+            let shownIdx = shownApprovalIndex
             // One assignment: removing and re-inserting in place would show
             // the queue's observers (follow-up reminders) a moment where this
             // request is gone, and its reminder would start over.
             var queue = permissionQueue
-            let next = queue.remove(at: idx)
+            let next = queue.remove(at: shownIdx ?? idx)
             queue.insert(next, at: 0)
             permissionQueue = queue
             let sid = next.event.sessionId ?? "default"
             activeSessionId = sid
+            if shownIdx != nil { return true }
             // When the session list is open, keep it open; approvals can be handled inline.
             if surface == .sessionList { return true }
             if Self.autoExpandOnPermission(), shouldAutoOpenPendingSurface(for: sid) {
@@ -2901,6 +2937,13 @@ final class AppState {
             if surface.approvalSessionId != nil || surface.questionSessionId != nil { return true }
         } else if let next = questionQueue.first {
             hasPending = true
+            // A question card still showing the question it was opened for
+            // stays, even when it is not the head (the user clicked "Answer"
+            // on it, a reminder reopened it).
+            if let shown = shownQuestionSessionId {
+                activeSessionId = shown
+                return true
+            }
             let sid = next.event.sessionId ?? "default"
             activeSessionId = sid
             if !Self.autoExpandOnQuestion() {

@@ -114,6 +114,62 @@ final class PanelCardFlowTests: XCTestCase {
         XCTAssertEqual(appState.surface, .collapsed)
     }
 
+    // MARK: - The card the user opened stays
+
+    /// With "auto-expand on question" on, a non-head question card the user
+    /// opened ("Answer" in the session list) must not be swapped for the head
+    /// the next time the queue is re-evaluated.
+    func testUserOpenedQuestionCardIsNotReplacedByTheHead() async throws {
+        try await ask("QA")
+        try await ask("QB")
+        appState.openPendingQuestionCard(sessionId: "QB")
+        XCTAssertEqual(appState.surface, .questionCard(sessionId: "QB"))
+        appState.showNextPending()
+        XCTAssertEqual(appState.surface, .questionCard(sessionId: "QB"))
+        XCTAssertEqual(appState.activeSessionId, "QB")
+
+        // Answered, it gives way to the next one as usual.
+        appState.skipQuestion(expectedSessionId: "QB")
+        XCTAssertEqual(appState.surface, .questionCard(sessionId: "QA"))
+    }
+
+    /// A non-head approval card (reopened by a reminder, picked in the
+    /// session list) stays too, and becomes the head so head-only mirrors
+    /// act on what is on screen.
+    func testOpenedNonHeadApprovalCardStaysAndBecomesTheHead() async throws {
+        try await requestApproval("PA")
+        try await requestApproval("PB")
+        XCTAssertEqual(appState.surface, .approvalCard(sessionId: "PA"))
+        appState.surface = .approvalCard(sessionId: "PB")
+
+        appState.showNextPending()
+        XCTAssertEqual(appState.surface, .approvalCard(sessionId: "PB"))
+        XCTAssertEqual(appState.permissionQueue.first?.event.sessionId, "PB")
+
+        appState.approvePermission(expectedSessionId: "PB")
+        XCTAssertEqual(appState.surface, .approvalCard(sessionId: "PA"))
+    }
+
+    /// The card stays for the request it was opened for, not for whatever
+    /// fills it next: once answered, the session's next question is weighed
+    /// like a new one — here an OMP ask racing its own terminal dialog, which
+    /// Smart Suppress folds.
+    func testCardForAnAnsweredRequestIsReevaluated() async throws {
+        UserDefaults.standard.set(true, forKey: SettingsKey.smartSuppress)
+        appState.questionTerminalFrontmostDetector = { _ in true }
+        try await ask("QS", agentId: nil, extra: ["_source": "pi", "_pi_tool_call_id": "blocking-1", "_term_app": "Ghostty"])
+        try await ask("QS", agentId: "sub", extra: [
+            "_source": "pi", "_pi_tool_call_id": "racing-2", "_term_app": "Ghostty",
+            "_codeisland_native_ask_racing": true,
+        ])
+        XCTAssertEqual(appState.questionQueue.count, 2)
+        XCTAssertEqual(appState.surface, .questionCard(sessionId: "QS"))
+
+        appState.skipQuestion(expectedSessionId: "QS")
+        XCTAssertEqual(appState.questionQueue.count, 1)
+        XCTAssertEqual(appState.surface, .collapsed, "the racing ask is Smart Suppressed, not kept on the old card")
+    }
+
     // MARK: - Helpers
 
     private func waitForSurface(_ expected: IslandSurface, timeout: TimeInterval = 3) async {
@@ -131,11 +187,14 @@ final class PanelCardFlowTests: XCTestCase {
         await Task.yield()
     }
 
-    private func ask(_ sid: String) async throws {
-        let e = try event([
+    private func ask(_ sid: String, agentId: String? = nil, extra: [String: Any] = [:]) async throws {
+        var payload: [String: Any] = [
             "hook_event_name": "PermissionRequest", "session_id": sid, "tool_name": "AskUserQuestion",
             "tool_input": ["questions": [["question": "Which?", "options": [["label": "A"], ["label": "B"]]]]],
-        ])
+        ]
+        if let agentId { payload["agent_id"] = agentId }
+        payload.merge(extra) { _, new in new }
+        let e = try event(payload)
         pending.append(Task<Data, Never> { [appState] in
             await withCheckedContinuation { appState!.handleAskUserQuestion(e, continuation: $0) }
         })
