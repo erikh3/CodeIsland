@@ -238,6 +238,14 @@ final class AppState {
     /// is off. See AppState+CoworkWatch.
     @ObservationIgnored
     var coworkWatcher: CoworkSessionWatcher?
+    /// The Claude Desktop process each in-flight Cowork turn runs in, and
+    /// how to find the running one (a seam for tests).
+    @ObservationIgnored
+    var coworkTurnHosts: [String: ProcessIdentity] = [:]
+    @ObservationIgnored
+    var claudeDesktopProcessProvider: () -> ProcessIdentity? = { AppState.runningClaudeDesktopProcess() }
+    @ObservationIgnored
+    var claudeDesktopTerminationObserver: NSObjectProtocol?
 
     /// Computed: first item in permission queue (backward compat for UI reads)
     var pendingPermission: PermissionRequest? { permissionQueue.first }
@@ -683,12 +691,12 @@ final class AppState {
         return true
     }
 
-    private nonisolated static func liveProcessIdentity(for pid: pid_t) -> ProcessIdentity? {
+    nonisolated static func liveProcessIdentity(for pid: pid_t) -> ProcessIdentity? {
         guard pid > 0, kill(pid, 0) == 0 else { return nil }
         return ProcessIdentity(pid: pid, startTime: getProcessStartTime(pid))
     }
 
-    private nonisolated static func isLiveProcess(_ process: ProcessIdentity) -> Bool {
+    nonisolated static func isLiveProcess(_ process: ProcessIdentity) -> Bool {
         guard process.pid > 0, kill(process.pid, 0) == 0 else { return false }
         guard let expectedStart = process.startTime else { return true }
         return getProcessStartTime(process.pid) == expectedStart

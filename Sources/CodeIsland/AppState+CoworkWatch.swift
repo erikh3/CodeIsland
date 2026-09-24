@@ -46,6 +46,15 @@ extension AppState {
         }
     }
 
+    /// The running Claude Desktop, as a process identity that a restart
+    /// (same bundle, new process) no longer matches.
+    nonisolated static func runningClaudeDesktopProcess() -> ProcessIdentity? {
+        guard let app = NSRunningApplication
+            .runningApplications(withBundleIdentifier: claudeDesktopBundleId)
+            .first(where: { !$0.isTerminated }) else { return nil }
+        return liveProcessIdentity(for: app.processIdentifier)
+    }
+
     static func isCoworkTrackingEnabled(_ defaults: UserDefaults = .standard) -> Bool {
         guard defaults.object(forKey: SettingsKey.trackClaudeDesktopCowork) != nil else {
             return SettingsDefaults.trackClaudeDesktopCowork
@@ -67,13 +76,30 @@ extension AppState {
             Task { @MainActor in self?.handleCoworkOutput(output) }
         }
         coworkWatcher = watcher
+        // The cleanup sweep also notices a quit Claude Desktop, but only every
+        // few seconds — and not at all when it relaunches in between (an
+        // auto-update). The notification catches both.
+        claudeDesktopTerminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.bundleIdentifier == AppState.claudeDesktopBundleId else { return }
+            Task { @MainActor in self?.claudeDesktopTerminated() }
+        }
         watcher.start()
     }
 
     func stopCoworkWatcher() {
         coworkWatcher?.stop()
         coworkWatcher = nil
+        if let observer = claudeDesktopTerminationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            claudeDesktopTerminationObserver = nil
+        }
         removeCoworkSessions()
+        coworkTurnHosts.removeAll()
     }
 
     func removeCoworkSessions() {
@@ -149,6 +175,7 @@ extension AppState {
     /// log its end. Keeps the card's age, so the idle sweep collects it on the
     /// usual clock.
     func settleCoworkCard(_ key: String) {
+        coworkTurnHosts.removeValue(forKey: key)
         guard var snapshot = sessions[key], snapshot.status != .idle else { return }
         let waitBefore = displayOnlyWaitKind(forSession: key)
         snapshot.status = .idle
@@ -159,16 +186,45 @@ extension AppState {
     }
 
     /// Cleanup-sweep pass for Cowork cards, which the generic silence rule
-    /// skips: a turn or wait is settled once it has been silent past
-    /// `coworkSilenceTimeout`.
+    /// skips. A turn or wait is settled once the Claude Desktop process it ran
+    /// in is gone — quit, crashed or restarted, none of which Claude Desktop
+    /// logs — or once it has been silent past `coworkSilenceTimeout`.
     func settleCoworkCards(now: Date = Date()) {
         for (key, session) in sessions
             where key.hasPrefix(Self.coworkSessionPrefix) && session.status != .idle {
+            let hostGone = coworkTurnHosts[key].map { !Self.isLiveProcess($0) } ?? false
             let timedOut = Self.coworkSilenceTimeout(status: session.status)
                 .map { now.timeIntervalSince(session.lastActivity) > $0 } ?? false
-            if timedOut {
+            if hostGone || timedOut {
                 settleCoworkCard(key)
             }
+        }
+        if !coworkTurnHosts.isEmpty {
+            coworkTurnHosts = coworkTurnHosts.filter { key, _ in
+                sessions[key].map { $0.status != .idle } ?? false
+            }
+        }
+    }
+
+    /// Claude Desktop quit (or is restarting): every turn and permission card
+    /// it had open went with it.
+    func claudeDesktopTerminated() {
+        for (key, session) in sessions
+            where key.hasPrefix(Self.coworkSessionPrefix) && session.status != .idle {
+            settleCoworkCard(key)
+        }
+        refreshDerivedState()
+    }
+
+    /// Remember which Claude Desktop process a turn runs in, from the moment
+    /// it leaves idle until it is idle again.
+    private func noteCoworkTurnHost(_ key: String) {
+        guard let status = sessions[key]?.status, status != .idle else {
+            coworkTurnHosts.removeValue(forKey: key)
+            return
+        }
+        if coworkTurnHosts[key] == nil, let host = claudeDesktopProcessProvider() {
+            coworkTurnHosts[key] = host
         }
     }
 
@@ -209,6 +265,9 @@ extension AppState {
             snapshot.lastActivity = lastActivity
         }
         sessions[key] = snapshot
+        if movesTurnState {
+            noteCoworkTurnHost(key)
+        }
         attachTranscriptTailerIfNeeded(sessionId: key)
         // A permission card or question in Claude Desktop: reminders, and a
         // push when a live one first appears.

@@ -306,6 +306,12 @@ final class AppStateCoworkWatchTests: XCTestCase {
 
     // MARK: - Settling what Claude Desktop will never finish
 
+    /// A process identity that `isLiveProcess` accepts: this test process.
+    private var liveHost: ProcessIdentity { ProcessIdentity(pid: getpid(), startTime: nil) }
+    /// Same pid, another start time: the process that owned it is gone, as
+    /// after a Claude Desktop restart.
+    private var goneHost: ProcessIdentity { ProcessIdentity(pid: getpid(), startTime: .distantPast) }
+
     private func waitingCard(in appState: AppState) {
         let request = CoworkAuditFixture.permissionRequest(id: "r", tool: "Bash", input: #"{"command":"rm x"}"#)
         appState.applyCoworkUpdate(update(
@@ -327,6 +333,7 @@ final class AppStateCoworkWatchTests: XCTestCase {
 
     func testLongRunningToolOutlivesTheGenericTimeout() throws {
         let appState = AppState()
+        appState.claudeDesktopProcessProvider = { self.liveHost }
         appState.applyCoworkUpdate(update(audit: audit([
             CoworkAuditFixture.userPrompt,
             CoworkAuditFixture.assistantToolUse,
@@ -345,6 +352,7 @@ final class AppStateCoworkWatchTests: XCTestCase {
 
     func testAnOpenPermissionCardIsSettledAfterHoursOfSilence() throws {
         let appState = AppState()
+        appState.claudeDesktopProcessProvider = { self.liveHost }
         waitingCard(in: appState)
         let asked = try XCTUnwrap(appState.sessions[key]).lastActivity
 
@@ -353,6 +361,70 @@ final class AppStateCoworkWatchTests: XCTestCase {
 
         appState.settleCoworkCards(now: asked.addingTimeInterval(4 * 60 * 60 + 1))
         XCTAssertEqual(appState.sessions[key]?.status, .idle)
+        XCTAssertTrue(appState.displayOnlyWaitingSessionIds(kind: .approval).isEmpty)
+    }
+
+    func testWaitDiesWithTheClaudeDesktopProcessItWasAskedIn() throws {
+        let appState = AppState()
+        appState.followUps.armsTimer = false
+        appState.followUps.intervalProvider = { 60 }
+        appState.claudeDesktopProcessProvider = { self.liveHost }
+        waitingCard(in: appState)
+        XCTAssertEqual(appState.coworkTurnHosts[key], liveHost)
+        let reminder = FollowUpReminderScheduler.Key(.approval, key)
+        XCTAssertNotNil(appState.followUps.scheduler.origin(of: reminder))
+
+        appState.settleCoworkCards()
+        XCTAssertEqual(appState.sessions[key]?.status, .waitingApproval, "its Claude Desktop still runs")
+
+        // Claude Desktop restarted between two sweeps (an auto-update): the
+        // process the card was asked in is gone, whatever runs now.
+        appState.coworkTurnHosts[key] = goneHost
+        appState.settleCoworkCards()
+        let card = try XCTUnwrap(appState.sessions[key])
+        XCTAssertEqual(card.status, .idle)
+        XCTAssertNil(card.currentTool)
+        XCTAssertNil(appState.coworkTurnHosts[key])
+        XCTAssertTrue(appState.displayOnlyWaitingSessionIds(kind: .approval).isEmpty)
+        XCTAssertNil(appState.followUps.scheduler.origin(of: reminder), "no more reminders")
+    }
+
+    func testTurnHostIsForgottenOnceTheTurnEnds() {
+        let appState = AppState()
+        appState.claudeDesktopProcessProvider = { self.liveHost }
+        appState.applyCoworkUpdate(update(audit: audit([CoworkAuditFixture.userPrompt])))
+        XCTAssertEqual(appState.coworkTurnHosts[key], liveHost)
+
+        // A new host is only taken when a turn starts, not on every update.
+        appState.claudeDesktopProcessProvider = { self.goneHost }
+        appState.applyCoworkUpdate(update(audit: audit([CoworkAuditFixture.userPrompt, CoworkAuditFixture.assistantReply])))
+        XCTAssertEqual(appState.coworkTurnHosts[key], liveHost)
+
+        appState.applyCoworkUpdate(update(
+            audit: audit([CoworkAuditFixture.userPrompt, CoworkAuditFixture.resultSuccess]),
+            turnsCompleted: 1
+        ))
+        XCTAssertNil(appState.coworkTurnHosts[key])
+    }
+
+    func testQuittingClaudeDesktopSettlesEveryOpenCoworkTurn() throws {
+        let appState = AppState()
+        appState.claudeDesktopProcessProvider = { self.liveHost }
+        waitingCard(in: appState)
+        let otherKey = AppState.coworkSessionKey("local_0ther000-0000-0000-0000-000000000000")
+        appState.applyCoworkUpdate(update(
+            metadata: metadata(storeId: "local_0ther000-0000-0000-0000-000000000000"),
+            audit: audit([CoworkAuditFixture.userPrompt, CoworkAuditFixture.assistantToolUse])
+        ))
+        var hook = SessionSnapshot()
+        hook.status = .processing
+        appState.sessions["hook-session"] = hook
+
+        appState.claudeDesktopTerminated()
+        XCTAssertEqual(appState.sessions[key]?.status, .idle)
+        XCTAssertEqual(appState.sessions[otherKey]?.status, .idle)
+        XCTAssertEqual(appState.sessions["hook-session"]?.status, .processing, "not Claude Desktop's")
+        XCTAssertTrue(appState.coworkTurnHosts.isEmpty)
         XCTAssertTrue(appState.displayOnlyWaitingSessionIds(kind: .approval).isEmpty)
     }
 
