@@ -350,6 +350,59 @@ public enum ProcArgsParser {
         }
         return (arguments, environment)
     }
+
+    /// The `keys` variables of a process — or nil when its environment block
+    /// cannot be trusted to be whole: argv ends before `argc` strings, the
+    /// block holds no entry at all (the kernel withheld it; a real CLI process
+    /// always has PATH, HOME…), or its last entry runs off the end of the
+    /// buffer. `parse` returns whatever it got in those cases, which a caller
+    /// that must tell "variable unset" from "environment unknown" cannot use:
+    /// a missing `CODEX_HOME` would read as "uses the default root".
+    public static func completeEnvironment(_ buffer: [UInt8], keys: Set<String>) -> [String: String]? {
+        let intSize = MemoryLayout<Int32>.size
+        guard buffer.count > intSize else { return nil }
+        let argc = buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+        guard argc > 0, argc < 4096 else { return nil }
+
+        var offset = intSize
+        while offset < buffer.count, buffer[offset] != 0 { offset += 1 }  // exec path
+        while offset < buffer.count, buffer[offset] == 0 { offset += 1 }  // padding
+
+        enum Token { case string(String), end, truncated }
+        func next() -> Token {
+            guard offset < buffer.count else { return .end }
+            let start = offset
+            while offset < buffer.count, buffer[offset] != 0 { offset += 1 }
+            guard offset < buffer.count else { return .truncated }
+            let value = String(decoding: buffer[start..<offset], as: UTF8.self)
+            offset += 1
+            return .string(value)
+        }
+
+        for _ in 0..<argc {
+            guard case .string = next() else { return nil }
+        }
+
+        var environment: [String: String] = [:]
+        var entryCount = 0
+        scan: while true {
+            switch next() {
+            case .string(let entry):
+                if entry.isEmpty { break scan }
+                entryCount += 1
+                guard let separator = entry.firstIndex(of: "=") else { continue }
+                let key = String(entry[..<separator])
+                if keys.contains(key) {
+                    environment[key] = String(entry[entry.index(after: separator)...])
+                }
+            case .end:
+                break scan
+            case .truncated:
+                return nil
+            }
+        }
+        return entryCount > 0 ? environment : nil
+    }
 }
 
 extension SessionSnapshot {

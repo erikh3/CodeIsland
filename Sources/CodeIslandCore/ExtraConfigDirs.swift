@@ -309,11 +309,14 @@ public enum ExtraConfigDirs {
 
     /// The root a running CLI process reads, from its own environment.
     ///
-    /// - `environment == nil`: the process environment could not be read, so
-    ///   the root is unknown and the caller must consider every known root.
-    /// - variable set: that directory, whether or not it is registered — the
-    ///   process writes there no matter what Settings says.
-    /// - variable unset: the CLI's built-in default (`defaultRoot`).
+    /// - `environment == nil`: the process environment could not be read (or
+    ///   only in part), so the root is unknown — see `ConfigRootSnapshot`.
+    /// - variable set to an absolute path: that directory, whether or not it
+    ///   is registered — the process writes there no matter what Settings says.
+    /// - variable set to anything else (a relative path, `/`): unknown too.
+    ///   The CLI resolves it against its own working directory; it is not
+    ///   "unset", and treating it so would pin the process to the default.
+    /// - variable unset or blank: the CLI's built-in default (`defaultRoot`).
     ///
     /// Matching per process is what keeps two sessions of the same CLI in the
     /// same project, but on different accounts, from being cross-wired.
@@ -324,10 +327,11 @@ public enum ExtraConfigDirs {
         defaultRoot: String
     ) -> String? {
         guard let environment else { return nil }
-        if let configured = ClaudeConfigPaths.normalized(environment[cli.environmentKey], homeDir: homeDir) {
-            return configured
+        guard let raw = environment[cli.environmentKey],
+              !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return defaultRoot
         }
-        return defaultRoot
+        return ClaudeConfigPaths.normalized(raw, homeDir: homeDir)
     }
 
     /// The root among `roots` that contains `path` (a transcript the CLI

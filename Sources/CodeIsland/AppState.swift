@@ -3370,10 +3370,12 @@ final class AppState {
             ("grok", "\(ConfigInstaller.grokHome())/sessions"),
         ]
         let fm = FileManager.default
+        // By identity: an extra dir that is a primary one under another
+        // spelling (symlink, case) must not be watched twice.
         var seenRoots = Set<String>()
         var roots = (candidates + extraConfigDirWatchRoots()).compactMap { source, path -> String? in
             guard ConfigInstaller.isEnabled(source: source), fm.fileExists(atPath: path),
-                  seenRoots.insert(path).inserted else { return nil }
+                  seenRoots.insert(ExtraConfigDirs.identity(of: path)).inserted else { return nil }
             return path
         }
         if ConfigInstaller.isEnabled(source: "cline") {
@@ -4716,83 +4718,96 @@ final class AppState {
         guard !claudePids.isEmpty else { return [] }
 
         let fm = FileManager.default
-        let knownRoots = ClaudeConfigPaths.allConfigDirs()
-        let unsetEnvironmentRoot = ClaudeConfigPaths.defaultDirForUnsetEnvironment()
-        var results: [DiscoveredSession] = []
-        var seenSessionIds: Set<String> = []
-
-        // Each claude process → its CWD → the single most recent .jsonl
-        for pid in claudePids {
-            guard let cwd = getCwd(for: pid), !cwd.isEmpty else { continue }
-
+        let processes = claudePids.compactMap { pid -> ClaudeDiscoveryProcess? in
+            guard let cwd = getCwd(for: pid), !cwd.isEmpty else { return nil }
             // Skip subagent worktrees — they are child tasks, not independent sessions
             if cwd.contains("/.claude/worktrees/agent-") || cwd.contains("/.git/worktrees/agent-") {
-                continue
+                return nil
             }
-
-            // Get process start time to filter stale transcript files
-            let processStart = getProcessStartTime(pid)
-
-            let projectDir = cwd.claudeProjectDirEncoded()
-            // The config dir this process writes to (its CLAUDE_CONFIG_DIR), or
-            // every registered one when its environment cannot be read.
-            let roots = sessionRoots(
-                forProcess: pid,
-                cli: .claude,
-                knownRoots: knownRoots,
-                defaultRoot: unsetEnvironmentRoot
-            )
-
-            // Find the most recently modified .jsonl that was written AFTER this process started
-            var bestFile: String?
-            var projectPath = ""
-            var bestDate = Date.distantPast
-            for root in roots {
-                let candidateProjectPath = "\(root)/projects/\(projectDir)"
-                guard let files = try? fm.contentsOfDirectory(atPath: candidateProjectPath) else { continue }
-                for file in files where file.hasSuffix(".jsonl") {
-                    let fullPath = "\(candidateProjectPath)/\(file)"
-                    if let attrs = try? fm.attributesOfItem(atPath: fullPath),
-                       let modified = attrs[.modificationDate] as? Date,
-                       modified > bestDate {
-                        // Skip files from old sessions: must be modified after process started
-                        if let start = processStart, modified < start.addingTimeInterval(-10) {
-                            continue
-                        }
-                        bestDate = modified
-                        bestFile = file
-                        projectPath = candidateProjectPath
-                    }
-                }
-            }
-
-            guard let file = bestFile else { continue }
-
-            // Skip stale transcripts: only show sessions active within last 5 minutes.
-            // When processStart is unknown (proc_pidinfo failed), use a tighter 30s window
-            // to avoid resurrecting zombie sessions from stale transcript files.
-            let freshnessLimit: TimeInterval = processStart != nil ? -300 : -30
-            if bestDate.timeIntervalSinceNow < freshnessLimit { continue }
-
-            let sessionId = String(file.dropLast(6))
-            guard !seenSessionIds.contains(sessionId) else { continue }
-            seenSessionIds.insert(sessionId)
-
-            let fullPath = "\(projectPath)/\(file)"
-            let (model, messages) = readRecentFromTranscript(path: fullPath)
-
-            results.append(DiscoveredSession(
-                sessionId: sessionId,
-                cwd: cwd,
-                tty: nil,
-                model: model,
-                pid: pid,
-                modifiedAt: bestDate,
-                recentMessages: messages,
-                transcriptPath: fullPath
-            ))
+            // Process start time filters stale transcript files
+            return ClaudeDiscoveryProcess(pid: pid, cwd: cwd, startTime: getProcessStartTime(pid))
         }
-        return results
+
+        // Each process is matched in the config dir it writes to (its
+        // CLAUDE_CONFIG_DIR); ConfigRootDiscovery places the ones whose
+        // environment cannot be read and skips paused dirs.
+        let scan = configRootScan(for: .claude)
+        return ConfigRootDiscovery.run(
+            processes: processes,
+            lookup: { scan.lookup(pid: $0.pid) },
+            fallbackRoots: scan.fallbackRoots,
+            discover: { root, group, claimed in
+                var taken = claimed
+                return group.compactMap { process in
+                    guard let session = claudeSession(for: process, root: root, excluding: taken, fm: fm) else {
+                        return nil
+                    }
+                    taken.insert(session.sessionId)
+                    return session
+                }
+            },
+            sessionId: \.sessionId,
+            belongsTo: { $0.pid == $1.pid }
+        )
+    }
+
+    struct ClaudeDiscoveryProcess {
+        let pid: pid_t
+        let cwd: String
+        let startTime: Date?
+    }
+
+    /// One claude process → its CWD → the single most recent .jsonl under `root`.
+    private nonisolated static func claudeSession(
+        for process: ClaudeDiscoveryProcess,
+        root: String,
+        excluding claimed: Set<String>,
+        fm: FileManager
+    ) -> DiscoveredSession? {
+        let projectPath = "\(root)/projects/\(process.cwd.claudeProjectDirEncoded())"
+        guard let files = try? fm.contentsOfDirectory(atPath: projectPath) else { return nil }
+
+        // Find the most recently modified .jsonl that was written AFTER this process started
+        var bestFile: String?
+        var bestDate = Date.distantPast
+        for file in files where file.hasSuffix(".jsonl") {
+            let fullPath = "\(projectPath)/\(file)"
+            if let attrs = try? fm.attributesOfItem(atPath: fullPath),
+               let modified = attrs[.modificationDate] as? Date,
+               modified > bestDate {
+                // Skip files from old sessions: must be modified after process started
+                if let start = process.startTime, modified < start.addingTimeInterval(-10) {
+                    continue
+                }
+                bestDate = modified
+                bestFile = file
+            }
+        }
+
+        guard let file = bestFile else { return nil }
+
+        // Skip stale transcripts: only show sessions active within last 5 minutes.
+        // When processStart is unknown (proc_pidinfo failed), use a tighter 30s window
+        // to avoid resurrecting zombie sessions from stale transcript files.
+        let freshnessLimit: TimeInterval = process.startTime != nil ? -300 : -30
+        if bestDate.timeIntervalSinceNow < freshnessLimit { return nil }
+
+        let sessionId = String(file.dropLast(6))
+        guard !claimed.contains(sessionId) else { return nil }
+
+        let fullPath = "\(projectPath)/\(file)"
+        let (model, messages) = readRecentFromTranscript(path: fullPath)
+
+        return DiscoveredSession(
+            sessionId: sessionId,
+            cwd: process.cwd,
+            tty: nil,
+            model: model,
+            pid: process.pid,
+            modifiedAt: bestDate,
+            recentMessages: messages,
+            transcriptPath: fullPath
+        )
     }
 
     private nonisolated static func allProcessIds() -> [pid_t] {
@@ -5765,26 +5780,48 @@ final class AppState {
         guard !grokPids.isEmpty else { return [] }
 
         let fm = FileManager.default
-        let knownRoots = ConfigInstaller.grokHomes()
-        let liveProcesses = grokPids.compactMap { pid -> (pid: pid_t, cwd: String, startedAt: Date?, roots: [String])? in
+        let liveProcesses = grokPids.compactMap { pid -> GrokDiscoveryProcess? in
             guard let cwd = getCwd(for: pid), !cwd.isEmpty, !isSubagentWorktree(cwd) else { return nil }
-            // The GROK_HOME this process runs with, or every root if unreadable.
-            let roots = sessionRoots(forProcess: pid, cli: .grok, knownRoots: knownRoots, defaultRoot: defaultGrokRoot)
-            return (pid, cwd, getProcessStartTime(pid), roots)
+            return GrokDiscoveryProcess(pid: pid, cwd: cwd, startedAt: getProcessStartTime(pid))
         }
-        // Processes compete for sessions only within one cwd *and* one root:
-        // two accounts working in the same project keep separate stores.
-        let processGroups = Dictionary(grouping: liveProcesses) { ([$0.cwd] + $0.roots).joined(separator: "\u{0}") }
+        // Processes compete for sessions only within one root (their
+        // GROK_HOME, grouped by identity) and one cwd: two accounts working in
+        // the same project keep separate stores. See ConfigRootDiscovery for
+        // processes whose environment cannot be read and for paused roots.
+        let scan = configRootScan(for: .grok)
+        return ConfigRootDiscovery.run(
+            processes: liveProcesses,
+            lookup: { scan.lookup(pid: $0.pid) },
+            fallbackRoots: scan.fallbackRoots,
+            discover: { root, processes, claimed in
+                grokSessions(for: processes, sessionsRoot: "\(root)/sessions", excluding: claimed, fm: fm)
+            },
+            sessionId: \.sessionId,
+            belongsTo: { $0.pid == $1.pid }
+        )
+    }
 
+    struct GrokDiscoveryProcess {
+        let pid: pid_t
+        let cwd: String
+        let startedAt: Date?
+    }
+
+    /// Grok sessions under one sessions root for `processes`, matched per cwd.
+    /// Sessions in `claimed` (already taken by another root's processes) are
+    /// not offered, so the matcher can hand a process its next-best one.
+    private nonisolated static func grokSessions(
+        for processes: [GrokDiscoveryProcess],
+        sessionsRoot: String,
+        excluding claimed: Set<String>,
+        fm: FileManager
+    ) -> [DiscoveredSession] {
         var results: [DiscoveredSession] = []
-        for (_, processes) in processGroups {
-            guard let cwd = processes.first?.cwd, let roots = processes.first?.roots else { continue }
-            var seenCandidateIds = Set<String>()
-            let candidates = roots
-                .flatMap { grokSessionCandidates(cwd: cwd, sessionsRoot: "\($0)/sessions", fm: fm) }
-                .filter { seenCandidateIds.insert($0.sessionId).inserted }
+        for (cwd, sameCwd) in Dictionary(grouping: processes, by: \.cwd) {
+            let candidates = grokSessionCandidates(cwd: cwd, sessionsRoot: sessionsRoot, fm: fm)
+                .filter { !claimed.contains($0.sessionId) }
             let assignments = matchGrokSessionsToProcesses(
-                processes: processes.map { ($0.pid, $0.startedAt) },
+                processes: sameCwd.map { ($0.pid, $0.startedAt) },
                 sessions: candidates.map { ($0.sessionId, $0.createdAt, $0.activityAt) }
             )
 
@@ -6954,37 +6991,37 @@ final class AppState {
         let codexPids = findCodexPids(candidatePids: candidatePids)
         guard !codexPids.isEmpty else { return [] }
 
-        // Each process is matched against the root it runs with (its
-        // CODEX_HOME); one whose environment cannot be read tries every root.
-        let knownRoots = ConfigInstaller.codexHomes()
-        var processesByRoot: [String: [CodexProcessDiscoveryCandidate]] = [:]
-        var rootOrder: [String] = []
-        for pid in codexPids {
-            let candidate = CodexProcessDiscoveryCandidate(
+        let processes = codexPids.map { pid in
+            CodexProcessDiscoveryCandidate(
                 pid: pid,
                 cwd: getCwd(for: pid),
                 startTime: getProcessStartTime(pid),
                 isDesktop: executablePath(for: pid).map(isCodexExecutablePath) ?? false
             )
-            for root in sessionRoots(forProcess: pid, cli: .codex, knownRoots: knownRoots, defaultRoot: defaultCodexRoot) {
-                if processesByRoot[root] == nil { rootOrder.append(root) }
-                processesByRoot[root, default: []].append(candidate)
-            }
         }
 
-        var results: [DiscoveredSession] = []
-        var seenSessionIds: Set<String> = []
-        for root in rootOrder {
-            let discovered = discoverCodexSessions(
-                processes: processesByRoot[root] ?? [],
-                sessionsBase: "\(root)/sessions",
-                statePath: "\(root)/state_5.sqlite"
-            )
-            for session in discovered where seenSessionIds.insert(session.sessionId).inserted {
-                results.append(session)
+        // Each process is matched against the root it runs with (its
+        // CODEX_HOME, grouped by identity). One whose environment cannot be
+        // read lands in the first fallback root that has a session for it —
+        // never in every root. Paused roots are skipped (ConfigRootDiscovery).
+        let scan = configRootScan(for: .codex)
+        return ConfigRootDiscovery.run(
+            processes: processes,
+            lookup: { scan.lookup(pid: $0.pid) },
+            fallbackRoots: scan.fallbackRoots,
+            discover: { root, group, _ in
+                discoverCodexSessions(
+                    processes: group,
+                    sessionsBase: "\(root)/sessions",
+                    statePath: "\(root)/state_5.sqlite"
+                )
+            },
+            sessionId: \.sessionId,
+            // Desktop threads come from the state DB without a pid.
+            belongsTo: { session, process in
+                session.pid == process.pid || (session.pid == nil && process.isDesktop)
             }
-        }
-        return results
+        )
     }
 
     /// Filesystem/state-DB portion of Codex discovery, split from process
