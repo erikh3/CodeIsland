@@ -2582,6 +2582,7 @@ private struct SessionCard: View {
     @AppStorage(SettingsKey.autoCollapseAfterSessionJump) private var autoCollapseAfterSessionJump = SettingsDefaults.autoCollapseAfterSessionJump
     @AppStorage(SettingsKey.showTaskProgress) private var showTaskProgress = SettingsDefaults.showTaskProgress
     @AppStorage(SettingsKey.showSessionRecap) private var showSessionRecap = SettingsDefaults.showSessionRecap
+    @AppStorage(SettingsKey.showModelLabel) private var showModelLabel = SettingsDefaults.showModelLabel
     private var fontSize: CGFloat { CGFloat(contentFontSize) }
     private var aiLineLimit: Int? { aiMessageLines > 0 ? aiMessageLines : nil }
     private var approvalQueueIndex: Int? {
@@ -2647,7 +2648,7 @@ private struct SessionCard: View {
                             HStack(spacing: 1) {
                                 ForEach(row, id: \.agentId) { sub in
                                     MiniAgentIcon(active: sub.status != .idle, size: 8)
-                                        .help(subagentTooltipText(sub))
+                                        .help(subagentTooltipText(sub, showModel: showModelLabel))
                                 }
                             }
                         }
@@ -2683,6 +2684,11 @@ private struct SessionCard: View {
                         }
                         if session.isYoloMode == true {
                             SessionTag("YOLO", color: Color(red: 1.0, green: 0.35, blue: 0.35))
+                        }
+                        if showModelLabel, let modelLabel = session.modelLabel {
+                            SessionTag(modelLabel, color: SessionMetadataStyle.modelTagColor)
+                                .lineLimit(1)
+                                .help(session.model ?? modelLabel)
                         }
                         SessionTag(timeAgo(session.startTime))
                         TerminalBadge(session: session)
@@ -3596,8 +3602,12 @@ private func shortSessionId(_ id: String) -> String {
 /// the SwiftUI ViewBuilder so the body stays trivial — complex inline
 /// expressions in ForEach were measurably slowing the hover-expand
 /// animation per #141 review.
-private func subagentTooltipText(_ sub: SubagentState) -> String {
-    let typeLabel = sub.agentType.isEmpty ? "Subagent" : sub.agentType
+private func subagentTooltipText(_ sub: SubagentState, showModel: Bool = false) -> String {
+    var typeLabel = sub.agentType.isEmpty ? "Subagent" : sub.agentType
+    // The subagent's own model — it often differs from the parent card's tag.
+    if showModel, let model = sub.modelLabel {
+        typeLabel += " · \(model)"
+    }
     var detail = ""
     if let tool = sub.currentTool, !tool.isEmpty {
         detail = tool
@@ -3608,9 +3618,10 @@ private func subagentTooltipText(_ sub: SubagentState) -> String {
     return detail.isEmpty ? typeLabel : "\(typeLabel) — \(detail)"
 }
 
-// MARK: - Session metadata (recap)
+// MARK: - Session metadata (recap + model tag)
 
 enum SessionMetadataStyle {
+    static let modelTagColor = Color(red: 0.55, green: 0.82, blue: 0.78)
     /// Recap glyph tint — distinct from the green ">" user and orange "$"
     /// reply markers so a recap never reads as the agent speaking.
     static let recapAccent = Color(red: 0.6, green: 0.68, blue: 1.0)

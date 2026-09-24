@@ -952,6 +952,7 @@ private struct AppearancePage: View {
     @AppStorage(SettingsKey.showGitBranch) private var showGitBranch = SettingsDefaults.showGitBranch
     @AppStorage(SettingsKey.showTaskProgress) private var showTaskProgress = SettingsDefaults.showTaskProgress
     @AppStorage(SettingsKey.showSessionRecap) private var showSessionRecap = SettingsDefaults.showSessionRecap
+    @AppStorage(SettingsKey.showModelLabel) private var showModelLabel = SettingsDefaults.showModelLabel
     @AppStorage(SettingsKey.showUsageStats) private var showUsageStats = SettingsDefaults.showUsageStats
     @AppStorage(SettingsKey.showClaudeQuota) private var showClaudeQuota = SettingsDefaults.showClaudeQuota
     @AppStorage(SettingsKey.collapsedWidthScale) private var collapsedWidthScale = SettingsDefaults.collapsedWidthScale
@@ -1086,6 +1087,12 @@ private struct AppearancePage: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Toggle(l10n["show_session_recap"], isOn: $showSessionRecap)
                     Text(l10n["show_session_recap_desc"])
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Toggle(l10n["show_model_label"], isOn: $showModelLabel)
+                    Text(l10n["show_model_label_desc"])
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }

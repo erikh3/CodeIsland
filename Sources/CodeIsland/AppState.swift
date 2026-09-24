@@ -359,6 +359,12 @@ final class AppState {
         }
     }
     private var modelReadRetryAt: [String: Date] = [:]
+    /// Per parent session → subagent id: the subagent's own model/effort once
+    /// read from its transcript, and when to retry while the file has none yet.
+    @ObservationIgnored
+    var subagentModelObservations: [String: [String: ModelObservation]] = [:]
+    @ObservationIgnored
+    var subagentModelReadRetryAt: [String: [String: Date]] = [:]
 
     private var dismissedPermissionSessionIds: Set<String> = [] {
         didSet { followUps.waitingChanged() }
@@ -918,6 +924,8 @@ final class AppState {
         detachTranscriptTailer(sessionId: sessionId)
         exitingSessions.removeValue(forKey: sessionId)
         modelReadRetryAt.removeValue(forKey: sessionId)
+        subagentModelObservations.removeValue(forKey: sessionId)
+        subagentModelReadRetryAt.removeValue(forKey: sessionId)
         hostHarnessProbes.removeValue(forKey: sessionId)
         hostHarnessProbeRetryAt.removeValue(forKey: sessionId)
         completionQueue.removeAll { $0 == sessionId }
@@ -1585,6 +1593,9 @@ final class AppState {
         // so retry with a cooldown instead of giving up permanently on the first miss.
         if sessions[sessionId]?.isRemote != true {
             maybeBackfillModel(for: sessionId)
+            if let agentId = event.agentId {
+                maybeBackfillSubagentModel(sessionId: sessionId, agentId: agentId, event: event)
+            }
         }
 
         // Session was waiting and got an activity event. Historically we'd
@@ -4272,7 +4283,10 @@ final class AppState {
                 child.source = "codex"
                 child.providerSessionId = agentId
                 child.cwd = child.cwd ?? parent.session.cwd
-                child.model = child.model ?? parent.session.model
+                // The child's own model (its hooks, then its rollout below) —
+                // never the parent's: children routinely run on another model.
+                child.model = child.model ?? subagent.model
+                child.reasoningEffort = child.reasoningEffort ?? subagent.reasoningEffort
                 child.permissionMode = child.permissionMode ?? parent.session.permissionMode
                 child.termApp = child.termApp ?? parent.session.termApp
                 child.itermSessionId = child.itermSessionId ?? parent.session.itermSessionId
@@ -4369,7 +4383,9 @@ final class AppState {
                 child.source = parent.session.source
                 child.providerSessionId = agentId
                 child.cwd = child.cwd ?? parent.session.cwd
-                child.model = child.model ?? parent.session.model
+                // Own model only, never the parent chat's (see the Codex split).
+                child.model = child.model ?? subagent.model
+                child.reasoningEffort = child.reasoningEffort ?? subagent.reasoningEffort
                 child.permissionMode = child.permissionMode ?? parent.session.permissionMode
                 child.termApp = child.termApp ?? parent.session.termApp
                 child.itermSessionId = child.itermSessionId ?? parent.session.itermSessionId
@@ -7596,6 +7612,7 @@ final class AppState {
         guard let text = readTranscriptTail(path: path) else { return (nil, []) }
 
         var model: String?
+        var turnModel: String?
         var userMessages: [(Int, String)] = []
         var assistantMessages: [(Int, String)] = []
         var index = 0
@@ -7612,6 +7629,13 @@ final class AppState {
                let payload = json["payload"] as? [String: Any] {
                 model = payload["model"] as? String
                     ?? payload["model_provider"] as? String
+            }
+            // turn_context names the model each turn actually ran on; current
+            // session_meta only has the provider ("openai"), which is no label.
+            if type == "turn_context",
+               let payload = json["payload"] as? [String: Any],
+               let observation = ModelObservation.from(model: payload["model"], effort: nil) {
+                turnModel = observation.model
             }
 
             // Prefer event_msg (cleaner user messages from Codex).
@@ -7653,7 +7677,7 @@ final class AppState {
         combined.sort { $0.0 < $1.0 }
         let recent = Array(combined.suffix(3).map { $0.1 })
 
-        return (model, recent)
+        return (turnModel ?? model, recent)
     }
 
     /// Read model and last 3 user/assistant messages from a transcript file's tail

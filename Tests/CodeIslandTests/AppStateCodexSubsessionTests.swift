@@ -626,6 +626,7 @@ final class AppStateCodexSubsessionTests: XCTestCase {
         var subagent = SubagentState(agentId: "child-thread", agentType: "worker")
         subagent.currentTool = "sleep"
         subagent.toolDescription = "sleep 45"
+        subagent.model = "gpt-test-mini"
         parent.subagents["child-thread"] = subagent
         appState.sessions["parent"] = parent
 
@@ -636,7 +637,8 @@ final class AppStateCodexSubsessionTests: XCTestCase {
         XCTAssertEqual(appState.sessions["child-thread"]?.source, "codex")
         XCTAssertEqual(appState.sessions["child-thread"]?.providerSessionId, "child-thread")
         XCTAssertEqual(appState.sessions["child-thread"]?.cwd, "/repo")
-        XCTAssertEqual(appState.sessions["child-thread"]?.model, "gpt-test")
+        // The child keeps its own model; the parent's "gpt-test" must not leak in.
+        XCTAssertEqual(appState.sessions["child-thread"]?.model, "gpt-test-mini")
         XCTAssertEqual(appState.sessions["child-thread"]?.remoteHostId, "test-remote")
         XCTAssertEqual(appState.sessions["child-thread"]?.remoteHostName, "Test Remote")
         XCTAssertEqual(appState.sessions["child-thread"]?.currentTool, "sleep")
