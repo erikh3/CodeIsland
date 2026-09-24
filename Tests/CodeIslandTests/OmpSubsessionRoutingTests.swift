@@ -34,9 +34,10 @@ final class OmpSubsessionRoutingTests: XCTestCase {
 
     private func route(
         appState: AppState,
-        payload: [String: Any]
+        payload: [String: Any],
+        parentPidLookup: @escaping (pid_t) -> pid_t? = { _ in nil }
     ) throws -> (processedData: Data, responseData: Data?, raw: [String: Any]) {
-        let server = HookServer(appState: appState)
+        let server = HookServer(appState: appState, parentPidLookup: parentPidLookup)
         let data = try JSONSerialization.data(withJSONObject: payload)
         let routed = server.routeSubsessionPayloadIfNeededForTesting(data: data)
         let raw = try XCTUnwrap(
@@ -363,6 +364,133 @@ final class OmpSubsessionRoutingTests: XCTestCase {
                 XCTAssertNil(routed.raw["agent_id"],
                     "agent_id should be nil for case: \(c.label)")
             }
+        }
+    }
+
+    // MARK: - Supervised OMP process routing
+
+    func testNestedOmpProcessMergesIntoAncestorSession() throws {
+        try withPluginSessionMode("merge") {
+            let appState = AppState()
+            var parent = makeRunningSession()
+            parent.cliPid = 4_100
+            appState.sessions[rootId] = parent
+
+            let parents: [pid_t: pid_t] = [4_300: 4_200, 4_200: 4_100, 4_100: 1]
+            let routed = try route(
+                appState: appState,
+                payload: [
+                    "session_id": childId,
+                    "_source": "pi",
+                    "_ppid": 4_300,
+                    "hook_event_name": "SessionStart",
+                    "cwd": "/project",
+                ],
+                parentPidLookup: { parents[$0] }
+            )
+
+            XCTAssertEqual(routed.raw["session_id"] as? String, rootId)
+            XCTAssertEqual(routed.raw["agent_id"] as? String, childId)
+            XCTAssertEqual(routed.raw["agent_type"] as? String, "omp")
+            XCTAssertEqual(routed.raw["_omp_child_session_id"] as? String, childId)
+            XCTAssertEqual(routed.raw["_omp_subagent"] as? Bool, true)
+        }
+    }
+
+    func testNestedOmpProcessInSeparateModeDoesNotReplaceParentCard() throws {
+        try withPluginSessionMode("separate") {
+            let appState = AppState()
+            var parent = makeRunningSession()
+            parent.cliPid = 4_100
+            appState.sessions[rootId] = parent
+
+            let parents: [pid_t: pid_t] = [4_300: 4_200, 4_200: 4_100, 4_100: 1]
+            let routed = try route(
+                appState: appState,
+                payload: [
+                    "session_id": childId,
+                    "_source": "pi",
+                    "_ppid": 4_300,
+                    "hook_event_name": "SessionStart",
+                    "cwd": "/project",
+                ],
+                parentPidLookup: { parents[$0] }
+            )
+
+            XCTAssertEqual(routed.raw["session_id"] as? String, childId)
+            XCTAssertEqual(routed.raw["_omp_parent_session_id"] as? String, rootId)
+            XCTAssertEqual(routed.raw["_omp_subagent"] as? Bool, true)
+
+            let event = try XCTUnwrap(HookEvent(from: routed.processedData))
+            appState.handleEvent(event)
+            XCTAssertNotNil(appState.sessions[rootId])
+            XCTAssertNotNil(appState.sessions[childId])
+        }
+    }
+
+    func testRestoreCleanupRemovesNestedOmpProcessInMergeMode() {
+        withPluginSessionMode("merge") {
+            let appState = AppState()
+            var parent = makeRunningSession()
+            parent.status = .idle
+            parent.cliPid = 4_100
+            appState.sessions[rootId] = parent
+
+            var child = makeRunningSession()
+            child.status = .idle
+            child.cliPid = 4_300
+            appState.sessions[childId] = child
+
+            let parents: [pid_t: pid_t] = [4_300: 4_200, 4_200: 4_100, 4_100: 1]
+            appState.removeRestoredNestedOmpSessions(parentPidLookup: { parents[$0] })
+
+            XCTAssertNotNil(appState.sessions[rootId])
+            XCTAssertNil(appState.sessions[childId])
+        }
+    }
+
+    func testRestoreCleanupPreservesNestedOmpProcessInSeparateMode() {
+        withPluginSessionMode("separate") {
+            let appState = AppState()
+            var parent = makeRunningSession()
+            parent.status = .idle
+            parent.cliPid = 4_100
+            appState.sessions[rootId] = parent
+
+            var child = makeRunningSession()
+            child.status = .idle
+            child.cliPid = 4_300
+            appState.sessions[childId] = child
+
+            let parents: [pid_t: pid_t] = [4_300: 4_200, 4_200: 4_100, 4_100: 1]
+            appState.removeRestoredNestedOmpSessions(parentPidLookup: { parents[$0] })
+
+            XCTAssertNotNil(appState.sessions[rootId])
+            XCTAssertNotNil(appState.sessions[childId])
+        }
+    }
+
+    func testIndependentOmpProcessIsNotRoutedBySharedPaneAlone() throws {
+        try withPluginSessionMode("merge") {
+            let appState = AppState()
+            var parent = makeRunningSession()
+            parent.cliPid = 4_100
+            appState.sessions[rootId] = parent
+
+            let routed = try route(
+                appState: appState,
+                payload: [
+                    "session_id": childId,
+                    "_source": "pi",
+                    "_ppid": 5_000,
+                    "hook_event_name": "SessionStart",
+                    "cwd": "/project",
+                ],
+                parentPidLookup: { _ in 1 }
+            )
+
+            XCTAssertEqual(routed.raw["session_id"] as? String, childId)
+            XCTAssertNil(routed.raw["_omp_subagent"])
         }
     }
 

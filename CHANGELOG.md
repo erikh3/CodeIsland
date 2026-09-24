@@ -35,6 +35,7 @@
 ## [v1.0.34] - 2026-09-23
 
 ### English
+- Oh My Pi 18.3 supervised processes no longer appear as unrelated root sessions. A nested `omp` launched through `bash` is now recognized through its process ancestry and follows the Agent Sub-Sessions separate, merge, or hide setting, while independent OMP processes remain separate.
 - Multiple sessions no longer cross answers. The question card kept its wizard state — collected answers, selection, typed text — in SwiftUI state that wasn't tied to its request, so answering session A's card and having session B's slide into the same slot handed B the answer you'd given A. Each request now gets its own card, and a submission that doesn't match the request's questions is refused rather than mapped by position. Also: an iPhone answer to a question that wasn't at the head of the queue is no longer dropped (#333, thanks @moluoyingxiong)
 - `AskUserQuestion` is no longer "denied by hook" while a background subagent is running. Subagents report under the parent's session id, and any of their activity counted as "answered in the terminal"; every drain is now scoped to the agent that asked (#340/#345, thanks @seahindeniz and @halindrome)
 - Oh My Pi 18.2.x: the CodeIsland extension loads again. OMP stopped exporting the native Ask renderer, the extension threw at load, and OMP sessions, approvals and questions silently stopped reaching the island. The renderer is now optional; installed copies upgrade to v8 automatically (#346/#347, thanks @johnpoint and @haixing23)
@@ -52,6 +53,7 @@
 - Docs: both READMEs rewritten — the full 30+ tool list with animated mascots for every tool (transparent, readable in light and dark), setup notes, where each integration installs, a privacy note, and new screenshots rendered from the real UI with demo data
 
 ### 中文
+- Oh My Pi 18.3 的受管进程不再显示成无关的根会话。通过 `bash` 启动的嵌套 `omp` 现在会根据进程祖先关系识别，并遵循 Agent 子会话的独立、合并或隐藏设置；彼此独立的 OMP 进程仍保持独立显示。
 - 多会话不再串答案。提问卡片把向导状态（已收集的答案、选中项、输入的文字）存在没有和请求绑定的 SwiftUI 状态里，答完会话 A 的卡片后，会话 B 的卡片顶到同一个位置，就把你给 A 的答案交给了 B。现在每个请求一张独立卡片，答案和请求的问题对不上时直接拒收，不再按位置硬套。另外：用 iPhone 回答不在队首的提问时，答案不再被静默丢掉（#333，感谢 @moluoyingxiong）
 - 后台子 Agent 运行时，`AskUserQuestion` 不再被「denied by hook」。子 Agent 用父会话的 id 上报，它的任何活动都被当成「已在终端里回答」；现在所有清理逻辑都只作用于发起请求的那个 Agent（#340/#345，感谢 @seahindeniz 和 @halindrome）
 - Oh My Pi 18.2.x：CodeIsland 扩展恢复加载。OMP 不再导出原生 Ask 渲染器，扩展一加载就抛错，OMP 的会话、审批和提问都悄悄不再出现在刘海上。渲染器现在是可选的；已安装的扩展会自动升级到 v8（#346/#347，感谢 @johnpoint 和 @haixing23）

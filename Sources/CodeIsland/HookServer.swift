@@ -14,13 +14,19 @@ class HookServer {
     }
 
     private let appState: AppState
+    private let parentPidLookup: (pid_t) -> pid_t?
     nonisolated static var socketPath: String { SocketPath.path }
     private var listener: NWListener?
     private let webhookForwarder: WebhookForwarder
 
-    init(appState: AppState, webhookForwarder: WebhookForwarder? = nil) {
+    init(
+        appState: AppState,
+        webhookForwarder: WebhookForwarder? = nil,
+        parentPidLookup: @escaping (pid_t) -> pid_t? = AppState.parentPid(of:)
+    ) {
         self.appState = appState
         self.webhookForwarder = webhookForwarder ?? WebhookForwarder(appState: appState)
+        self.parentPidLookup = parentPidLookup
         appState.webhookForwarder = self.webhookForwarder
     }
 
@@ -314,6 +320,7 @@ class HookServer {
     private static let cursorCliSourceExactBytes = Data(#""_source":"cursor-cli""#.utf8)
     private static let ppidKeyBytes = Data(#""_ppid""#.utf8)
     private static let ompSubagentMarkerBytes = Data(#""_omp_subagent""#.utf8)
+    private static let ompSourceExactBytes = Data(#""_source":"pi""#.utf8)
     /// JSON `\uXXXX` escape — only then do we fall back to a full parse.
     private static let jsonUnicodeEscapeBytes = Data(#"\u"#.utf8)
     private static let cursorSourceFlexibleRegex: NSRegularExpression = {
@@ -621,6 +628,52 @@ class HookServer {
         }
     }
 
+    /// OMP 18.3 supervised processes inherit their launching session's process
+    /// ancestry but run a fresh OMP session. Treat a nested OMP process like a
+    /// child session so Agent Sub-Sessions settings still apply.
+    private func routeNestedOmpProcessIfNeeded(
+        data: Data,
+        raw: [String: Any],
+        mode: String
+    ) -> (processedData: Data, responseData: Data?)? {
+        guard (raw["_omp_subagent"] as? Bool) != true,
+              SessionSnapshot.normalizedSupportedSource(raw["_source"] as? String) == "pi",
+              let childSessionId = Self.rawSessionId(from: raw),
+              let processId = Self.pluginPpid(from: raw) else {
+            return nil
+        }
+
+        guard let parentSessionId = appState.findAncestorSessionId(
+            forSource: "pi",
+            processId: pid_t(processId),
+            excluding: childSessionId,
+            requireActive: true,
+            parentPidLookup: parentPidLookup
+        ) else {
+            return nil
+        }
+
+        if mode == "merge" || mode == "hide" {
+            appState.removeSession(childSessionId)
+        }
+
+        var child = raw
+        child["_omp_subagent"] = true
+        child["_omp_parent_session_id"] = parentSessionId
+        child["_omp_agent_id"] = childSessionId
+        child["_omp_agent_type"] = "omp"
+        let childData = Self.serializeOrFallback(child, fallback: data)
+        return applyOmpRouting(
+            data: childData,
+            raw: child,
+            childSessionId: childSessionId,
+            parentSessionId: parentSessionId,
+            agentId: childSessionId,
+            agentType: "omp",
+            mode: mode
+        )
+    }
+
     private func routeSubsessionPayloadIfNeeded(data: Data) -> (processedData: Data, responseData: Data?) {
         let mode = UserDefaults.standard.string(forKey: SettingsKey.pluginSessionMode)
             ?? SettingsDefaults.pluginSessionMode
@@ -646,6 +699,19 @@ class HookServer {
             case .passThrough:
                 break
             }
+        }
+
+        // OMP 18.3 moved long-running commands to a supervised process broker.
+        // A nested `omp` launched through that path has a distinct session id
+        // and PID, but its process ancestry still reaches the active parent OMP.
+        // Route it through the same separate / merge / hide policy as native
+        // task children instead of displaying it as an unrelated root session.
+        let mayBeNestedOmpProcess = data.range(of: Self.ompSourceExactBytes) != nil
+            && data.range(of: Self.ppidKeyBytes) != nil
+        if mayBeNestedOmpProcess,
+           let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let routed = routeNestedOmpProcessIfNeeded(data: data, raw: raw, mode: mode) {
+            return routed
         }
 
         let mayNeedPluginOrCodex = data.range(of: Self.pluginMarkerBytes) != nil
