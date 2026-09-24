@@ -101,7 +101,9 @@ func buildAncestry(startingAt pid: pid_t, maxDepth: Int = 6) -> [(pid: pid_t, ex
 func debugLog(_ message: String) {
     let ts = ISO8601DateFormatter().string(from: Date())
     let line = "[\(ts)] \(message)\n"
-    let path = "/tmp/codeisland-bridge.log"
+    // CODEISLAND_BRIDGE_LOG moves the log: the tests that run this binary point
+    // it at a temp file, so their payloads stay out of the log real hooks append to.
+    let path = ProcessInfo.processInfo.environment["CODEISLAND_BRIDGE_LOG"] ?? "/tmp/codeisland-bridge.log"
     if let handle = FileHandle(forWritingAtPath: path) {
         handle.seekToEndOfFile()
         handle.write(Data(line.utf8))

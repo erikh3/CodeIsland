@@ -338,7 +338,14 @@ final class GoogleAntigravitySupportTests: XCTestCase {
         let process = Process()
         process.executableURL = bridge
         process.arguments = args
-        process.environment = env.merging(["PATH": "/usr/bin:/bin"]) { current, _ in current }
+        // The bridge's debug log goes to a temp file, not the shared
+        // /tmp/codeisland-bridge.log the user's real hooks write.
+        let log = NSTemporaryDirectory() + "codeisland-bridge-test-\(getpid()).log"
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: log) }
+        process.environment = env.merging([
+            "PATH": "/usr/bin:/bin",
+            "CODEISLAND_BRIDGE_LOG": log,
+        ]) { current, _ in current }
         let stdin = Pipe()
         let stdout = Pipe()
         process.standardInput = stdin
