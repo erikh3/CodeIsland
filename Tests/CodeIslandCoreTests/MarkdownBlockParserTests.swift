@@ -284,6 +284,30 @@ final class MarkdownBlockParserTests: XCTestCase {
         XCTAssertEqual(table.rows, [["1", "", ""], ["1", "2", "3"]])
     }
 
+    func testStrayLineOfPipesCannotWidenATableWithoutBound() {
+        // A line of 300 pipes under a table used to make it 299 columns wide.
+        let body = (1...200).map { "| \($0) | row |" }.joined(separator: "\n")
+        let text = "| a | b |\n|---|---|\n" + body + "\n" + String(repeating: "|", count: 300)
+        let start = Date()
+        guard let table = table(parse(text).first) else { return }
+        XCTAssertLessThan(Date().timeIntervalSince(start) * 1000, 200)
+        XCTAssertEqual(table.columnCount, MarkdownBlockParser.maxTableColumns)
+        XCTAssertEqual(table.alignments.count, MarkdownBlockParser.maxTableColumns)
+        XCTAssertTrue(table.rows.allSatisfy { $0.count == MarkdownBlockParser.maxTableColumns })
+        XCTAssertEqual(table.rows.count, 201)
+        XCTAssertEqual(table.rows.last, Array(repeating: "", count: MarkdownBlockParser.maxTableColumns))
+    }
+
+    func testCellsPastTheColumnCapJoinTheLastColumn() {
+        let cells = (1...20).map { "c\($0)" }
+        let text = "| h |\n|---|\n| " + cells.joined(separator: " | ") + " |"
+        guard let table = table(parse(text).first) else { return }
+        let row = table.rows[0]
+        XCTAssertEqual(row.count, MarkdownBlockParser.maxTableColumns)
+        XCTAssertEqual(Array(row.prefix(15)), Array(cells.prefix(15)))
+        XCTAssertEqual(row.last, "c16 | c17 | c18 | c19 | c20", "no cell is dropped")
+    }
+
     func testTableEndsAtBlankOrPipelessLine() {
         let blocks = parse("| a |\n|---|\n| 1 |\nafter\n\n| b |\n|---|\n| 2 |\n\nnext")
         XCTAssertEqual(blocks.count, 4)

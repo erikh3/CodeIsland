@@ -579,18 +579,31 @@ public enum MarkdownBlockParser {
             i += 1
         }
         // GFM clips cells beyond the header's count; widen the table instead
-        // so a model's miscounted row never silently loses content.
-        let columnCount = ([header.count, delimiterAlignments.count] + rows.map(\.count)).max() ?? 0
-        func padded<T>(_ values: [T], with filler: T) -> [T] {
-            values + Array(repeating: filler, count: max(0, columnCount - values.count))
+        // so a model's miscounted row never silently loses content — up to
+        // maxTableColumns: a stray line of pipes would otherwise make
+        // hundreds of columns and tens of thousands of cells.
+        let widest = ([header.count, delimiterAlignments.count] + rows.map(\.count)).max() ?? 0
+        let columnCount = min(widest, maxTableColumns)
+        func fitted(_ cells: [String]) -> [String] {
+            guard cells.count > columnCount else {
+                return cells + Array(repeating: "", count: columnCount - cells.count)
+            }
+            // The overflow stays readable in the last column, pipes and all.
+            let kept = cells.prefix(columnCount - 1)
+            let rest = cells.dropFirst(columnCount - 1).filter { !$0.isEmpty }
+            return Array(kept) + [rest.joined(separator: " | ")]
         }
+        let alignments = Array(delimiterAlignments.prefix(columnCount))
         let table = MarkdownTable(
-            header: padded(header, with: ""),
-            alignments: padded(delimiterAlignments, with: .automatic),
-            rows: rows.map { padded($0, with: "") }
+            header: fitted(header),
+            alignments: alignments + Array(repeating: .automatic, count: columnCount - alignments.count),
+            rows: rows.map(fitted)
         )
         return (table, i)
     }
+
+    /// Widest table the parser builds; cells past it join the last column.
+    static let maxTableColumns = 16
 
     /// Splits a table row on unescaped pipes. Pipes inside `code spans` stay
     /// in their cell even unescaped — GFM would split there, but models write
