@@ -55,9 +55,18 @@ enum SessionPersistence {
     private static let dirPath = FileManager.default.homeDirectoryForCurrentUser.path + "/.codeisland"
     private static let filePath = dirPath + "/sessions.json"
 
+    /// Whether a card is written out for the next launch. Not a remote one,
+    /// and not a Claude Desktop Cowork card: those are rebuilt from Claude
+    /// Desktop's own store and vouched for by it at launch, and a CodeIsland
+    /// that cannot read the store (an older build after a downgrade) would
+    /// bring one back as a ghost Claude Code session.
+    static func isPersisted(sessionId: String, session: SessionSnapshot) -> Bool {
+        !session.isRemote && !sessionId.hasPrefix(AppState.coworkSessionPrefix)
+    }
+
     static func save(_ sessions: [String: SessionSnapshot]) {
         let persisted: [PersistedSession] = sessions.compactMap { (id, s) in
-            guard !s.isRemote else { return nil }
+            guard isPersisted(sessionId: id, session: s) else { return nil }
             return PersistedSession(
                 sessionId: id,
                 cwd: s.cwd,

@@ -266,6 +266,21 @@ final class AppStateCoworkWatchTests: XCTestCase {
         XCTAssertNotNil(appState.sessions[key], "local Chat sessions are shown like Cowork tasks")
     }
 
+    func testCoworkCardsAreNotWrittenToSessionsJSON() throws {
+        let appState = AppState()
+        appState.applyCoworkUpdate(update(audit: audit([CoworkAuditFixture.userPrompt, CoworkAuditFixture.resultSuccess])))
+        let card = try XCTUnwrap(appState.sessions[key])
+        XCTAssertNotNil(card.lastUserPrompt, "what an older build would restore as a ghost Claude card")
+        XCTAssertFalse(SessionPersistence.isPersisted(sessionId: key, session: card))
+
+        // A hook-driven Claude Code session — even one hosted by Claude
+        // Desktop — is still saved.
+        XCTAssertTrue(SessionPersistence.isPersisted(sessionId: cliSessionId, session: card))
+        var remote = SessionSnapshot()
+        remote.remoteHostId = "devbox"
+        XCTAssertFalse(SessionPersistence.isPersisted(sessionId: "remote-1", session: remote))
+    }
+
     func testLaunchSnapshotReplacesRestoredCards() throws {
         let appState = AppState()
         // What SessionPersistence restored from the previous run.
