@@ -16,6 +16,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Read before anything else: the launch Apple Event that says "login
+        // item" is only current during this synchronous call.
+        let isLoginLaunch = LaunchContext.isCurrentLaunchAtLogin()
         ProcessInfo.processInfo.disableAutomaticTermination("CodeIsland must stay running")
         ProcessInfo.processInfo.disableSuddenTermination()
         // Pre-set app icon so Dock/menu bar use the packaged bundle icon.
@@ -144,7 +147,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // no-ops for Homebrew-installed builds (brew owns those upgrades).
         UpdateChecker.shared.start()
 
-        SoundManager.shared.playBoot()
+        // The jingle confirms a launch the user just made; at login it is
+        // noise on every boot for everyone with Launch at Login on.
+        if isLoginLaunch {
+            Self.log.info("Launched at login — skipping boot sound")
+        } else {
+            SoundManager.shared.playBoot()
+        }
         setupGlobalShortcut()
 
         // Boot animation: brief expand to confirm app is running
