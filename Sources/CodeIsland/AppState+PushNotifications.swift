@@ -71,18 +71,22 @@ extension AppState {
 
     /// AiWork daemon turn boundary (its streams bypass the hook reducer).
     func pushAiWorkTurnEnded(_ eventName: String, sessionId: String) {
+        switch eventName {
+        case "stream.completed": pushTurnEnded(sessionId: sessionId, failed: false)
+        case "stream.failed": pushTurnEnded(sessionId: sessionId, failed: true)
+        default: return  // stream.aborted: the user stopped it
+        }
+    }
+
+    /// A turn ended in a source that bypasses the hook reducer (AiWork,
+    /// Claude Desktop Cowork): its completion, or its error when it failed.
+    func pushTurnEnded(sessionId: String, failed: Bool) {
         let notifier = PushNotifier.shared
         guard notifier.isEnabled else { return }
         let session = sessions[sessionId]
-        let content: PushContent
-        switch eventName {
-        case "stream.completed":
-            content = .completion(summary: Self.pushCompletionSummary(session))
-        case "stream.failed":
-            content = .error(type: nil, detail: session?.lastAssistantMessage)
-        default:
-            return  // stream.aborted: the user stopped it
-        }
+        let content: PushContent = failed
+            ? .error(type: nil, detail: session?.lastAssistantMessage)
+            : .completion(summary: Self.pushCompletionSummary(session))
         notifier.notify(
             content,
             subject: pushSubject(for: sessionId),

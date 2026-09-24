@@ -1,6 +1,6 @@
 import XCTest
 @testable import CodeIsland
-import CodeIslandCore
+@testable import CodeIslandCore
 
 /// Records requests instead of sending them: nothing in this suite reaches a
 /// real push service.
@@ -287,6 +287,45 @@ final class PushNotifierTests: XCTestCase {
         let body = try XCTUnwrap(sentBodies().first)
         XCTAssertEqual(body["subtitle"] as? String, "\(L10n.shared["push_msg_error"]) (rate_limit)")
         XCTAssertEqual(body["body"] as? String, "API Error: Rate limit reached")
+    }
+
+    /// Cowork turns end outside the hook reducer; they push all the same.
+    func testCoworkTurnPushesItsReply() async throws {
+        let appState = AppState()
+        let metadata = CoworkSessionMetadata(
+            sessionId: "local_push-cowork",
+            cliSessionId: "push-cowork-cli",
+            title: "Installer inventory",
+            cwd: "/sessions/bold-inspiring-tesla",
+            userSelectedFolders: ["/Users/alice/code/app"],
+            model: "claude-opus-4-5-20251101",
+            createdAt: Date(timeIntervalSinceNow: -3600),
+            lastActivityAt: Date(timeIntervalSinceNow: -60),
+            isArchived: false,
+            sessionType: nil
+        )
+        var audit = CoworkAuditState()
+        audit.apply([
+            CoworkAuditFixture.userPrompt,
+            CoworkAuditFixture.assistantReply,
+            CoworkAuditFixture.resultSuccess,
+        ].map { CoworkAuditParser.event(fromLine: Data($0.utf8)) })
+        appState.applyCoworkUpdate(CoworkSessionWatcher.SessionUpdate(
+            sessionId: metadata.sessionId,
+            metadata: metadata,
+            audit: audit,
+            transcriptPath: nil,
+            lastActivity: nil,
+            isLive: true,
+            promptsStarted: 1,
+            turnsCompleted: 1,
+            permissionsRequested: 0
+        ))
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark]))
+        await waitForRequests(1)
+        let body = try XCTUnwrap(sentBodies().first)
+        XCTAssertEqual(body["subtitle"] as? String, L10n.shared["push_msg_completion"])
+        XCTAssertEqual(body["body"] as? String, "Found a.dmg")
     }
 
     // MARK: Follow-up reminders

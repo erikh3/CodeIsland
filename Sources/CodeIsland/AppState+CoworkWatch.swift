@@ -179,6 +179,7 @@ extension AppState {
                 sessionId: key
             )
             enqueueCompletion(key)
+            pushTurnEnded(sessionId: key, failed: update.audit.lastTurnFailed)
         } else if update.permissionsRequested > 0,
                   snapshot.status == .waitingApproval || snapshot.status == .waitingQuestion {
             // Display-only wait, like Cursor's in-IDE question (#265): the sound
