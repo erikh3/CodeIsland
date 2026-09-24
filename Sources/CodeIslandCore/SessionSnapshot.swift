@@ -481,6 +481,13 @@ public struct SessionSnapshot: Sendable {
     /// NSCache is thread-safe and evicts under memory pressure.
     private static let cursorLeafCache = NSCache<NSString, NSString>()
 
+    /// The stat behind that walk. Tests describe the folders they need here
+    /// instead of creating them in the user's real home — the old tests made
+    /// and then recursively deleted `~/myproject` and `~/my-sample-app`.
+    static var cursorProjectFolderExists: (String) -> Bool = { path in
+        FileManager.default.fileExists(atPath: path)
+    }
+
     static func displayNameLeafFromCursorProjectsPath(_ cwd: String) -> String? {
         if let cached = cursorLeafCache.object(forKey: cwd as NSString) {
             return cached.length == 0 ? nil : (cached as String)
@@ -511,7 +518,6 @@ public struct SessionSnapshot: Sendable {
         guard !parts.isEmpty else { return nil }
 
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let fm = FileManager.default
         // Prefer the longest leaf whose prefix reconstructs to a real directory.
         for k in stride(from: parts.count - 1, through: 0, by: -1) {
             let leaf = parts[k...].joined(separator: "-")
@@ -520,7 +526,7 @@ public struct SessionSnapshot: Sendable {
                 return leaf
             }
             let relative = parts[..<k].joined(separator: "/") + "/" + leaf
-            if fm.fileExists(atPath: "\(home)/\(relative)") {
+            if cursorProjectFolderExists("\(home)/\(relative)") {
                 return leaf
             }
         }
