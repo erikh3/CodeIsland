@@ -64,6 +64,45 @@ extension PushDeliveryResult {
     }
 }
 
+/// One more try for a push that must not get lost to a hiccup: the server
+/// or the network had a bad moment, or asked to slow down. Anything else —
+/// a 4xx, a rejected signature, a refused redirect — would fail the same way
+/// again.
+public enum PushRetryPolicy {
+    public static let delay: TimeInterval = 5
+    /// A `Retry-After` longer than this is cut to it: an approval half a
+    /// minute late is still useful, one ten minutes late mostly isn't.
+    public static let maxDelay: TimeInterval = 30
+
+    /// Approvals and questions block an agent; an error says it stopped.
+    public static func retries(_ kind: PushEventKind) -> Bool {
+        switch kind {
+        case .permission, .question, .error: return true
+        case .completion, .reminder: return false
+        }
+    }
+
+    /// Seconds to wait before the retry, or nil when this outcome is not
+    /// worth one: no response at all, a 5xx, or a 429 (its `Retry-After`,
+    /// or Telegram's `parameters.retry_after`, capped at `maxDelay`).
+    public static func delay(after response: PushTransportResponse) -> TimeInterval? {
+        guard response.refusedRedirect == nil else { return nil }
+        guard let status = response.statusCode else { return delay }
+        if status == 429 {
+            let hinted = response.retryAfter ?? telegramRetryAfter(response.body) ?? delay
+            return min(max(hinted, 1), maxDelay)
+        }
+        return (500..<600).contains(status) ? delay : nil
+    }
+
+    private static func telegramRetryAfter(_ body: Data) -> TimeInterval? {
+        guard let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+              let parameters = json["parameters"] as? [String: Any],
+              let seconds = parameters["retry_after"] as? NSNumber else { return nil }
+        return seconds.doubleValue
+    }
+}
+
 public enum PushRedirectPolicy {
     public static let maxRedirects = 5
 

@@ -451,8 +451,23 @@ final class PushNotifier: ObservableObject {
             if !result.ok {
                 log.error("push to \(channel.kind.rawValue, privacy: .public) failed: \(result.loggableSummary(for: channel), privacy: .public)")
             }
-            self?.lastDelivery[channel.kind] = PushDeliveryRecord(date: self?.clock() ?? Date(), kind: item.kind, result: result)
+            guard let self else { return }
+            self.lastDelivery[channel.kind] = PushDeliveryRecord(date: self.clock(), kind: item.kind, result: result)
+            self.retryIfWorthIt(item, after: response, ok: result.ok)
         }
+    }
+
+    /// Approvals, questions and errors get one more try after a network
+    /// failure, a 5xx or a 429 — through the same queue, so the channel's
+    /// rate limit still holds and an approval answered meanwhile is dropped.
+    private func retryIfWorthIt(_ item: Outgoing, after response: PushTransportResponse, ok: Bool) {
+        guard !ok, item.attempt == 0, PushRetryPolicy.retries(item.kind),
+              let delay = PushRetryPolicy.delay(after: response) else { return }
+        var retry = item
+        retry.attempt += 1
+        retry.notBefore = clock().addingTimeInterval(delay)
+        log.info("push \(item.kind.rawValue, privacy: .public) to \(item.channel.kind.rawValue, privacy: .public): retrying in \(Int(delay))s")
+        enqueue(retry)
     }
 
     /// "Send test": bypasses every gate and the dedupe, and reports exactly

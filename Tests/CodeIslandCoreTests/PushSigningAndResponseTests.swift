@@ -147,6 +147,34 @@ final class PushSigningAndResponseTests: XCTestCase {
         XCTAssertEqual(redirected.redirectedTo, "https://bark.example.com:8443/…", "path and query can be credentials")
     }
 
+    // MARK: Retry
+
+    func testRetryOnlyAfterNetworkFailures5xxAnd429() {
+        func delay(_ response: PushTransportResponse) -> TimeInterval? { PushRetryPolicy.delay(after: response) }
+        XCTAssertEqual(delay(PushTransportResponse(statusCode: nil, errorDescription: "The network connection was lost.")), 5)
+        XCTAssertEqual(delay(PushTransportResponse(statusCode: 503)), 5)
+        XCTAssertEqual(delay(PushTransportResponse(statusCode: 429, retryAfter: 12)), 12)
+        XCTAssertEqual(delay(PushTransportResponse(statusCode: 429, retryAfter: 600)), 30, "capped")
+        XCTAssertEqual(delay(PushTransportResponse(statusCode: 429)), 5)
+        XCTAssertEqual(
+            delay(PushTransportResponse(
+                statusCode: 429,
+                body: Data(#"{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 7","parameters":{"retry_after":7}}"#.utf8)
+            )),
+            7,
+            "Telegram says it in the body"
+        )
+        XCTAssertNil(delay(PushTransportResponse(statusCode: 400)))
+        XCTAssertNil(delay(PushTransportResponse(statusCode: 403)))
+        XCTAssertNil(delay(PushTransportResponse(statusCode: 301, refusedRedirect: URL(string: "https://x.example")!)))
+
+        for kind in [PushEventKind.permission, .question, .error] {
+            XCTAssertTrue(PushRetryPolicy.retries(kind))
+        }
+        XCTAssertFalse(PushRetryPolicy.retries(.completion))
+        XCTAssertFalse(PushRetryPolicy.retries(.reminder))
+    }
+
     // MARK: Logging
 
     /// Server errors echo what they were sent; the log (exported with

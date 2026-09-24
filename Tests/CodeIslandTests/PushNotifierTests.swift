@@ -24,6 +24,27 @@ private final class RecordingTransport: PushTransport, @unchecked Sendable {
     }
 }
 
+/// Answers with each scripted response in turn (the last one repeats);
+/// records every request. Never touches the network.
+private final class ScriptedTransport: PushTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [PushHTTPRequest] = []
+    private var script: [PushTransportResponse]
+
+    init(_ script: [PushTransportResponse]) {
+        self.script = script
+    }
+
+    var requests: [PushHTTPRequest] { lock.withLock { recorded } }
+
+    func send(_ request: PushHTTPRequest) async -> PushTransportResponse {
+        lock.withLock {
+            recorded.append(request)
+            return script.count > 1 ? script.removeFirst() : script[0]
+        }
+    }
+}
+
 /// End to end from AppState's queues to the request a channel would send.
 @MainActor
 final class PushNotifierTests: XCTestCase {
@@ -714,6 +735,66 @@ final class PushNotifierTests: XCTestCase {
         await waitForRequests(2)
         XCTAssertEqual(slept, [1])
         XCTAssertEqual(transport.requests.count, 2)
+    }
+
+    // MARK: Retry
+
+    private let barkOK = PushTransportResponse(statusCode: 200, body: Data(#"{"code":200,"message":"success"}"#.utf8))
+
+    private func waitFor(_ scripted: ScriptedTransport, _ count: Int) async {
+        for _ in 0..<200 where scripted.requests.count < count {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
+    /// A 503 on an approval: one more try 5 s later, which lands.
+    func testApprovalIsRetriedOnceAfterAServerError() async {
+        controlTime()
+        let scripted = ScriptedTransport([PushTransportResponse(statusCode: 503, body: Data("busy".utf8)), barkOK])
+        PushNotifier.shared.transport = scripted
+        let approval = PushContent.permission(tool: "Bash", detail: "make deploy")
+        PushNotifier.shared.notify(approval, subject: PushSubject(sessionId: "retry-1", agent: "Claude"), request: waiting(approval))
+        await waitFor(scripted, 1)
+        await releaseSleep()
+        await waitFor(scripted, 2)
+        XCTAssertEqual(slept, [PushRetryPolicy.delay])
+        XCTAssertEqual(scripted.requests.count, 2)
+        XCTAssertEqual(scripted.requests[0].body, scripted.requests[1].body)
+        for _ in 0..<20 where PushNotifier.shared.lastDelivery[.bark]?.result.ok != true { await Task.yield() }
+        XCTAssertEqual(PushNotifier.shared.lastDelivery[.bark]?.result.ok, true)
+    }
+
+    /// 429 with Retry-After is honoured (capped); a second failure is final.
+    func testRateLimitedErrorPushWaitsAsToldAndRetriesOnlyOnce() async {
+        controlTime()
+        let scripted = ScriptedTransport([PushTransportResponse(statusCode: 429, retryAfter: 12)])
+        PushNotifier.shared.transport = scripted
+        PushNotifier.shared.notify(.error(type: "overloaded", detail: nil), subject: PushSubject(sessionId: "retry-2", agent: "Claude"))
+        await waitFor(scripted, 1)
+        await releaseSleep()
+        await waitFor(scripted, 2)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(slept, [12])
+        XCTAssertEqual(scripted.requests.count, 2, "one retry, no more")
+    }
+
+    /// A finished turn is not retried; neither is a 4xx.
+    func testCompletionsAndClientErrorsAreNotRetried() async {
+        controlTime()
+        let scripted = ScriptedTransport([PushTransportResponse(statusCode: 500)])
+        PushNotifier.shared.transport = scripted
+        PushNotifier.shared.notify(.completion(summary: "done"), subject: PushSubject(sessionId: "retry-3", agent: "Claude"))
+        await waitFor(scripted, 1)
+
+        let rejected = ScriptedTransport([PushTransportResponse(statusCode: 400, body: Data(#"{"code":400,"message":"bad key"}"#.utf8))])
+        PushNotifier.shared.transport = rejected
+        let approval = PushContent.permission(tool: "Bash", detail: "ls")
+        PushNotifier.shared.notify(approval, subject: PushSubject(sessionId: "retry-4", agent: "Claude"), request: waiting(approval))
+        await waitFor(rejected, 1)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(scripted.requests.count, 1)
+        XCTAssertEqual(rejected.requests.count, 1)
+        XCTAssertTrue(slept.isEmpty)
     }
 
     // MARK: Send test
