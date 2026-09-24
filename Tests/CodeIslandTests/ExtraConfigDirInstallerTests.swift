@@ -65,7 +65,7 @@ final class ExtraConfigDirInstallerTests: XCTestCase {
         let root = try makeRoot("codex-work", files: ["auth.json"], dirs: ["sessions"])
         let cli = try XCTUnwrap(ConfigInstaller.extraConfigDirCLI(for: ExtraConfigDir(cli: .codex, path: root)))
 
-        XCTAssertEqual(ConfigInstaller.installHooks(inExtraDir: cli, fm: fm), .installed)
+        XCTAssertEqual(ConfigInstaller.installHooks(inExtraDir: cli, fm: fm, primaryRoot: sandbox.appendingPathComponent("primary").path, peers: []), .installed)
 
         let hooks = try XCTUnwrap(try json(atPath: root + "/hooks.json")["hooks"] as? [String: Any])
         let stop = try XCTUnwrap(hooks["Stop"] as? [[String: Any]])
@@ -84,7 +84,7 @@ final class ExtraConfigDirInstallerTests: XCTestCase {
     func testUninstallFromAnExtraRootKeepsTheUsersOwnHooks() throws {
         let root = try makeRoot("codex-mixed", files: ["auth.json"])
         let cli = try XCTUnwrap(ConfigInstaller.extraConfigDirCLI(for: ExtraConfigDir(cli: .codex, path: root)))
-        XCTAssertEqual(ConfigInstaller.installHooks(inExtraDir: cli, fm: fm), .installed)
+        XCTAssertEqual(ConfigInstaller.installHooks(inExtraDir: cli, fm: fm, primaryRoot: sandbox.appendingPathComponent("primary").path, peers: []), .installed)
 
         var root_ = try json(atPath: root + "/hooks.json")
         var hooks = try XCTUnwrap(root_["hooks"] as? [String: Any])
@@ -107,7 +107,7 @@ final class ExtraConfigDirInstallerTests: XCTestCase {
         let root = try makeRoot("grok-2", files: ["config.toml", "active_sessions.json"], dirs: ["sessions"])
         let cli = try XCTUnwrap(ConfigInstaller.extraConfigDirCLI(for: ExtraConfigDir(cli: .grok, path: root)))
 
-        XCTAssertEqual(ConfigInstaller.installHooks(inExtraDir: cli, fm: fm), .installed)
+        XCTAssertEqual(ConfigInstaller.installHooks(inExtraDir: cli, fm: fm, primaryRoot: sandbox.appendingPathComponent("primary").path, peers: []), .installed)
         let hooks = try XCTUnwrap(try json(atPath: root + "/hooks/codeisland.json")["hooks"] as? [String: Any])
         XCTAssertFalse(hooks.isEmpty)
         XCTAssertTrue(try XCTUnwrap(ConfigInstaller.extraConfigDirStatus(for: ExtraConfigDir(cli: .grok, path: root))).hooksInstalled)

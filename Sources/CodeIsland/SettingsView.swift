@@ -1042,7 +1042,8 @@ private struct ExtraConfigDirRow: View {
             Spacer()
             Toggle("", isOn: Binding(get: { status.dir.enabled }, set: onToggle))
                 .labelsHidden()
-                .disabled(!status.sourceEnabled)
+                // The primary under another spelling: nothing to switch here.
+                .disabled(!status.sourceEnabled || status.sameAsPrimary)
             Button(role: .destructive, action: onRemove) {
                 Image(systemName: "trash")
             }
@@ -1127,6 +1128,12 @@ enum ExtraConfigDirText {
         case .skipped(let inspection):
             let reason = self.inspection(inspection, cli: dir.cli, l10n: l10n) ?? ""
             return String(format: l10n["extra_config_dirs_added_skipped"], path, reason)
+        case .shared(let owner):
+            let file = ConfigInstaller.extraConfigDirCLI(for: dir)?.configPath ?? ""
+            return String(
+                format: l10n["extra_config_dirs_added_shared"],
+                path, file, ClaudeConfigPaths.displayPath(owner)
+            )
         case .failed:
             let configPath = ConfigInstaller.extraConfigDirCLI(for: dir)?.displayConfigPath ?? path
             return String(format: l10n["extra_config_dirs_write_failed"], configPath)
@@ -1135,20 +1142,29 @@ enum ExtraConfigDirText {
 
     /// Why a registered root has no hooks right now, if something is wrong.
     static func statusProblem(_ status: ExtraConfigDirStatus, l10n: L10n) -> String? {
-        guard status.sourceEnabled, status.dir.enabled else { return nil }
+        guard status.sourceEnabled, status.dir.enabled, !status.sameAsPrimary else { return nil }
         if let reason = inspection(status.inspection, cli: status.dir.cli, l10n: l10n) {
             return String(format: l10n["extra_dir_hooks_skipped"], reason)
         }
         return nil
     }
 
-    /// Neutral state line (paused, CLI off, not installed yet); nil when the
-    /// hooks are in and the row shows the config file instead.
+    /// Neutral state line (same as the main dir, paused, CLI off, hooks file
+    /// shared with another root, not installed yet); nil when the hooks are
+    /// in and the row shows the config file instead.
     static func statusNote(_ status: ExtraConfigDirStatus, l10n: L10n) -> String? {
+        // Not an account of its own — it is the primary under another spelling.
+        if status.sameAsPrimary {
+            return String(format: l10n["extra_dir_same_as_primary"], status.dir.cli.displayName)
+        }
         if !status.sourceEnabled {
             return String(format: l10n["extra_dir_source_off"], status.dir.cli.displayName)
         }
         if !status.dir.enabled { return l10n["extra_dir_paused"] }
+        if let owner = status.sharedHooksWith {
+            let file = String(status.fullConfigPath.dropFirst(status.dir.path.count + 1))
+            return String(format: l10n["extra_dir_shared_hooks"], file, ClaudeConfigPaths.displayPath(owner))
+        }
         if !status.hooksInstalled { return l10n["not_installed"] }
         return nil
     }

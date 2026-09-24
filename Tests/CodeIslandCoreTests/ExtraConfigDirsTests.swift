@@ -194,6 +194,26 @@ final class ExtraConfigDirsTests: XCTestCase {
         )
     }
 
+    /// Files are compared, not roots: a Grok root whose `hooks/` is linked to
+    /// the primary's, or two Claude accounts sharing one settings.json.
+    func testSharedFileOwnerComparesTheFilesThemselves() {
+        let identity: (String) -> String = { path in
+            path.replacingOccurrences(of: "/x/hooks/", with: "/p/hooks/")
+                .replacingOccurrences(of: "/b/settings.json", with: "/a/settings.json")
+        }
+        func owner(_ file: String, _ root: String, peers: [String] = []) -> String? {
+            ExtraConfigDirs.sharedFileOwner(file, root: root, primary: "/p", peers: peers, identity: identity)
+        }
+        XCTAssertEqual(owner("hooks/codeisland.json", "/x"), "/p")
+        XCTAssertNil(owner("config.toml", "/x"), "only the linked folder is shared")
+        XCTAssertEqual(owner("settings.json", "/b", peers: ["/a"]), "/a")
+        XCTAssertNil(owner("settings.json", "/a"))
+        XCTAssertEqual(owner("settings.json", "/p"), "/p", "the primary itself")
+
+        XCTAssertTrue(ExtraConfigDirs.isSameDirectory("/link", as: "/p", identity: { $0 == "/link" ? "/p" : $0 }))
+        XCTAssertFalse(ExtraConfigDirs.isSameDirectory("/q", as: "/p", identity: { $0 }))
+    }
+
     func testProcessRootFollowsTheProcessOwnEnvironment() {
         func root(_ env: [String: String]?, _ cli: ConfigDirCLI = .claude) -> String? {
             ExtraConfigDirs.processRoot(cli: cli, environment: env, homeDir: home, defaultRoot: "/default")

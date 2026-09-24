@@ -260,6 +260,44 @@ public enum ExtraConfigDirs {
         rootsCacheLock.unlock()
     }
 
+    // MARK: Shared directories and files
+
+    /// Whether `path` is the directory `other` under another spelling
+    /// (symlink, letter case). Checked at the time of use, not only when a
+    /// directory is registered: the primary moves when `claude_config_dir`
+    /// changes or CodeIsland starts with another `CODEX_HOME` / `GROK_HOME`,
+    /// and a symlink can be created after registration.
+    public static func isSameDirectory(
+        _ path: String,
+        as other: String,
+        identity: (String) -> String = ExtraConfigDirs.identity(of:)
+    ) -> Bool {
+        identity(path) == identity(other)
+    }
+
+    /// The root whose `relativePath` (`settings.json`, `hooks.json`,
+    /// `config.toml`, `hooks/codeisland.json`…) is the very same file on disk
+    /// as `root`'s — the primary root first, then `peers` in order — or nil
+    /// when `root`'s file is its own.
+    ///
+    /// Two accounts often share one `settings.json` through a symlink, and a
+    /// Grok root's `hooks/` folder may be linked to another root's. Whoever
+    /// owns that file manages CodeIsland's hooks in it; writing or removing
+    /// them through the other root would undo exactly what the owner needs —
+    /// removing a paused extra root must never strip the primary's hooks.
+    /// Files are compared, not roots, so a shared file inside two distinct
+    /// roots is caught too.
+    public static func sharedFileOwner(
+        _ relativePath: String,
+        root: String,
+        primary: String,
+        peers: [String],
+        identity: (String) -> String = ExtraConfigDirs.identity(of:)
+    ) -> String? {
+        let mine = identity(root + "/" + relativePath)
+        return ([primary] + peers).first { identity($0 + "/" + relativePath) == mine }
+    }
+
     /// The root a running CLI process reads, from its own environment.
     ///
     /// - `environment == nil`: the process environment could not be read, so

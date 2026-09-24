@@ -3537,6 +3537,13 @@ struct ExtraConfigDirStatus: Identifiable, Equatable {
     /// The file the hooks live in, e.g. `~/.claude-work/settings.json`.
     let displayConfigPath: String
     let fullConfigPath: String
+    /// The directory *is* the CLI's primary root under another spelling (the
+    /// primary moved onto it, or a symlink). Nothing is managed through it.
+    var sameAsPrimary: Bool = false
+    /// Root whose hooks file is the very same file as this one's (a shared,
+    /// symlinked `settings.json`, a linked Grok `hooks/`): the primary, or an
+    /// extra root registered earlier. The hooks are managed through that root.
+    var sharedHooksWith: String? = nil
 
     var id: String { dir.id }
 }
@@ -3545,6 +3552,10 @@ enum ExtraConfigDirInstallOutcome: Equatable {
     case installed
     /// Nothing written; the inspection says why (missing, not the CLI's, …).
     case skipped(ConfigDirInspection)
+    /// Nothing written: the hooks file is the same file on disk as that of
+    /// the root given (the primary, or an extra root registered earlier),
+    /// which gets the hooks itself.
+    case shared(with: String)
     /// Registered, but the CLI's master switch is off — installed once it is on.
     case sourceDisabled
     /// The config file could not be written (e.g. unparseable JSON, #89 guard).
@@ -3588,60 +3599,140 @@ extension ConfigInstaller {
         return cli
     }
 
+    /// Hook entries for the registered extra roots. A root that is currently
+    /// the CLI's primary root under another spelling is left out: its hooks
+    /// are the primary's, and installing or removing them through the extra
+    /// entry would act on the primary behind its own switch.
     static func extraConfigDirCLIs(
         in dirs: [ExtraConfigDir] = ExtraConfigDirs.load(),
-        includeDisabled: Bool = false
+        includeDisabled: Bool = false,
+        primaryRoot: (ConfigDirCLI) -> String = primaryConfigRoot(for:)
     ) -> [CLIConfig] {
-        dirs.filter { includeDisabled || $0.enabled }.compactMap(extraConfigDirCLI(for:))
+        dirs.filter { includeDisabled || $0.enabled }
+            .filter { !ExtraConfigDirs.isSameDirectory($0.path, as: primaryRoot($0.cli)) }
+            .compactMap(extraConfigDirCLI(for:))
+    }
+
+    /// Enabled extra roots of `cli` registered before `root` — when two roots
+    /// share a hooks file, the earlier one manages it, so exactly one writes.
+    static func earlierEnabledPeers(of root: String, cli: ConfigDirCLI, in dirs: [ExtraConfigDir]) -> [String] {
+        let mine = dirs.filter { $0.cli == cli }
+        let index = mine.firstIndex { $0.path == root } ?? mine.endIndex
+        return mine[..<index].filter(\.enabled).map(\.path)
     }
 
     /// Install hooks into one extra root. Unlike the primary root, the directory
     /// is never created: one that has gone missing, or no longer looks like the
     /// CLI's root, is reported through `.skipped` instead of being written into.
-    /// Does not touch the shared hook script / bridge binary — callers do.
+    /// A hooks file that is the same file as the primary's (or an earlier
+    /// root's) is left to that root — `.shared`. `primaryRoot` / `peers`
+    /// default to the live configuration. Does not touch the shared hook
+    /// script / bridge binary — callers do.
     @discardableResult
     static func installHooks(
         inExtraDir cli: CLIConfig,
         fm: FileManager,
-        probe: (String) -> ConfigDirEntryKind = ConfigDirEntryKind.probe
+        probe: (String) -> ConfigDirEntryKind = ConfigDirEntryKind.probe,
+        primaryRoot: String? = nil,
+        peers: [String]? = nil
     ) -> ExtraConfigDirInstallOutcome {
         guard let root = cli.extraConfigDir, let kind = ConfigDirCLI(rawValue: cli.source) else { return .failed }
         let inspection = ExtraConfigDirs.inspect(path: root, cli: kind, probe: probe)
         guard inspection == .ready else { return .skipped(inspection) }
+        let primary = primaryRoot ?? primaryConfigRoot(for: kind)
+        let others = peers ?? earlierEnabledPeers(of: root, cli: kind, in: ExtraConfigDirs.load())
+        let hooksOwner = ExtraConfigDirs.sharedFileOwner(cli.configPath, root: root, primary: primary, peers: others)
+
         let ok: Bool
         switch kind {
         case .claude:
+            if let hooksOwner { return .shared(with: hooksOwner) }
             ok = installClaudeHooks(cli: cli, fm: fm)
         case .codex:
             // Without `hooks = true` in *this* root's config.toml, Codex started
-            // with CODEX_HOME=<root> never reads the hooks.json beside it.
-            ok = installExternalHooks(cli: cli, fm: fm) && enableCodexHooksConfig(fm: fm, codexHome: root)
+            // with CODEX_HOME=<root> never reads the hooks.json beside it — even
+            // when that hooks.json is a shared one.
+            if let hooksOwner {
+                return enableCodexFeatureFlag(inExtraRoot: root, primaryRoot: primary, peers: others, fm: fm)
+                    ? .shared(with: hooksOwner) : .failed
+            }
+            ok = installExternalHooks(cli: cli, fm: fm)
+                && enableCodexFeatureFlag(inExtraRoot: root, primaryRoot: primary, peers: others, fm: fm)
         case .grok:
+            if let hooksOwner { return .shared(with: hooksOwner) }
             ok = installExternalHooks(cli: cli, fm: fm)
         }
         return ok ? .installed : .failed
     }
 
+    /// `hooks = true` in an extra Codex root's config.toml — unless that
+    /// config.toml is the primary's (or an earlier root's) file, which its
+    /// owner flags itself.
+    @discardableResult
+    static func enableCodexFeatureFlag(
+        inExtraRoot root: String,
+        primaryRoot: String,
+        peers: [String],
+        fm: FileManager
+    ) -> Bool {
+        if ExtraConfigDirs.sharedFileOwner("config.toml", root: root, primary: primaryRoot, peers: peers) != nil {
+            return true
+        }
+        return enableCodexHooksConfig(fm: fm, codexHome: root)
+    }
+
+    /// Take CodeIsland's hooks out of one extra root — unless its hooks file
+    /// is the same file as the primary root's or one of `peers` (roots that
+    /// stay hooked), whose hooks would go with it. Returns whether anything
+    /// was touched. The user's own entries always stay.
+    @discardableResult
+    static func uninstallHooks(
+        inExtraDir cli: CLIConfig,
+        fm: FileManager,
+        primaryRoot: String,
+        keeping peers: [String]
+    ) -> Bool {
+        guard let root = cli.extraConfigDir else { return false }
+        if ExtraConfigDirs.sharedFileOwner(cli.configPath, root: root, primary: primaryRoot, peers: peers) != nil {
+            return false
+        }
+        uninstallHooks(cli: cli, fm: fm)
+        return true
+    }
+
     /// Hook state of one extra root for the Hooks page.
     static func extraConfigDirStatus(
         for dir: ExtraConfigDir,
+        in dirs: [ExtraConfigDir]? = nil,
         fm: FileManager = .default,
-        probe: (String) -> ConfigDirEntryKind = ConfigDirEntryKind.probe
+        probe: (String) -> ConfigDirEntryKind = ConfigDirEntryKind.probe,
+        primaryRoot: String? = nil
     ) -> ExtraConfigDirStatus? {
         guard let cli = extraConfigDirCLI(for: dir) else { return nil }
         let inspection = ExtraConfigDirs.inspect(path: dir.path, cli: dir.cli, probe: probe)
+        let primary = primaryRoot ?? primaryConfigRoot(for: dir.cli)
+        let sameAsPrimary = ExtraConfigDirs.isSameDirectory(dir.path, as: primary)
+        let sharedHooksWith = sameAsPrimary ? primary : ExtraConfigDirs.sharedFileOwner(
+            cli.configPath,
+            root: dir.path,
+            primary: primary,
+            peers: earlierEnabledPeers(of: dir.path, cli: dir.cli, in: dirs ?? ExtraConfigDirs.load())
+        )
         return ExtraConfigDirStatus(
             dir: dir,
             inspection: inspection,
             hooksInstalled: inspection == .ready && isHooksInstalled(for: cli, fm: fm),
             sourceEnabled: isEnabled(source: dir.cli.source),
             displayConfigPath: cli.displayConfigPath,
-            fullConfigPath: cli.fullPath
+            fullConfigPath: cli.fullPath,
+            sameAsPrimary: sameAsPrimary,
+            sharedHooksWith: sharedHooksWith
         )
     }
 
     static func extraConfigDirStatuses() -> [ExtraConfigDirStatus] {
-        ExtraConfigDirs.load().compactMap { extraConfigDirStatus(for: $0) }
+        let dirs = ExtraConfigDirs.load()
+        return dirs.compactMap { extraConfigDirStatus(for: $0, in: dirs) }
     }
 
     /// Register a root typed or picked in Settings and, if its CLI is being
@@ -3664,75 +3755,125 @@ extension ConfigInstaller {
         case .success(let dir):
             dirs.append(dir)
             ExtraConfigDirs.save(dirs)
-            return .success((dir, installRegisteredExtraDir(dir)))
+            return .success((dir, installRegisteredExtraDir(dir, in: dirs)))
         }
     }
 
-    /// Forget a root and take CodeIsland's hooks out of it (user entries stay).
+    /// Forget a root and take CodeIsland's hooks out of it (user entries stay)
+    /// — unless its hooks file is the primary's or a still-enabled root's.
     @discardableResult
-    static func removeExtraConfigDir(id: String) -> ExtraConfigDir? {
-        var dirs = ExtraConfigDirs.load()
+    static func removeExtraConfigDir(
+        id: String,
+        defaults: UserDefaults = .standard,
+        primaryRoot: (ConfigDirCLI) -> String = primaryConfigRoot(for:)
+    ) -> ExtraConfigDir? {
+        var dirs = ExtraConfigDirs.load(from: defaults)
         guard let index = dirs.firstIndex(where: { $0.id == id }) else { return nil }
         let dir = dirs.remove(at: index)
         if let cli = extraConfigDirCLI(for: dir) {
-            uninstallHooks(cli: cli, fm: .default)
+            uninstallHooks(
+                inExtraDir: cli,
+                fm: .default,
+                primaryRoot: primaryRoot(dir.cli),
+                keeping: ExtraConfigDirs.enabledPaths(for: dir.cli, in: dirs)
+            )
         }
-        ExtraConfigDirs.save(dirs)
+        ExtraConfigDirs.save(dirs, to: defaults)
         return dir
     }
 
-    /// Per-root monitoring switch: installs or removes that root's hooks only.
+    /// Per-root monitoring switch: installs or removes that root's hooks only
+    /// — never those of a hooks file it shares with the primary or another
+    /// enabled root.
     @discardableResult
-    static func setExtraConfigDirEnabled(id: String, enabled: Bool) -> ExtraConfigDirInstallOutcome? {
-        var dirs = ExtraConfigDirs.load()
+    static func setExtraConfigDirEnabled(
+        id: String,
+        enabled: Bool,
+        defaults: UserDefaults = .standard,
+        primaryRoot: (ConfigDirCLI) -> String = primaryConfigRoot(for:)
+    ) -> ExtraConfigDirInstallOutcome? {
+        var dirs = ExtraConfigDirs.load(from: defaults)
         guard let index = dirs.firstIndex(where: { $0.id == id }) else { return nil }
         dirs[index].enabled = enabled
-        ExtraConfigDirs.save(dirs)
+        ExtraConfigDirs.save(dirs, to: defaults)
         let dir = dirs[index]
-        if enabled { return installRegisteredExtraDir(dir) }
+        if enabled { return installRegisteredExtraDir(dir, in: dirs, primaryRoot: primaryRoot(dir.cli)) }
         if let cli = extraConfigDirCLI(for: dir) {
-            uninstallHooks(cli: cli, fm: .default)
+            uninstallHooks(
+                inExtraDir: cli,
+                fm: .default,
+                primaryRoot: primaryRoot(dir.cli),
+                keeping: dirs.filter { $0.cli == dir.cli && $0.enabled && $0.id != dir.id }.map(\.path)
+            )
         }
         return nil
     }
 
-    private static func installRegisteredExtraDir(_ dir: ExtraConfigDir) -> ExtraConfigDirInstallOutcome {
+    private static func installRegisteredExtraDir(
+        _ dir: ExtraConfigDir,
+        in dirs: [ExtraConfigDir],
+        primaryRoot: String? = nil
+    ) -> ExtraConfigDirInstallOutcome {
         guard isEnabled(source: dir.cli.source) else { return .sourceDisabled }
         guard let cli = extraConfigDirCLI(for: dir) else { return .failed }
+        let primary = primaryRoot ?? primaryConfigRoot(for: dir.cli)
+        // The primary itself under another spelling: its own entry installs.
+        if ExtraConfigDirs.isSameDirectory(dir.path, as: primary) { return .shared(with: primary) }
         let fm = FileManager.default
         try? fm.createDirectory(atPath: codeislandDir, withIntermediateDirectories: true)
         installHookScript(fm: fm)
         installBridgeBinary(fm: fm)
-        return installHooks(inExtraDir: cli, fm: fm)
+        return installHooks(
+            inExtraDir: cli,
+            fm: fm,
+            primaryRoot: primary,
+            peers: earlierEnabledPeers(of: dir.path, cli: dir.cli, in: dirs)
+        )
     }
 
     /// The master switch of Claude / Codex / Grok covers their extra roots too:
     /// turning it on installs into every enabled root, off removes from all.
+    /// A hooks file shared with the primary is left to the primary's own
+    /// entry, which the same switch installs into or removes from next.
     static func applySourceToggleToExtraConfigDirs(source: String, enabled: Bool, fm: FileManager) {
-        guard ConfigDirCLI(rawValue: source) != nil else { return }
-        let dirs = ExtraConfigDirs.load().filter { $0.cli.source == source }
+        guard let kind = ConfigDirCLI(rawValue: source) else { return }
+        let dirs = ExtraConfigDirs.load().filter { $0.cli == kind }
+        let primary = primaryConfigRoot(for: kind)
         for cli in extraConfigDirCLIs(in: dirs, includeDisabled: !enabled) {
+            guard let root = cli.extraConfigDir else { continue }
             if enabled {
-                installHooks(inExtraDir: cli, fm: fm)
+                installHooks(
+                    inExtraDir: cli,
+                    fm: fm,
+                    primaryRoot: primary,
+                    peers: earlierEnabledPeers(of: root, cli: kind, in: dirs)
+                )
             } else {
-                uninstallHooks(cli: cli, fm: fm)
+                // Every root goes off together, so no peer keeps its hooks.
+                uninstallHooks(inExtraDir: cli, fm: fm, primaryRoot: primary, keeping: [])
             }
         }
     }
 
     /// `verifyAndRepair` for extra roots: put back hooks that went missing in a
     /// root that is still there, with the same respect for hand-pruned events
-    /// (#182) as the primary root. Returns labels of the repaired roots.
+    /// (#182) as the primary root. A hooks file shared with the primary (or an
+    /// earlier root) is repaired through that root. Returns labels of the
+    /// repaired roots.
     static func repairExtraConfigDirs(fm: FileManager) -> [String] {
+        let dirs = ExtraConfigDirs.load()
         var repaired: [String] = []
-        for cli in extraConfigDirCLIs() where isEnabled(source: cli.source) {
+        for cli in extraConfigDirCLIs(in: dirs) where isEnabled(source: cli.source) {
             guard let root = cli.extraConfigDir,
                   let kind = ConfigDirCLI(rawValue: cli.source),
                   ExtraConfigDirs.inspect(path: root, cli: kind) == .ready else { continue }
-            if kind == .codex { enableCodexHooksConfig(fm: fm, codexHome: root) }
+            let primary = primaryConfigRoot(for: kind)
+            let peers = earlierEnabledPeers(of: root, cli: kind, in: dirs)
+            if kind == .codex { enableCodexFeatureFlag(inExtraRoot: root, primaryRoot: primary, peers: peers, fm: fm) }
+            if ExtraConfigDirs.sharedFileOwner(cli.configPath, root: root, primary: primary, peers: peers) != nil { continue }
             if isHooksInstalled(for: cli, fm: fm) { continue }
             if shouldPreservePartialHooks(for: cli, fm: fm) { continue }
-            if installHooks(inExtraDir: cli, fm: fm) == .installed {
+            if installHooks(inExtraDir: cli, fm: fm, primaryRoot: primary, peers: peers) == .installed {
                 repaired.append("\(cli.name) (\(ClaudeConfigPaths.displayPath(root)))")
             }
         }

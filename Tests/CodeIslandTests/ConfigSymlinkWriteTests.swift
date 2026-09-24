@@ -63,7 +63,7 @@ final class ConfigSymlinkWriteTests: XCTestCase {
         let configTarget = try linkToDotfile(root + "/config.toml", named: "codex-config.toml", contents: "model = \"o3\"\n")
         let cli = try XCTUnwrap(ConfigInstaller.extraConfigDirCLI(for: ExtraConfigDir(cli: .codex, path: root)))
 
-        XCTAssertEqual(ConfigInstaller.installHooks(inExtraDir: cli, fm: fm), .installed)
+        XCTAssertEqual(ConfigInstaller.installHooks(inExtraDir: cli, fm: fm, primaryRoot: sandbox + "/primary", peers: []), .installed)
 
         XCTAssertTrue(isSymlink(root + "/hooks.json"), "hooks.json is still the shared link")
         XCTAssertTrue(isSymlink(root + "/config.toml"), "config.toml is still the shared link")
@@ -73,7 +73,7 @@ final class ConfigSymlinkWriteTests: XCTestCase {
         XCTAssertTrue(toml.contains("model = \"o3\""))
 
         // A second install (Codex rewrites hooks.json every time) keeps it too.
-        XCTAssertEqual(ConfigInstaller.installHooks(inExtraDir: cli, fm: fm), .installed)
+        XCTAssertEqual(ConfigInstaller.installHooks(inExtraDir: cli, fm: fm, primaryRoot: sandbox + "/primary", peers: []), .installed)
         XCTAssertTrue(isSymlink(root + "/hooks.json"))
     }
 
