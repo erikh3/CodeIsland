@@ -341,6 +341,36 @@ final class PushMessageFormatterTests: XCTestCase {
         XCTAssertTrue(render(.permission(tool: nil, detail: nil)).blocksAgent)
     }
 
+    /// A huge reply is cut on a line boundary before the redaction pass, not
+    /// after it; what survives is still redacted and bounded.
+    func testLongRepliesArePrecutBeforeRedaction() {
+        let line = "token=abc123 " + String(repeating: "word ", count: 20)
+        let reply = Array(repeating: line, count: 5_000).joined(separator: "\n")
+        let cut = PushMessageFormatter.precut(reply, keeping: 200)
+        XCTAssertLessThanOrEqual(cut.utf16.count, 200 * 2 + 256)
+        XCTAssertTrue(reply.hasPrefix(cut))
+        XCTAssertTrue(cut.hasSuffix(line.trimmingCharacters(in: .whitespaces)) || cut.hasSuffix(line), "ends on a whole line")
+
+        let message = render(.completion(summary: reply), limit: 200)
+        XCTAssertLessThanOrEqual(message.body.count, 200)
+        XCTAssertFalse(message.body.contains("abc123"))
+        XCTAssertEqual(PushMessageFormatter.precut("short\ntext", keeping: 10), "short\ntext")
+
+        // One enormous line is cut at a word boundary, never inside a word.
+        let oneLine = String(repeating: "abcdefghij ", count: 200)
+        let cutLine = PushMessageFormatter.precut(oneLine, keeping: 100)
+        XCTAssertTrue(cutLine.hasSuffix("abcdefghij"))
+    }
+
+    func testUTF16TruncationNeverSplitsACharacter() {
+        let family = "👨‍👩‍👧"  // 8 UTF-16 units, one character
+        let text = String(repeating: family, count: 5)
+        let cut = PushMessageFormatter.truncated(text, maxUTF16: 20)
+        XCTAssertLessThanOrEqual(cut.utf16.count, 20)
+        XCTAssertEqual(cut, family + family + "…")
+        XCTAssertEqual(PushMessageFormatter.truncated("abc", maxUTF16: 5), "abc")
+    }
+
     func testByteTruncationNeverSplitsACharacter() {
         let text = String(repeating: "界", count: 10)  // 30 bytes
         let cut = PushMessageFormatter.truncated(text, maxUTF8Bytes: 10)

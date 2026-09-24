@@ -236,13 +236,18 @@ public enum PushRequestBuilder {
     /// security can be satisfied with the keyword "CodeIsland".
     public static let keywordFooter = "— CodeIsland"
 
-    /// Bark relays through APNs, whose payload limit is 4 KB in total.
-    static let barkBodyLimit = 1_000
+    /// Bark relays through APNs, whose payload limit is 4096 bytes in total
+    /// — title, subtitle, group and bark-server's own fields included — so
+    /// the body is cut in bytes: 1 000 emoji or CJK characters would be 3–4 KB.
+    static let barkBodyBytes = 2_500
+    static let barkTitleLimit = 120
+    static let barkSubtitleLimit = 200
     /// ntfy turns longer messages into attachments (default limit 4096 bytes).
     static let ntfyMessageBytes = 3_800
     /// WeCom text content: at most 2048 UTF-8 bytes.
     static let wecomContentBytes = 2_048
-    /// Telegram: 1–4096 characters after entity parsing.
+    /// Telegram: 1–4096 characters after entity parsing, counted in UTF-16
+    /// code units (an emoji is two, a family emoji eight).
     static let telegramTextLimit = 3_900
     static let chatTextLimit = 4_000
     static let slackTextLimit = 3_000
@@ -294,16 +299,17 @@ public enum PushRequestBuilder {
 
         var body: [String: Any] = [
             "device_key": deviceKey,
-            "title": PushMessageFormatter.truncated(message.title, limit: 120),
+            "title": PushMessageFormatter.truncated(message.title, limit: barkTitleLimit),
             "level": message.blocksAgent ? "timeSensitive" : "active",
             "group": nonEmpty(channel.group) ?? "CodeIsland",
         ]
+        let headline = PushMessageFormatter.truncated(message.headline, limit: barkSubtitleLimit)
         // Bark requires a body; an empty one falls back to the headline.
         if message.body.isEmpty {
-            body["body"] = message.headline
+            body["body"] = headline
         } else {
-            body["subtitle"] = message.headline
-            body["body"] = PushMessageFormatter.truncated(message.body, limit: barkBodyLimit)
+            body["subtitle"] = headline
+            body["body"] = PushMessageFormatter.truncated(message.body, maxUTF8Bytes: barkBodyBytes)
         }
         if let icon = nonEmpty(channel.icon) { body["icon"] = icon }
         if let sound = nonEmpty(channel.sound) { body["sound"] = sound }
@@ -438,9 +444,11 @@ public enum PushRequestBuilder {
         guard let api = PushEndpoint.parse(apiText) else { throw PushConfigProblem.invalidURL }
         let components = PushEndpoint.pathComponents(of: api.url) + ["bot\(token)", "sendMessage"]
         let url = PushEndpoint.replacingPath(of: api.url, with: components)
+        // Title, newline and body share the limit; the <b> tags and the
+        // entities htmlEscaped adds count as nothing after parsing.
         let bodyText = PushMessageFormatter.truncated(
             message.text,
-            limit: max(telegramTextLimit - message.title.count, 100)
+            maxUTF16: max(telegramTextLimit - message.title.utf16.count - 1, 100)
         )
         let html = "<b>\(htmlEscaped(message.title))</b>\n\(htmlEscaped(bodyText))"
         let body: [String: Any] = [

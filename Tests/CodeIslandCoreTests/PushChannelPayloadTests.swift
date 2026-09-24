@@ -97,6 +97,20 @@ final class PushChannelPayloadTests: XCTestCase {
         XCTAssertNil(body["subtitle"])
     }
 
+    /// APNs takes 4096 bytes for the whole payload; an emoji-dense or CJK
+    /// body is cut in bytes, well inside it.
+    func testBarkBodyIsCutInBytesToFitAPNs() throws {
+        var message = completion
+        message.body = String(repeating: "😀", count: 1_000)  // 4 000 bytes
+        message.headline = String(repeating: "汉", count: 500)
+        let (request, body) = try build(message, channel(.bark) { $0.target = "KEY123" })
+        let text = try XCTUnwrap(body["body"] as? String)
+        XCTAssertLessThanOrEqual(text.utf8.count, PushRequestBuilder.barkBodyBytes)
+        XCTAssertTrue(text.hasSuffix("…"))
+        XCTAssertLessThanOrEqual((body["subtitle"] as? String)?.count ?? 0, PushRequestBuilder.barkSubtitleLimit)
+        XCTAssertLessThan(request.body.count, 4_096, "the whole request body, bark-server adds little")
+    }
+
     func testBarkWithoutKeyIsAConfigProblem() {
         let config = channel(.bark) { _ in }
         XCTAssertEqual(config.problem, .missingDeviceKey)
@@ -255,6 +269,20 @@ final class PushChannelPayloadTests: XCTestCase {
             "<b>🔐 Claude · vibe-notch</b>\nNeeds approval: Bash\necho &lt;x&gt; &amp; y"
         )
         XCTAssertEqual((body["link_preview_options"] as? [String: Any])?["is_disabled"] as? Bool, true)
+    }
+
+    /// Telegram's 4096 are UTF-16 code units: 3 000 emoji are 6 000 of them.
+    func testTelegramCapsTheTextInUTF16Units() throws {
+        var message = completion
+        message.body = String(repeating: "😀", count: 3_000)
+        let (_, body) = try build(message, channel(.telegram) {
+            $0.token = "123:ABC"
+            $0.target = "42"
+        })
+        let text = try XCTUnwrap(body["text"] as? String)
+        let visible = text.replacingOccurrences(of: "<b>", with: "").replacingOccurrences(of: "</b>", with: "")
+        XCTAssertLessThanOrEqual(visible.utf16.count, 4_096)
+        XCTAssertTrue(text.hasSuffix("😀…"), "never half an emoji")
     }
 
     func testTelegramAcceptsTheBotPrefixedTokenAndACustomAPIServer() throws {

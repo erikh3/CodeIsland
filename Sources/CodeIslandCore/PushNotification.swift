@@ -415,7 +415,7 @@ public enum PushMessageFormatter {
     public static func clean(_ value: String?, limit: Int, markdown: Bool = false) -> String? {
         guard let value else { return nil }
         var lines: [String] = []
-        for rawLine in value.components(separatedBy: .newlines) {
+        for rawLine in precut(value, keeping: limit).components(separatedBy: .newlines) {
             var line = rawLine.trimmingCharacters(in: .whitespaces)
             if markdown {
                 if line.hasPrefix("```") { continue }
@@ -433,6 +433,28 @@ public enum PushMessageFormatter {
         let joined = lines.joined(separator: "\n")
         guard !joined.isEmpty else { return nil }
         return truncated(joined, limit: limit)
+    }
+
+    /// A long reply is cut before the redaction pass rather than after it:
+    /// running every regex over each line of a 50 KB transcript reply only
+    /// to keep 200 characters costs the main thread milliseconds per push.
+    /// The cut is loose — redaction and Markdown stripping change lengths —
+    /// and lands on a line boundary, or failing that a word boundary, so a
+    /// credential is never split into a piece the patterns no longer know.
+    static func precut(_ text: String, keeping limit: Int) -> String {
+        let budget = max(limit, 1) * 2 + 256
+        guard text.utf16.count > budget,
+              let end = text.index(text.startIndex, offsetBy: budget, limitedBy: text.endIndex) else {
+            return text
+        }
+        let head = text[..<end]
+        if let newline = head.lastIndex(where: \.isNewline), newline > head.startIndex {
+            return String(head[..<newline])
+        }
+        if let space = head.lastIndex(where: \.isWhitespace), space > head.startIndex {
+            return String(head[..<space])
+        }
+        return String(head)
     }
 
     /// Character-bounded, with an ellipsis so a cut is visible as a cut.
@@ -459,6 +481,23 @@ public enum PushMessageFormatter {
             result.append(character)
         }
         return result + ellipsis
+    }
+
+    /// UTF-16 code-unit bounded (Telegram counts these). Never splits a
+    /// character — a family emoji is eight units and goes whole or not at all.
+    public static func truncated(_ text: String, maxUTF16 limit: Int) -> String {
+        guard text.utf16.count > limit else { return text }
+        let budget = limit - 1  // "…" is one unit
+        guard budget > 0 else { return "" }
+        var used = 0
+        var result = ""
+        for character in text {
+            let size = character.utf16.count
+            if used + size > budget { break }
+            used += size
+            result.append(character)
+        }
+        return result.trimmingCharacters(in: .whitespaces) + "…"
     }
 }
 
