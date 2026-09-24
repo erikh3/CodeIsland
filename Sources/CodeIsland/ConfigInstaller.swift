@@ -273,6 +273,10 @@ struct ConfigInstaller {
                 ("PostToolUseFailure", 5, true),
                 ("PermissionRequest", 86400, false),
                 ("Stop", 5, true),
+                // Fires *instead of* Stop when the turn ends on an API error
+                // (rate limit, overload, auth, billing…). It is the only
+                // turn-level failure signal, so it owns the error sound.
+                ("StopFailure", 5, true),
                 ("SubagentStart", 5, true),
                 ("SubagentStop", 5, true),
                 ("SessionStart", 5, false),
@@ -282,6 +286,10 @@ struct ConfigInstaller {
             ],
             versionedEvents: [
                 "PostToolUseFailure": "2.1.89",
+                // Added in Claude Code 2.1.78 (CHANGELOG: "Added `StopFailure`
+                // hook event…"); gated like PostToolUseFailure so an older
+                // build never sees a hook key it does not know.
+                "StopFailure": "2.1.78",
             ],
             rootOverride: { ClaudeConfigPaths.configDir() },
             displayPathOverride: { ClaudeConfigPaths.displayPath(ClaudeConfigPaths.settingsPath()) }

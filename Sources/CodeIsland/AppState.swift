@@ -1712,7 +1712,7 @@ final class AppState {
     private func executeEffect(_ effect: SideEffect, sessionId: String) {
         switch effect {
         case .playSound(let eventName):
-            SoundManager.shared.handleEvent(eventName)
+            SoundManager.shared.handleEvent(eventName, sessionId: sessionId)
         case .tryMonitorSession(let sid):
             tryMonitorSession(sid)
         case .stopMonitor(let sid):

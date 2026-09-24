@@ -1440,8 +1440,11 @@ public func reduceEvent(
         effects.append(.tryMonitorSession(sessionId: sessionId))
     }
 
-    // Trigger sound for this event
-    effects.append(.playSound(eventName))
+    // Trigger sound for this event. A single failed tool stays silent; only a
+    // turn that died (StopFailure) rings the error sound. See EventSoundRouting.
+    if let sound = EventSoundRouting.soundEvent(rawEventName: event.eventName, normalizedEventName: eventName) {
+        effects.append(.playSound(sound))
+    }
 
     // Switch display to the session that just had activity
     if eventName == "Stop" {

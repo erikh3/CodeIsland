@@ -412,7 +412,8 @@ extension AppState {
         case "stream.completed":
             SoundManager.shared.handleEvent("Stop")
         case "stream.failed":
-            SoundManager.shared.handleEvent("PostToolUseFailure")
+            // The whole reply failed — the turn-failure sound, not a tool error.
+            SoundManager.shared.handleEvent(EventSoundRouting.turnFailed, sessionId: sessionId)
         default:
             break
         }
