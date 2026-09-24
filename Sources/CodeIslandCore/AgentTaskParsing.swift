@@ -318,7 +318,11 @@ public enum AgentTaskTranscript {
         let content = message["content"]
 
         if let text = content as? String {
-            let isPrompt = startsTurn && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            // A local slash command (/model, /effort) and its output are user
+            // rows too, but no turn.
+            let isPrompt = startsTurn
+                && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && JSONLTailer.claudeCommandEcho(text) != .local
             return isPrompt ? [.newTurn] : []
         }
         guard let blocks = content as? [[String: Any]] else { return [] }

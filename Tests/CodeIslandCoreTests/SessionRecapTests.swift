@@ -144,6 +144,41 @@ final class SessionRecapTests: XCTestCase {
         XCTAssertEqual(delta.sessionRecap?.text, "recap")
     }
 
+    // Slash-command rows as CLI 2.1.2xx writes them: plain user rows, isMeta false.
+    private let modelCommandLine = #"{"parentUuid":"p1","isSidechain":false,"type":"user","message":{"role":"user","content":"<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args></command-args>"},"uuid":"u5","timestamp":"2026-09-12T03:41:00.000Z"}"#
+    private let modelOutputLine = #"{"parentUuid":"u5","isSidechain":false,"type":"user","message":{"role":"user","content":"<local-command-stdout>Set model to `Opus 5 (1M context) (default)` and saved as your default for new sessions</local-command-stdout>"},"uuid":"u6","timestamp":"2026-09-12T03:41:00.100Z"}"#
+    private let skillCommandLine = #"{"parentUuid":"p1","isSidechain":false,"type":"user","message":{"role":"user","content":"<command-message>design</command-message>\n<command-name>/design</command-name>\n<command-args>tidy the settings layout</command-args>"},"uuid":"u7","timestamp":"2026-09-12T03:42:00.000Z"}"#
+
+    func testLocalSlashCommandsNeitherClearTheRecapNorBecomeThePrompt() {
+        let delta = scan([recapLine("Shipped v2."), modelCommandLine, modelOutputLine])
+        XCTAssertEqual(delta.sessionRecap?.text, "Shipped v2.")
+        XCTAssertNil(delta.lastUserPrompt)
+    }
+
+    func testAPromptCommandStartsATurnAndReadsAsTyped() {
+        let delta = scan([recapLine("Shipped v2."), skillCommandLine])
+        XCTAssertNil(delta.sessionRecap)
+        XCTAssertEqual(delta.lastUserPrompt, "/design tidy the settings layout")
+    }
+
+    func testCommandEchoClassification() {
+        XCTAssertEqual(JSONLTailer.claudeCommandEcho("<command-name>/effort</command-name>\n<command-message>effort</command-message>\n<command-args>high</command-args>"), .local)
+        XCTAssertEqual(JSONLTailer.claudeCommandEcho("<local-command-stderr>Error: nope</local-command-stderr>"), .local)
+        XCTAssertEqual(JSONLTailer.claudeCommandEcho("<command-message>review</command-message>\n<command-name>review</command-name>"), .prompt("/review"))
+        XCTAssertNil(JSONLTailer.claudeCommandEcho("<pasted_content id=\"1\">x</pasted_content> what is this?"))
+        XCTAssertNil(JSONLTailer.claudeCommandEcho("fix the <command-name> parser"))
+    }
+
+    func testLocalSlashCommandsStartNoChecklistTurn() throws {
+        func events(_ line: String) throws -> [AgentTaskEvent] {
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+            return AgentTaskTranscript.events(fromLine: json)
+        }
+        XCTAssertEqual(try events(modelCommandLine), [])
+        XCTAssertEqual(try events(modelOutputLine), [])
+        XCTAssertEqual(try events(skillCommandLine), [.newTurn])
+    }
+
     // MARK: - scanLines: model observation
 
     func testClaudeAssistantLineYieldsModelAndEffort() {

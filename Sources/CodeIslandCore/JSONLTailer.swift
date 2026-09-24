@@ -554,7 +554,16 @@ public final class JSONLTailer: @unchecked Sendable {
         switch type {
         case "user", "USER_INPUT":
             if let text = extractText(from: message["content"]) {
-                delta.lastUserPrompt = text
+                switch claudeCommandEcho(text) {
+                case .local?:
+                    // /model, /effort, /clear…: no turn, so no new prompt —
+                    // and no reason to drop the recap.
+                    break
+                case .prompt(let command)?:
+                    delta.lastUserPrompt = command
+                case nil:
+                    delta.lastUserPrompt = text
+                }
             }
         case "assistant", "PLANNER_RESPONSE":
             if let text = extractText(from: message["content"]) {
@@ -628,6 +637,45 @@ public final class JSONLTailer: @unchecked Sendable {
                 applyCursorRoleLine(role: role, message: message, into: &delta)
             }
         }
+    }
+
+    /// How Claude Code records a slash command typed in the terminal.
+    public enum ClaudeCommandEcho: Equatable {
+        /// A built-in the CLI handles itself (/model, /effort, /clear,
+        /// /compact) or that command's output. Written as a plain user row
+        /// (`isMeta: false`), but it starts no turn and is not a prompt.
+        case local
+        /// A prompt command (skill, custom command) that does start a turn,
+        /// as the user typed it: "/design tidy the layout".
+        case prompt(String)
+    }
+
+    /// Classify a user row's text as a slash-command echo, or nil for an
+    /// ordinary prompt. Built-ins lead with `<command-name>` and are followed
+    /// by `<local-command-stdout>`; prompt commands lead with
+    /// `<command-message>` and are followed by their expanded prompt (an
+    /// `isMeta` row).
+    public static func claudeCommandEcho(_ text: String) -> ClaudeCommandEcho? {
+        let trimmed = text.drop { $0.isWhitespace }
+        guard trimmed.first == "<" else { return nil }
+        for tag in localCommandTags where trimmed.hasPrefix(tag) {
+            return .local
+        }
+        guard trimmed.hasPrefix("<command-message>"),
+              var name = taggedValue("command-name", in: trimmed), !name.isEmpty else { return nil }
+        if !name.hasPrefix("/") { name = "/" + name }
+        let args = taggedValue("command-args", in: trimmed) ?? ""
+        return .prompt(args.isEmpty ? name : "\(name) \(args)")
+    }
+
+    private static let localCommandTags = [
+        "<command-name>", "<local-command-stdout>", "<local-command-stderr>", "<local-command-caveat>",
+    ]
+
+    private static func taggedValue(_ tag: String, in text: Substring) -> String? {
+        guard let open = text.range(of: "<\(tag)>"),
+              let close = text.range(of: "</\(tag)>", range: open.upperBound..<text.endIndex) else { return nil }
+        return text[open.upperBound..<close.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Extract assistant text that Codex deliberately persists for display.

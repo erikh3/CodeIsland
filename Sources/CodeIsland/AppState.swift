@@ -7932,7 +7932,16 @@ final class AppState {
 
             if let text = textContent, !text.isEmpty {
                 if normalizedRole == "user" || normalizedRole == "user_input" {
-                    userMessages.append((index, text))
+                    // Same rules as the live tail: injected (isMeta) rows and
+                    // local slash commands (/model) are not prompts; a prompt
+                    // command reads as typed ("/review foo").
+                    if json["isMeta"] as? Bool != true {
+                        switch JSONLTailer.claudeCommandEcho(text) {
+                        case .local?: break
+                        case .prompt(let command)?: userMessages.append((index, command))
+                        case nil: userMessages.append((index, text))
+                        }
+                    }
                 } else if normalizedRole == "assistant" || normalizedRole == "planner_response" {
                     assistantMessages.append((index, text))
                 }
