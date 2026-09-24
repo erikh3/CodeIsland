@@ -259,16 +259,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             }
-        // Shortcuts act on the card currently on screen, so they target that
-        // card's session rather than the head of the queue. (#308)
-        case .approve:
-            appState.approvePermission(expectedSessionId: appState.surface.approvalSessionId)
-        case .approveAlways:
-            appState.approvePermission(always: true, expectedSessionId: appState.surface.approvalSessionId)
-        case .deny:
-            appState.denyPermission(expectedSessionId: appState.surface.approvalSessionId)
-        case .skipQuestion:
-            appState.skipQuestion(expectedSessionId: appState.surface.questionSessionId)
+        // Card shortcuts act only on the card on screen (#308); with the
+        // request hidden they open its card instead of acting unseen.
+        case .approve, .approveAlways, .deny, .skipQuestion:
+            appState.performCardShortcut(action)
         case .jumpToTerminal:
             if let id = appState.activeSessionId, let session = appState.sessions[id] {
                 TerminalActivator.activate(session: session, sessionId: id)

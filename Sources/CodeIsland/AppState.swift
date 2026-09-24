@@ -2050,7 +2050,8 @@ final class AppState {
     /// resolve whichever request happened to be first, delivering the answer to
     /// the wrong CLI. Callers that know which session the card belongs to pass
     /// it in; `nil` keeps the head-of-queue behaviour for surfaces that only
-    /// ever mirror the head (keyboard shortcuts, iPhone/Watch Buddy). (#308)
+    /// ever mirror the head (the hardware Buddy, a companion command that names
+    /// no session). (#308)
     private func permissionIndex(expecting expected: String?) -> Int? {
         guard let expected else { return permissionQueue.isEmpty ? nil : 0 }
         return permissionQueue.firstIndex { ($0.event.sessionId ?? "default") == expected }
