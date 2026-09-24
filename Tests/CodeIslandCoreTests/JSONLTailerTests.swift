@@ -524,6 +524,43 @@ final class JSONLTailerTests: XCTestCase {
         tailer.detach(sessionId: "s1")
     }
 
+    func testReplacedFileHistoryIsDeliveredOnceAsAReplayThenLiveAgain() throws {
+        let url = temporaryFileURL()
+        let backup = url.deletingLastPathComponent()
+            .appendingPathComponent(url.lastPathComponent + ".old")
+        try Data("".utf8).write(to: url)
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: backup)
+        }
+
+        let replay = expectation(description: "history replayed")
+        let live = expectation(description: "next append is live")
+        let deltas = LockedValue<[ConversationTailDelta]>([])
+        let tailer = JSONLTailer(
+            queue: DispatchQueue(label: "tailer-test"),
+            replacementReattachDelay: .milliseconds(50),
+            onDelta: { delta in
+                deltas.update { $0.append(delta) }
+                if delta.lastAssistantMessage == "history" { replay.fulfill() }
+                if delta.lastAssistantMessage == "news" { live.fulfill() }
+            }
+        )
+        tailer.attach(sessionId: "s1", filePath: url.path)
+        XCTAssertTrue(waitUntil { tailer.activeSessionCount == 1 })
+
+        // Replaced by a file that already has history; no further write.
+        try FileManager.default.moveItem(at: url, to: backup)
+        try Data((assistantLine(text: "history") + "\n").utf8).write(to: url)
+        wait(for: [replay], timeout: 2)
+
+        try appendToFile(url: url, content: assistantLine(text: "news") + "\n")
+        wait(for: [live], timeout: 2)
+        tailer.detach(sessionId: "s1")
+
+        XCTAssertEqual(deltas.value.map(\.replaysWholeFile), [true, false])
+    }
+
     // MARK: - Attach offset shared with the backfill
 
     /// Lines written after the caller's backfill stopped but before the watch

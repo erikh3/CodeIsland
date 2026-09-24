@@ -96,6 +96,43 @@ final class AppStateAgentTasksTests: XCTestCase {
         XCTAssertEqual(appState.sessions[sessionId]?.agentTasks.items.map(\.title), ["Read", "Patch"])
     }
 
+    func testReplayOfAReplacedTranscriptDoesNotFlashAnOldFinishedPlan() {
+        let appState = AppState()
+        let sessionId = "codex-replaced-rollout"
+        var session = SessionSnapshot()
+        session.source = "codex"
+        appState.sessions[sessionId] = session
+
+        // The tailer re-read a replaced rollout from byte 0: a plan finished
+        // long ago is history, not a completion that just happened.
+        appState.applyTranscriptDelta(ConversationTailDelta(
+            sessionId: sessionId,
+            lastUserPrompt: nil,
+            lastAssistantMessage: nil,
+            taskEvents: [.newTurn, .replace(opId: "call_old", items: [
+                AgentTaskDraft(title: "Read", status: .completed),
+                AgentTaskDraft(title: "Patch", status: .completed),
+            ])],
+            replaysWholeFile: true
+        ))
+        let tasks = appState.sessions[sessionId]?.agentTasks
+        XCTAssertEqual(tasks?.isAllCompleted, true)
+        XCTAssertEqual(tasks?.isVisible(now: Date()), false, "no 'all done' linger for history")
+
+        // A plan finished live does linger.
+        appState.applyTranscriptDelta(ConversationTailDelta(
+            sessionId: sessionId,
+            lastUserPrompt: nil,
+            lastAssistantMessage: nil,
+            taskEvents: [
+                .newTurn,
+                .replace(opId: "call_new", items: [AgentTaskDraft(title: "Ship", status: .inProgress)]),
+                .replace(opId: "call_done", items: [AgentTaskDraft(title: "Ship", status: .completed)]),
+            ]
+        ))
+        XCTAssertEqual(appState.sessions[sessionId]?.agentTasks.isVisible(now: Date()), true)
+    }
+
     func testBackfillReplaysTailEventsThatLandedDuringTheScan() {
         let history: [AgentTaskEvent] = [
             .create(opId: "toolu_c1", title: "Write parser", activeForm: nil),

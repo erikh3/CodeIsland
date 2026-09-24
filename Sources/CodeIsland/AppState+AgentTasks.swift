@@ -92,6 +92,28 @@ extension AppState {
         return true
     }
 
+    /// Rebuild the checklist from a replaced transcript that the tailer
+    /// re-read from its start. That covers the whole new file, so an attach
+    /// backfill still scanning the old one is moot.
+    func replayAgentTaskHistory(
+        _ events: [AgentTaskEvent],
+        sessionId: String,
+        to session: inout SessionSnapshot
+    ) -> Bool {
+        pendingAgentTaskBackfills.removeValue(forKey: sessionId)
+        let rebuilt = AgentTaskList.rebuilt(
+            fromTranscript: events,
+            coversWholeTranscript: true,
+            live: session.agentTasks
+        )
+        let changed = rebuilt != session.agentTasks
+        // Assigned even when the rows match: the replay also rebuilt the turn
+        // bookkeeping that equality ignores.
+        session.agentTasks = rebuilt
+        if changed { scheduleSave() }
+        return changed
+    }
+
     /// Current byte size of a transcript, or 0 when unreadable.
     nonisolated static func transcriptFileSize(_ path: String) -> UInt64 {
         let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? NSNumber

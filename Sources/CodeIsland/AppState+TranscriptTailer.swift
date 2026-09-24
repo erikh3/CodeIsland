@@ -287,8 +287,15 @@ extension AppState {
         }
 
         // Checklist progress from the transcript: the only channel for Codex
-        // update_plan, and the backstop when a Claude hook is missed.
-        if !delta.taskEvents.isEmpty,
+        // update_plan, and the backstop when a Claude hook is missed. A
+        // replaced file re-read from its start is history, rebuilt the way an
+        // attach backfill is — not replayed as news (a plan finished long ago
+        // would flash "all done").
+        if delta.replaysWholeFile {
+            if replayAgentTaskHistory(delta.taskEvents, sessionId: delta.sessionId, to: &session) {
+                mutated = true
+            }
+        } else if !delta.taskEvents.isEmpty,
            applyAgentTaskTranscriptEvents(delta.taskEvents, sessionId: delta.sessionId, to: &session) {
             mutated = true
         }

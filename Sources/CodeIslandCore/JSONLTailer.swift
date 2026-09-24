@@ -48,6 +48,9 @@ public struct ConversationTailDelta: Equatable, Sendable {
     public let sessionRecap: SessionRecap?
     /// Model / reasoning effort of the newest main-thread turn in the chunk.
     public let modelObservation: ModelObservation?
+    /// The file was replaced and this chunk re-reads it from the start: it is
+    /// the new file's history, not things that just happened.
+    public let replaysWholeFile: Bool
 
     public init(
         sessionId: String,
@@ -60,7 +63,8 @@ public struct ConversationTailDelta: Equatable, Sendable {
         filePath: String? = nil,
         taskEvents: [AgentTaskEvent] = [],
         sessionRecap: SessionRecap? = nil,
-        modelObservation: ModelObservation? = nil
+        modelObservation: ModelObservation? = nil,
+        replaysWholeFile: Bool = false
     ) {
         self.sessionId = sessionId
         self.lastUserPrompt = lastUserPrompt
@@ -73,6 +77,7 @@ public struct ConversationTailDelta: Equatable, Sendable {
         self.taskEvents = taskEvents
         self.sessionRecap = sessionRecap
         self.modelObservation = modelObservation
+        self.replaysWholeFile = replaysWholeFile
     }
 
     /// A delta only carries signal when at least one field is non-nil.
@@ -108,6 +113,8 @@ public final class JSONLTailer: @unchecked Sendable {
         var source: DispatchSourceFileSystemObject
         let generation: UInt64
         let attachmentToken: UUID
+        /// The next read re-reads a replaced file from its start.
+        var replayPending: Bool
 
         init(
             sessionId: String,
@@ -117,7 +124,8 @@ public final class JSONLTailer: @unchecked Sendable {
             inode: ino_t,
             source: DispatchSourceFileSystemObject,
             generation: UInt64,
-            attachmentToken: UUID
+            attachmentToken: UUID,
+            replayPending: Bool
         ) {
             self.sessionId = sessionId
             self.filePath = filePath
@@ -128,6 +136,7 @@ public final class JSONLTailer: @unchecked Sendable {
             self.source = source
             self.generation = generation
             self.attachmentToken = attachmentToken
+            self.replayPending = replayPending
         }
     }
 
@@ -221,6 +230,7 @@ public final class JSONLTailer: @unchecked Sendable {
         filePath: String,
         initialOffset: off_t?,
         readPendingBytes: Bool = false,
+        replacesFile: Bool = false,
         generation: UInt64,
         attachmentToken: UUID
     ) {
@@ -250,7 +260,9 @@ public final class JSONLTailer: @unchecked Sendable {
             inode: fileStat.st_ino,
             source: source,
             generation: generation,
-            attachmentToken: attachmentToken
+            attachmentToken: attachmentToken,
+            // An empty replacement has no history; what it gets next is news.
+            replayPending: replacesFile && fileStat.st_size > offset
         )
 
         source.setEventHandler { [weak self] in
@@ -267,7 +279,9 @@ public final class JSONLTailer: @unchecked Sendable {
         // Bytes written after the caller's backfill stopped but before the
         // source was armed raise no event of their own; don't leave them
         // waiting for the next write (a finished turn may never write again).
-        if readPendingBytes, fileStat.st_size > offset {
+        // A replaced file's history is read now too, as its own replay chunk,
+        // so the next write arrives as live news.
+        if readPendingBytes || replacesFile, fileStat.st_size > offset {
             handleEvents([], watch: watch)
         }
     }
@@ -298,6 +312,7 @@ public final class JSONLTailer: @unchecked Sendable {
                     sessionId: sid,
                     filePath: path,
                     initialOffset: 0,
+                    replacesFile: true,
                     generation: watch.generation,
                     attachmentToken: watch.attachmentToken
                 )
@@ -316,6 +331,7 @@ public final class JSONLTailer: @unchecked Sendable {
                     sessionId: sid,
                     filePath: path,
                     initialOffset: 0,
+                    replacesFile: true,
                     generation: watch.generation,
                     attachmentToken: watch.attachmentToken
                 )
@@ -329,6 +345,8 @@ public final class JSONLTailer: @unchecked Sendable {
         }
 
         guard let appended = readFromOffset(watch: watch) else { return }
+        let replaysWholeFile = watch.replayPending
+        watch.replayPending = false
         let combined = watch.pendingFragment + appended
 
         let scan = JSONLTailer.scanLines(combined)
@@ -354,7 +372,8 @@ public final class JSONLTailer: @unchecked Sendable {
                 filePath: watch.filePath,
                 taskEvents: scan.delta.taskEvents,
                 sessionRecap: scan.delta.sessionRecap,
-                modelObservation: scan.delta.modelObservation
+                modelObservation: scan.delta.modelObservation,
+                replaysWholeFile: replaysWholeFile
             )
             onDelta(delta)
         }
