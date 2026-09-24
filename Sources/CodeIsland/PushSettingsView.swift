@@ -251,6 +251,13 @@ private struct PushChannelEditor: View {
                     .foregroundStyle(.orange)
                     .textSelection(.enabled)
             }
+            if let refused = result.redirectRefusedTo {
+                Text(String(format: l10n["push_redirect_refused"], refused))
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

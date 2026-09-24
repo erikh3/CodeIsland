@@ -172,14 +172,52 @@ final class PushSigningAndResponseTests: XCTestCase {
         XCTAssertEqual(next.url?.absoluteString, "https://bark.example.com/push")
     }
 
-    func testRedirectToAnotherHostDropsCredentials() throws {
-        let next = try XCTUnwrap(PushRedirectPolicy.follow(
-            original: post("https://bark.example.com/push"),
-            to: URL(string: "https://elsewhere.example.net/push")!,
+    /// The body carries the Bark device key, the ntfy topic or the chat's
+    /// content, and the Authorization header the basic-auth password: none
+    /// of it follows a redirect to another host or down to plain http.
+    func testRedirectToAnotherHostOrDownToHTTPIsRefused() {
+        let original = post("https://bark.example.com/push")
+        let elsewhere = URL(string: "https://elsewhere.example.net/push")!
+        XCTAssertNil(PushRedirectPolicy.follow(original: original, to: elsewhere, redirectCount: 0))
+        XCTAssertEqual(PushRedirectPolicy.refusal(from: original.url, to: elsewhere, redirectCount: 0), .otherHost)
+
+        let plain = URL(string: "http://bark.example.com/push")!
+        XCTAssertNil(PushRedirectPolicy.follow(original: original, to: plain, redirectCount: 0))
+        XCTAssertEqual(PushRedirectPolicy.refusal(from: original.url, to: plain, redirectCount: 0), .downgrade)
+        XCTAssertTrue(PushRedirectPolicy.Refusal.downgrade.namesANewAddress)
+        XCTAssertFalse(PushRedirectPolicy.Refusal.tooManyHops.namesANewAddress)
+
+        XCTAssertNil(PushRedirectPolicy.refusal(
+            from: URL(string: "https://Bark.Example.com/push"),
+            to: URL(string: "https://bark.example.com:8443/push/")!,
             redirectCount: 0
-        ))
-        XCTAssertNil(next.value(forHTTPHeaderField: "Authorization"))
-        XCTAssertEqual(next.httpMethod, "POST")
+        ), "same host, another port or path is followed")
+    }
+
+    /// A refused redirect fails the delivery and names the address to save,
+    /// without the path or query that may be the credential.
+    func testRefusedRedirectIsReportedWithTheNewAddress() {
+        let result = PushDeliveryResult.from(
+            PushTransportResponse(
+                statusCode: 301,
+                body: Data("<html>Moved</html>".utf8),
+                refusedRedirect: URL(string: "https://push.example.org/bark/push?key=secret")!
+            ),
+            kind: .bark,
+            requestURL: URL(string: "https://bark.example.com/push")!
+        )
+        XCTAssertFalse(result.ok)
+        XCTAssertEqual(result.statusCode, 301)
+        XCTAssertEqual(result.redirectRefusedTo, "https://push.example.org/…")
+        XCTAssertNil(result.redirectedTo)
+    }
+
+    func testRetryAfterHeaderReadsSecondsAndHTTPDates() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)  // Tue, 14 Nov 2023 22:13:20 GMT
+        XCTAssertEqual(URLSessionPushTransport.retryAfter("12", now: now), 12)
+        XCTAssertEqual(URLSessionPushTransport.retryAfter("Tue, 14 Nov 2023 22:13:50 GMT", now: now), 30)
+        XCTAssertNil(URLSessionPushTransport.retryAfter(nil, now: now))
+        XCTAssertNil(URLSessionPushTransport.retryAfter("soon", now: now))
     }
 
     func testRedirectChainIsBoundedAndHTTPOnly() {

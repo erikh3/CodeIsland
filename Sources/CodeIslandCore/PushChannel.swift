@@ -615,12 +615,23 @@ public struct PushDeliveryResult: Equatable, Sendable {
     /// Set when the request was answered from a different URL than it was
     /// sent to — the user should update the saved URL.
     public var redirectedTo: String?
+    /// Set when the server redirected somewhere CodeIsland refuses to follow
+    /// (another host, or https → http): the address to save instead, if the
+    /// user trusts it. Credential-free, like `redirectedTo`.
+    public var redirectRefusedTo: String?
 
-    public init(ok: Bool, statusCode: Int?, message: String, redirectedTo: String? = nil) {
+    public init(
+        ok: Bool,
+        statusCode: Int?,
+        message: String,
+        redirectedTo: String? = nil,
+        redirectRefusedTo: String? = nil
+    ) {
         self.ok = ok
         self.statusCode = statusCode
         self.message = message
         self.redirectedTo = redirectedTo
+        self.redirectRefusedTo = redirectRefusedTo
     }
 
     /// "HTTP 200 · ok", "HTTP 200 · errcode 310000: sign not match".
