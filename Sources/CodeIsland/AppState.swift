@@ -1186,7 +1186,7 @@ final class AppState {
         let cacheCopy = usageFileCache
         Task.detached(priority: .utility) {
             var cache = cacheCopy
-            let snapshot = ClaudeUsageScanner.scan(cache: &cache)
+            let snapshot = ClaudeUsageScanner.scan(claudeHomes: ClaudeConfigPaths.allConfigDirs(), cache: &cache)
             // Bound to a `let` before the hop: capturing the `var` in the
             // concurrently-executing closure is an error under Swift 6.
             let scannedCache = cache
@@ -2871,8 +2871,9 @@ final class AppState {
     private nonisolated static func readModelFromTranscript(sessionId: String, cwd: String?) -> String? {
         guard let cwd = cwd else { return nil }
         let projectDir = cwd.claudeProjectDirEncoded()
-        let path = "\(ClaudeConfigPaths.projectsDir())/\(projectDir)/\(sessionId).jsonl"
-        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        // The transcript sits under whichever config dir (account) ran it.
+        guard let path = ClaudeConfigPaths.transcriptPath(projectDir: projectDir, sessionId: sessionId),
+              let handle = FileHandle(forReadingAtPath: path) else { return nil }
         defer { handle.closeFile() }
         let chunk = handle.readData(ofLength: 32768)
         guard let text = String(data: chunk, encoding: .utf8) else { return nil }
@@ -2954,10 +2955,10 @@ final class AppState {
 
     private nonisolated static func readModelFromCodexStore(cwd: String?, processStart: Date?) -> String? {
         guard let cwd else { return nil }
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let base = "\(home)/.codex/sessions"
         let fm = FileManager.default
-        guard let path = findRecentCodexSession(base: base, cwd: cwd, after: processStart, fm: fm) else {
+        guard let path = codexStateRoots().lazy.compactMap({
+            findRecentCodexSession(base: "\($0)/sessions", cwd: cwd, after: processStart, fm: fm)
+        }).first else {
             return nil
         }
         return readRecentFromCodexTranscript(path: path).0
@@ -3032,34 +3033,38 @@ final class AppState {
         cwd: String?,
         processStart: Date?
     ) -> String? {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let statePath = "\(home)/.codex/state_5.sqlite"
+        // The thread may belong to any Codex root (CODEX_HOME / account).
+        let roots = codexStateRoots()
+        for root in roots {
+            let statePath = "\(root)/state_5.sqlite"
 
-        if let path: String = withSQLiteDatabase(at: statePath, body: { db in
-            guard let statement = prepareSQLiteStatement(
-                db: db,
-                sql: """
-                    SELECT rollout_path
-                    FROM threads
-                    WHERE id = ?
-                    LIMIT 1;
-                    """
-            ) else {
-                return nil
+            if let path: String = withSQLiteDatabase(at: statePath, body: { db in
+                guard let statement = prepareSQLiteStatement(
+                    db: db,
+                    sql: """
+                        SELECT rollout_path
+                        FROM threads
+                        WHERE id = ?
+                        LIMIT 1;
+                        """
+                ) else {
+                    return nil
+                }
+                defer { sqlite3_finalize(statement) }
+
+                bindSQLiteText(sessionId, to: statement, index: 1)
+                guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+                return sqliteColumnString(statement, index: 0)
+            }),
+               FileManager.default.fileExists(atPath: path) {
+                return path
             }
-            defer { sqlite3_finalize(statement) }
-
-            bindSQLiteText(sessionId, to: statement, index: 1)
-            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
-            return sqliteColumnString(statement, index: 0)
-        }),
-           FileManager.default.fileExists(atPath: path) {
-            return path
         }
 
         guard let cwd else { return nil }
-        let base = "\(home)/.codex/sessions"
-        return findRecentCodexSession(base: base, cwd: cwd, after: processStart, fm: .default)
+        return roots.lazy.compactMap {
+            findRecentCodexSession(base: "\($0)/sessions", cwd: cwd, after: processStart, fm: .default)
+        }.first
     }
 
     /// Config roots a Qoder session's transcript can live under: the international
@@ -3330,6 +3335,9 @@ final class AppState {
         let candidates: [(String, String)] = [
             ("claude", ClaudeConfigPaths.projectsDir()),
             ("codex", "\(home)/.codex/sessions"),
+            // $CODEX_HOME when CodeIsland itself was launched with one; the
+            // same path as above otherwise (duplicates are dropped below).
+            ("codex", "\(ConfigInstaller.codexHome())/sessions"),
             ("gemini", "\(home)/.gemini/tmp"),
             ("qoder", "\(home)/.qoder/projects"),
             ("codebuddy", "\(home)/.codebuddy/projects"),
@@ -3342,8 +3350,10 @@ final class AppState {
             ("grok", "\(ConfigInstaller.grokHome())/sessions"),
         ]
         let fm = FileManager.default
-        var roots = candidates.compactMap { source, path -> String? in
-            guard ConfigInstaller.isEnabled(source: source), fm.fileExists(atPath: path) else { return nil }
+        var seenRoots = Set<String>()
+        var roots = (candidates + extraConfigDirWatchRoots()).compactMap { source, path -> String? in
+            guard ConfigInstaller.isEnabled(source: source), fm.fileExists(atPath: path),
+                  seenRoots.insert(path).inserted else { return nil }
             return path
         }
         if ConfigInstaller.isEnabled(source: "cline") {
@@ -3466,6 +3476,15 @@ final class AppState {
         self.projectsWatcherBox = box
         self.fsEventStream = stream
         log.info("Discovery watcher started on \(watchRoots.joined(separator: ", "))")
+    }
+
+    /// Re-arm discovery after the watched roots changed — an extra config dir
+    /// was added, removed or paused in Settings → Hooks — and rescan at once so
+    /// sessions already running under a newly added root show up.
+    func restartProjectsWatcher() {
+        tearDownProjectsWatcher()
+        startProjectsWatcher()
+        requestDiscoveryScan()
     }
 
     /// Called by FSEventStream when a known session-store directory changes.
@@ -4677,7 +4696,8 @@ final class AppState {
         guard !claudePids.isEmpty else { return [] }
 
         let fm = FileManager.default
-        let claudeProjects = ClaudeConfigPaths.projectsDir()
+        let knownRoots = ClaudeConfigPaths.allConfigDirs()
+        let unsetEnvironmentRoot = ClaudeConfigPaths.defaultDirForUnsetEnvironment()
         var results: [DiscoveredSession] = []
         var seenSessionIds: Set<String> = []
 
@@ -4694,23 +4714,35 @@ final class AppState {
             let processStart = getProcessStartTime(pid)
 
             let projectDir = cwd.claudeProjectDirEncoded()
-            let projectPath = "\(claudeProjects)/\(projectDir)"
-            guard let files = try? fm.contentsOfDirectory(atPath: projectPath) else { continue }
+            // The config dir this process writes to (its CLAUDE_CONFIG_DIR), or
+            // every registered one when its environment cannot be read.
+            let roots = sessionRoots(
+                forProcess: pid,
+                cli: .claude,
+                knownRoots: knownRoots,
+                defaultRoot: unsetEnvironmentRoot
+            )
 
             // Find the most recently modified .jsonl that was written AFTER this process started
             var bestFile: String?
+            var projectPath = ""
             var bestDate = Date.distantPast
-            for file in files where file.hasSuffix(".jsonl") {
-                let fullPath = "\(projectPath)/\(file)"
-                if let attrs = try? fm.attributesOfItem(atPath: fullPath),
-                   let modified = attrs[.modificationDate] as? Date,
-                   modified > bestDate {
-                    // Skip files from old sessions: must be modified after process started
-                    if let start = processStart, modified < start.addingTimeInterval(-10) {
-                        continue
+            for root in roots {
+                let candidateProjectPath = "\(root)/projects/\(projectDir)"
+                guard let files = try? fm.contentsOfDirectory(atPath: candidateProjectPath) else { continue }
+                for file in files where file.hasSuffix(".jsonl") {
+                    let fullPath = "\(candidateProjectPath)/\(file)"
+                    if let attrs = try? fm.attributesOfItem(atPath: fullPath),
+                       let modified = attrs[.modificationDate] as? Date,
+                       modified > bestDate {
+                        // Skip files from old sessions: must be modified after process started
+                        if let start = processStart, modified < start.addingTimeInterval(-10) {
+                            continue
+                        }
+                        bestDate = modified
+                        bestFile = file
+                        projectPath = candidateProjectPath
                     }
-                    bestDate = modified
-                    bestFile = file
                 }
             }
 
@@ -5696,7 +5728,8 @@ final class AppState {
         fm: FileManager = .default
     ) -> GrokSessionCandidate? {
         // Model backfill runs on the main actor, and the index has no model.
-        grokSessionCandidates(cwd: cwd, includeIndex: false, fm: fm)
+        ConfigInstaller.grokHomes()
+            .flatMap { grokSessionCandidates(cwd: cwd, sessionsRoot: "\($0)/sessions", includeIndex: false, fm: fm) }
             .filter {
                 grokSessionProcessMatchScore(
                     createdAt: $0.createdAt,
@@ -5712,15 +5745,24 @@ final class AppState {
         guard !grokPids.isEmpty else { return [] }
 
         let fm = FileManager.default
-        let liveProcesses = grokPids.compactMap { pid -> (pid: pid_t, cwd: String, startedAt: Date?)? in
+        let knownRoots = ConfigInstaller.grokHomes()
+        let liveProcesses = grokPids.compactMap { pid -> (pid: pid_t, cwd: String, startedAt: Date?, roots: [String])? in
             guard let cwd = getCwd(for: pid), !cwd.isEmpty, !isSubagentWorktree(cwd) else { return nil }
-            return (pid, cwd, getProcessStartTime(pid))
+            // The GROK_HOME this process runs with, or every root if unreadable.
+            let roots = sessionRoots(forProcess: pid, cli: .grok, knownRoots: knownRoots, defaultRoot: defaultGrokRoot)
+            return (pid, cwd, getProcessStartTime(pid), roots)
         }
-        let processGroups = Dictionary(grouping: liveProcesses) { $0.cwd }
+        // Processes compete for sessions only within one cwd *and* one root:
+        // two accounts working in the same project keep separate stores.
+        let processGroups = Dictionary(grouping: liveProcesses) { ([$0.cwd] + $0.roots).joined(separator: "\u{0}") }
 
         var results: [DiscoveredSession] = []
-        for (cwd, processes) in processGroups {
-            let candidates = grokSessionCandidates(cwd: cwd, fm: fm)
+        for (_, processes) in processGroups {
+            guard let cwd = processes.first?.cwd, let roots = processes.first?.roots else { continue }
+            var seenCandidateIds = Set<String>()
+            let candidates = roots
+                .flatMap { grokSessionCandidates(cwd: cwd, sessionsRoot: "\($0)/sessions", fm: fm) }
+                .filter { seenCandidateIds.insert($0.sessionId).inserted }
             let assignments = matchGrokSessionsToProcesses(
                 processes: processes.map { ($0.pid, $0.startedAt) },
                 sessions: candidates.map { ($0.sessionId, $0.createdAt, $0.activityAt) }
@@ -6892,23 +6934,37 @@ final class AppState {
         let codexPids = findCodexPids(candidatePids: candidatePids)
         guard !codexPids.isEmpty else { return [] }
 
-        let processes = codexPids.map { pid in
-            CodexProcessDiscoveryCandidate(
+        // Each process is matched against the root it runs with (its
+        // CODEX_HOME); one whose environment cannot be read tries every root.
+        let knownRoots = ConfigInstaller.codexHomes()
+        var processesByRoot: [String: [CodexProcessDiscoveryCandidate]] = [:]
+        var rootOrder: [String] = []
+        for pid in codexPids {
+            let candidate = CodexProcessDiscoveryCandidate(
                 pid: pid,
                 cwd: getCwd(for: pid),
                 startTime: getProcessStartTime(pid),
                 isDesktop: executablePath(for: pid).map(isCodexExecutablePath) ?? false
             )
+            for root in sessionRoots(forProcess: pid, cli: .codex, knownRoots: knownRoots, defaultRoot: defaultCodexRoot) {
+                if processesByRoot[root] == nil { rootOrder.append(root) }
+                processesByRoot[root, default: []].append(candidate)
+            }
         }
 
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let sessionsBase = "\(home)/.codex/sessions"
-        let statePath = "\(home)/.codex/state_5.sqlite"
-        return discoverCodexSessions(
-            processes: processes,
-            sessionsBase: sessionsBase,
-            statePath: statePath
-        )
+        var results: [DiscoveredSession] = []
+        var seenSessionIds: Set<String> = []
+        for root in rootOrder {
+            let discovered = discoverCodexSessions(
+                processes: processesByRoot[root] ?? [],
+                sessionsBase: "\(root)/sessions",
+                statePath: "\(root)/state_5.sqlite"
+            )
+            for session in discovered where seenSessionIds.insert(session.sessionId).inserted {
+                results.append(session)
+            }
+        }
+        return results
     }
 
     /// Filesystem/state-DB portion of Codex discovery, split from process
@@ -7162,10 +7218,17 @@ final class AppState {
         statePath overrideStatePath: String? = nil
     ) -> [String: CodexSpawnEdgeRecord] {
         guard !threadIds.isEmpty else { return [:] }
-        let statePath = overrideStatePath ?? {
-            let home = FileManager.default.homeDirectoryForCurrentUser.path
-            return "\(home)/.codex/state_5.sqlite"
-        }()
+        guard let statePath = overrideStatePath else {
+            // A thread can live in any Codex root; the first root that knows it wins.
+            var merged: [String: CodexSpawnEdgeRecord] = [:]
+            for root in codexStateRoots() {
+                let unresolved = threadIds.subtracting(merged.keys)
+                guard !unresolved.isEmpty else { break }
+                let found = codexSpawnEdgeRecords(threadIds: unresolved, statePath: "\(root)/state_5.sqlite")
+                merged.merge(found) { current, _ in current }
+            }
+            return merged
+        }
         return withSQLiteDatabase(at: statePath) { db in
             let edgeColumns = sqliteTableColumns(db: db, tableName: "thread_spawn_edges")
             guard Set(["parent_thread_id", "child_thread_id", "status"]).isSubset(of: edgeColumns) else {

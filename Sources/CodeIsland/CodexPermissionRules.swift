@@ -12,6 +12,17 @@ struct CodexPermissionRules {
         SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String) == "codex"
     }
 
+    /// The Codex root the event's session runs under — its config.toml and
+    /// rules are the ones that apply. A session started with CODEX_HOME set to
+    /// an extra root registered in Settings is recognised by the transcript
+    /// path Codex reports; everything else belongs to the primary root.
+    static func codexHome(for event: HookEvent) -> String {
+        ExtraConfigDirs.owningRoot(
+            of: event.rawJSON["transcript_path"] as? String,
+            among: ConfigInstaller.codexHomes()
+        ) ?? ConfigInstaller.codexHome()
+    }
+
     static func shouldDeferToCodexAutoReview(for event: HookEvent, fileManager: FileManager = .default) -> Bool {
         guard isCodexEvent(event) else { return false }
 
@@ -19,7 +30,7 @@ struct CodexPermissionRules {
             return isAutoReviewReviewer(reviewer)
         }
 
-        let configPath = ConfigInstaller.codexHome() + "/config.toml"
+        let configPath = codexHome(for: event) + "/config.toml"
         guard fileManager.fileExists(atPath: configPath),
               let contents = try? String(contentsOfFile: configPath, encoding: .utf8) else {
             return false
@@ -85,15 +96,16 @@ struct CodexPermissionRules {
 
     @discardableResult
     func persistAlwaysAllowRule(for event: HookEvent) -> Bool {
+        let codexHome = Self.codexHome(for: event)
         if let mcpTool = Self.mcpToolApprovalTarget(for: event) {
-            return persistMCPToolApproval(serverID: mcpTool.serverID, toolName: mcpTool.toolName)
+            return persistMCPToolApproval(serverID: mcpTool.serverID, toolName: mcpTool.toolName, codexHome: codexHome)
         }
 
         guard let pattern = Self.prefixPattern(for: event), !pattern.isEmpty else {
             return false
         }
 
-        let rulesDirectory = ConfigInstaller.codexHome() + "/rules"
+        let rulesDirectory = codexHome + "/rules"
         let rulesPath = rulesDirectory + "/codeisland.rules"
         let block = Self.ruleBlock(for: pattern)
         let patternLine = Self.patternLine(for: pattern)
@@ -115,8 +127,8 @@ struct CodexPermissionRules {
         }
     }
 
-    private func persistMCPToolApproval(serverID: String, toolName: String) -> Bool {
-        let configPath = ConfigInstaller.codexHome() + "/config.toml"
+    private func persistMCPToolApproval(serverID: String, toolName: String, codexHome: String) -> Bool {
+        let configPath = codexHome + "/config.toml"
         let configDirectory = (configPath as NSString).deletingLastPathComponent
 
         do {

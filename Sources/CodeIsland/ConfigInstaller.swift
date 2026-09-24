@@ -123,6 +123,11 @@ struct CLIConfig {
     var displayPathOverride: (@Sendable () -> String)? = nil
     /// Optional override for the `--source` value passed to the bridge.
     var bridgeSourceOverride: String? = nil
+    /// Set on the copies `ConfigInstaller.extraConfigDirCLI(for:)` makes of the
+    /// Claude / Codex / Grok entries for an extra config root registered in
+    /// Settings; `rootOverride` then points at that root. Nil for every
+    /// built-in and custom entry.
+    var extraConfigDir: String? = nil
 
     var fullPath: String {
         if let override = rootOverride {
@@ -990,6 +995,13 @@ struct ConfigInstaller {
             }
         }
 
+        // Extra config roots registered in Settings → Hooks. A root that is gone
+        // or no longer looks like the CLI's is skipped (its row says why) and
+        // does not fail the reinstall; only a failed write does.
+        for cli in extraConfigDirCLIs() where isEnabled(source: cli.source) {
+            if installHooks(inExtraDir: cli, fm: fm) == .failed { ok = false }
+        }
+
         // Codex requires hooks = true in config.toml
         if isEnabled(source: "codex"),
            fm.fileExists(atPath: codexHome()) {
@@ -1046,6 +1058,10 @@ struct ConfigInstaller {
             } else {
                 uninstallHooks(cli: cli, fm: fm)
             }
+        }
+        // Every registered extra root, paused ones included.
+        for cli in extraConfigDirCLIs(includeDisabled: true) {
+            uninstallHooks(cli: cli, fm: fm)
         }
 
         uninstallOpencodePlugin(fm: fm)
@@ -1193,6 +1209,8 @@ struct ConfigInstaller {
     static func setEnabled(source: String, enabled: Bool) -> Bool {
         UserDefaults.standard.set(enabled, forKey: "cli_enabled_\(source)")
         let fm = FileManager.default
+        // Claude / Codex / Grok: the switch covers the extra config roots too.
+        applySourceToggleToExtraConfigDirs(source: source, enabled: enabled, fm: fm)
         if enabled {
             installHookScript(fm: fm)
             installBridgeBinary(fm: fm)
@@ -1332,6 +1350,7 @@ struct ConfigInstaller {
            fm.fileExists(atPath: codexHome()) {
             enableCodexHooksConfig(fm: fm)
         }
+        repaired.append(contentsOf: repairExtraConfigDirs(fm: fm))
         // OpenCode plugin
         if isEnabled(source: "opencode"),
            fm.fileExists(atPath: (opencodeConfigPath as NSString).deletingLastPathComponent),
@@ -2586,9 +2605,12 @@ struct ConfigInstaller {
 
     /// Ensure hooks = true under [features] in $CODEX_HOME/config.toml
     /// (or ~/.codex/config.toml when unset) so Codex actually fires hook events.
+    /// `codexHome` is overridden for extra Codex roots registered in Settings —
+    /// each root has its own config.toml, and a hooks.json without the flag
+    /// next to it is never read.
     @discardableResult
-    static func enableCodexHooksConfig(fm: FileManager) -> Bool {
-        let configPath = codexHome() + "/config.toml"
+    static func enableCodexHooksConfig(fm: FileManager, codexHome: String = ConfigInstaller.codexHome()) -> Bool {
+        let configPath = codexHome + "/config.toml"
         try? fm.createDirectory(
             atPath: (configPath as NSString).deletingLastPathComponent,
             withIntermediateDirectories: true
@@ -3495,5 +3517,221 @@ struct ConfigInstaller {
             }
         }
         return false
+    }
+}
+
+// MARK: - Extra config directories (Settings → Hooks)
+
+/// Hook state of one registered extra config root, for the Hooks page.
+struct ExtraConfigDirStatus: Identifiable, Equatable {
+    let dir: ExtraConfigDir
+    /// Whether the root is still there and still looks like the CLI's.
+    let inspection: ConfigDirInspection
+    let hooksInstalled: Bool
+    /// The CLI's master switch (`cli_enabled_<source>`) — off pauses every root.
+    let sourceEnabled: Bool
+    /// The file the hooks live in, e.g. `~/.claude-work/settings.json`.
+    let displayConfigPath: String
+    let fullConfigPath: String
+
+    var id: String { dir.id }
+}
+
+enum ExtraConfigDirInstallOutcome: Equatable {
+    case installed
+    /// Nothing written; the inspection says why (missing, not the CLI's, …).
+    case skipped(ConfigDirInspection)
+    /// Registered, but the CLI's master switch is off — installed once it is on.
+    case sourceDisabled
+    /// The config file could not be written (e.g. unparseable JSON, #89 guard).
+    case failed
+}
+
+extension ConfigInstaller {
+    /// Primary `$CODEX_HOME` followed by the enabled extra Codex roots.
+    static func codexHomes() -> [String] {
+        ExtraConfigDirs.roots(primary: codexHome(), extras: ExtraConfigDirs.enabledPaths(for: .codex))
+    }
+
+    /// Primary `$GROK_HOME` followed by the enabled extra Grok roots.
+    static func grokHomes() -> [String] {
+        ExtraConfigDirs.roots(primary: grokHome(), extras: ExtraConfigDirs.enabledPaths(for: .grok))
+    }
+
+    static func primaryConfigRoot(for cli: ConfigDirCLI) -> String {
+        switch cli {
+        case .claude: return ClaudeConfigPaths.configDir()
+        case .codex: return codexHome()
+        case .grok: return grokHome()
+        }
+    }
+
+    /// The built-in Claude / Codex / Grok entry, re-rooted at an extra root.
+    ///
+    /// Everything else — events, hook format, bridge source — is the built-in
+    /// entry's, so the same install / detect / uninstall code serves every root
+    /// and events from it arrive as ordinary Claude / Codex / Grok sessions.
+    /// (A *custom CLI* is the other extension point, and the wrong one here: it
+    /// registers a new source, so those sessions would not be Claude/Codex/Grok
+    /// sessions at all — no transcripts, no usage, no Codex config.toml flag.)
+    static func extraConfigDirCLI(for dir: ExtraConfigDir) -> CLIConfig? {
+        guard var cli = builtInCLIs.first(where: { $0.source == dir.cli.source }) else { return nil }
+        let root = dir.path
+        let configPath = cli.configPath
+        cli.rootOverride = { root }
+        cli.displayPathOverride = { ClaudeConfigPaths.displayPath(root + "/" + configPath) }
+        cli.extraConfigDir = root
+        return cli
+    }
+
+    static func extraConfigDirCLIs(
+        in dirs: [ExtraConfigDir] = ExtraConfigDirs.load(),
+        includeDisabled: Bool = false
+    ) -> [CLIConfig] {
+        dirs.filter { includeDisabled || $0.enabled }.compactMap(extraConfigDirCLI(for:))
+    }
+
+    /// Install hooks into one extra root. Unlike the primary root, the directory
+    /// is never created: one that has gone missing, or no longer looks like the
+    /// CLI's root, is reported through `.skipped` instead of being written into.
+    /// Does not touch the shared hook script / bridge binary — callers do.
+    @discardableResult
+    static func installHooks(
+        inExtraDir cli: CLIConfig,
+        fm: FileManager,
+        probe: (String) -> ConfigDirEntryKind = ConfigDirEntryKind.probe
+    ) -> ExtraConfigDirInstallOutcome {
+        guard let root = cli.extraConfigDir, let kind = ConfigDirCLI(rawValue: cli.source) else { return .failed }
+        let inspection = ExtraConfigDirs.inspect(path: root, cli: kind, probe: probe)
+        guard inspection == .ready else { return .skipped(inspection) }
+        let ok: Bool
+        switch kind {
+        case .claude:
+            ok = installClaudeHooks(cli: cli, fm: fm)
+        case .codex:
+            // Without `hooks = true` in *this* root's config.toml, Codex started
+            // with CODEX_HOME=<root> never reads the hooks.json beside it.
+            ok = installExternalHooks(cli: cli, fm: fm) && enableCodexHooksConfig(fm: fm, codexHome: root)
+        case .grok:
+            ok = installExternalHooks(cli: cli, fm: fm)
+        }
+        return ok ? .installed : .failed
+    }
+
+    /// Hook state of one extra root for the Hooks page.
+    static func extraConfigDirStatus(
+        for dir: ExtraConfigDir,
+        fm: FileManager = .default,
+        probe: (String) -> ConfigDirEntryKind = ConfigDirEntryKind.probe
+    ) -> ExtraConfigDirStatus? {
+        guard let cli = extraConfigDirCLI(for: dir) else { return nil }
+        let inspection = ExtraConfigDirs.inspect(path: dir.path, cli: dir.cli, probe: probe)
+        return ExtraConfigDirStatus(
+            dir: dir,
+            inspection: inspection,
+            hooksInstalled: inspection == .ready && isHooksInstalled(for: cli, fm: fm),
+            sourceEnabled: isEnabled(source: dir.cli.source),
+            displayConfigPath: cli.displayConfigPath,
+            fullConfigPath: cli.fullPath
+        )
+    }
+
+    static func extraConfigDirStatuses() -> [ExtraConfigDirStatus] {
+        ExtraConfigDirs.load().compactMap { extraConfigDirStatus(for: $0) }
+    }
+
+    /// Register a root typed or picked in Settings and, if its CLI is being
+    /// monitored, install the hooks right away.
+    static func addExtraConfigDir(
+        cli: ConfigDirCLI,
+        rawPath: String
+    ) -> Result<(dir: ExtraConfigDir, outcome: ExtraConfigDirInstallOutcome), ExtraConfigDirError> {
+        var dirs = ExtraConfigDirs.load()
+        let validated = ExtraConfigDirs.validateNew(
+            rawPath: rawPath,
+            cli: cli,
+            primary: primaryConfigRoot(for: cli),
+            existing: dirs,
+            homeDir: NSHomeDirectory()
+        )
+        switch validated {
+        case .failure(let error):
+            return .failure(error)
+        case .success(let dir):
+            dirs.append(dir)
+            ExtraConfigDirs.save(dirs)
+            return .success((dir, installRegisteredExtraDir(dir)))
+        }
+    }
+
+    /// Forget a root and take CodeIsland's hooks out of it (user entries stay).
+    @discardableResult
+    static func removeExtraConfigDir(id: String) -> ExtraConfigDir? {
+        var dirs = ExtraConfigDirs.load()
+        guard let index = dirs.firstIndex(where: { $0.id == id }) else { return nil }
+        let dir = dirs.remove(at: index)
+        if let cli = extraConfigDirCLI(for: dir) {
+            uninstallHooks(cli: cli, fm: .default)
+        }
+        ExtraConfigDirs.save(dirs)
+        return dir
+    }
+
+    /// Per-root monitoring switch: installs or removes that root's hooks only.
+    @discardableResult
+    static func setExtraConfigDirEnabled(id: String, enabled: Bool) -> ExtraConfigDirInstallOutcome? {
+        var dirs = ExtraConfigDirs.load()
+        guard let index = dirs.firstIndex(where: { $0.id == id }) else { return nil }
+        dirs[index].enabled = enabled
+        ExtraConfigDirs.save(dirs)
+        let dir = dirs[index]
+        if enabled { return installRegisteredExtraDir(dir) }
+        if let cli = extraConfigDirCLI(for: dir) {
+            uninstallHooks(cli: cli, fm: .default)
+        }
+        return nil
+    }
+
+    private static func installRegisteredExtraDir(_ dir: ExtraConfigDir) -> ExtraConfigDirInstallOutcome {
+        guard isEnabled(source: dir.cli.source) else { return .sourceDisabled }
+        guard let cli = extraConfigDirCLI(for: dir) else { return .failed }
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: codeislandDir, withIntermediateDirectories: true)
+        installHookScript(fm: fm)
+        installBridgeBinary(fm: fm)
+        return installHooks(inExtraDir: cli, fm: fm)
+    }
+
+    /// The master switch of Claude / Codex / Grok covers their extra roots too:
+    /// turning it on installs into every enabled root, off removes from all.
+    static func applySourceToggleToExtraConfigDirs(source: String, enabled: Bool, fm: FileManager) {
+        guard ConfigDirCLI(rawValue: source) != nil else { return }
+        let dirs = ExtraConfigDirs.load().filter { $0.cli.source == source }
+        for cli in extraConfigDirCLIs(in: dirs, includeDisabled: !enabled) {
+            if enabled {
+                installHooks(inExtraDir: cli, fm: fm)
+            } else {
+                uninstallHooks(cli: cli, fm: fm)
+            }
+        }
+    }
+
+    /// `verifyAndRepair` for extra roots: put back hooks that went missing in a
+    /// root that is still there, with the same respect for hand-pruned events
+    /// (#182) as the primary root. Returns labels of the repaired roots.
+    static func repairExtraConfigDirs(fm: FileManager) -> [String] {
+        var repaired: [String] = []
+        for cli in extraConfigDirCLIs() where isEnabled(source: cli.source) {
+            guard let root = cli.extraConfigDir,
+                  let kind = ConfigDirCLI(rawValue: cli.source),
+                  ExtraConfigDirs.inspect(path: root, cli: kind) == .ready else { continue }
+            if kind == .codex { enableCodexHooksConfig(fm: fm, codexHome: root) }
+            if isHooksInstalled(for: cli, fm: fm) { continue }
+            if shouldPreservePartialHooks(for: cli, fm: fm) { continue }
+            if installHooks(inExtraDir: cli, fm: fm) == .installed {
+                repaired.append("\(cli.name) (\(ClaudeConfigPaths.displayPath(root)))")
+            }
+        }
+        return repaired
     }
 }

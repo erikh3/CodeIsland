@@ -587,6 +587,9 @@ private struct BehaviorPage: View {
                             ClaudeConfigPaths.displayPath(ClaudeConfigPaths.configDir())))
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
+                Text(l10n["extra_config_dirs_more_hint"])
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
             }
 
             Section(l10n["excluded_hook_cwd_title"]) {
@@ -677,6 +680,11 @@ private struct HooksPage: View {
     @State private var customConfigPath = ""
     @State private var customConfigKey = "hooks"
     @State private var customFormat: HookFormat = .claude
+    @State private var extraDirStatuses: [ExtraConfigDirStatus] = []
+    @State private var newExtraDirCLI: ConfigDirCLI = .claude
+    @State private var newExtraDirPath = ""
+    @State private var extraDirMessage = ""
+    @State private var extraDirMessageIsError = false
 
     private func refreshCLIStatuses() {
         for cli in ConfigInstaller.allCLIs {
@@ -685,6 +693,60 @@ private struct HooksPage: View {
         cliStatuses["opencode"] = ConfigInstaller.isInstalled(source: "opencode")
         cliStatuses["aiwork"] = ConfigInstaller.isInstalled(source: "aiwork")
         cliStatuses["aiwork-cli"] = ConfigInstaller.isInstalled(source: "aiwork-cli")
+        extraDirStatuses = ConfigInstaller.extraConfigDirStatuses()
+    }
+
+    // MARK: Extra config directories
+
+    private func addExtraConfigDir() {
+        let cli = newExtraDirCLI
+        switch ConfigInstaller.addExtraConfigDir(cli: cli, rawPath: newExtraDirPath) {
+        case .failure(let error):
+            extraDirMessage = ExtraConfigDirText.error(error, cli: cli, l10n: l10n)
+            extraDirMessageIsError = true
+        case .success(let added):
+            extraDirMessage = ExtraConfigDirText.added(added.dir, outcome: added.outcome, l10n: l10n)
+            extraDirMessageIsError = added.outcome == .failed
+            newExtraDirPath = ""
+            // Its session store joins the discovery watcher, and sessions
+            // already running under it show up without waiting for a hook.
+            appState?.restartProjectsWatcher()
+        }
+        refreshCLIStatuses()
+    }
+
+    private func removeExtraConfigDir(_ status: ExtraConfigDirStatus) {
+        if let removed = ConfigInstaller.removeExtraConfigDir(id: status.id) {
+            extraDirMessage = String(format: l10n["extra_config_dirs_removed"], ClaudeConfigPaths.displayPath(removed.path))
+            extraDirMessageIsError = false
+            appState?.restartProjectsWatcher()
+        }
+        refreshCLIStatuses()
+    }
+
+    private func setExtraConfigDir(_ status: ExtraConfigDirStatus, enabled: Bool) {
+        if let outcome = ConfigInstaller.setExtraConfigDirEnabled(id: status.id, enabled: enabled),
+           outcome == .failed {
+            extraDirMessage = String(format: l10n["extra_config_dirs_write_failed"], status.displayConfigPath)
+            extraDirMessageIsError = true
+        }
+        appState?.restartProjectsWatcher()
+        refreshCLIStatuses()
+    }
+
+    /// Config dirs are dot-directories, so the panel shows hidden files.
+    private func chooseExtraConfigDir() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.showsHiddenFiles = true
+        panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        panel.message = String(format: l10n["extra_config_dirs_panel_message"], newExtraDirCLI.displayName)
+        panel.prompt = l10n["extra_config_dirs_choose_prompt"]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        newExtraDirPath = ClaudeConfigPaths.displayPath(url.path)
     }
 
     private func applySourceToggle(source: String, enabled: Bool) {
@@ -722,6 +784,14 @@ private struct HooksPage: View {
                         exists: exists
                     ) { enabled in applySourceToggle(source: cli.source, enabled: enabled) }
                     .id("\(cli.source)-\(refreshKey)")
+                    // Extra config roots of this CLI, each with its own status.
+                    ForEach(extraDirStatuses.filter { $0.dir.cli.source == cli.source }) { status in
+                        ExtraConfigDirRow(
+                            status: status,
+                            onToggle: { setExtraConfigDir(status, enabled: $0) },
+                            onRemove: { removeExtraConfigDir(status) }
+                        )
+                    }
                 }
                 // OpenCode (plugin-based, not hooks)
                 let ocInstalled = cliStatuses["opencode"] ?? false
@@ -763,6 +833,49 @@ private struct HooksPage: View {
             }
 
             ClaudeDesktopCoworkSection(appState: appState)
+
+            Section(l10n["extra_config_dirs_title"]) {
+                Text(l10n["extra_config_dirs_desc"])
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Picker("", selection: $newExtraDirCLI) {
+                        ForEach(ConfigDirCLI.allCases, id: \.self) { cli in
+                            Text(cli.displayName).tag(cli)
+                        }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    // Prompt inside the field: a Form row would otherwise render
+                    // the title as a label and squeeze the field between it and
+                    // the buttons.
+                    TextField(
+                        "",
+                        text: $newExtraDirPath,
+                        prompt: Text(String(format: l10n["extra_config_dirs_placeholder"], newExtraDirCLI.environmentKey))
+                    )
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .autocorrectionDisabled(true)
+                    .onSubmit(addExtraConfigDir)
+                    Button(l10n["extra_config_dirs_choose"], action: chooseExtraConfigDir)
+                    Button(l10n["extra_config_dirs_add"], action: addExtraConfigDir)
+                        .disabled(newExtraDirPath.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if !extraDirMessage.isEmpty {
+                    HStack(alignment: .top, spacing: 4) {
+                        Image(systemName: extraDirMessageIsError ? "xmark.circle.fill" : "checkmark.circle.fill")
+                            .foregroundStyle(extraDirMessageIsError ? .red : .green)
+                        Text(extraDirMessage)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
 
             Section("Custom CLIs") {
                 let customItems = ConfigInstaller.customCLIConfigs()
@@ -900,6 +1013,144 @@ private struct HooksPage: View {
         }
         .formStyle(.grouped)
         .onAppear { refreshCLIStatuses() }
+    }
+}
+
+/// One extra config root, listed under its CLI in "CLI status": where it is,
+/// whether its hooks are in, and — when they cannot be — why.
+private struct ExtraConfigDirRow: View {
+    @ObservedObject private var l10n = L10n.shared
+    let status: ExtraConfigDirStatus
+    let onToggle: (Bool) -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "arrow.turn.down.right")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .frame(width: 20)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(ClaudeConfigPaths.displayPath(status.dir.path))
+                    .font(.system(size: 12, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(status.dir.path)
+                detail
+            }
+            Spacer()
+            Toggle("", isOn: Binding(get: { status.dir.enabled }, set: onToggle))
+                .labelsHidden()
+                .disabled(!status.sourceEnabled)
+            Button(role: .destructive, action: onRemove) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help(l10n["extra_config_dirs_remove_help"])
+        }
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        if let problem = ExtraConfigDirText.statusProblem(status, l10n: l10n) {
+            HStack(alignment: .top, spacing: 3) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(problem)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .font(.system(size: 11))
+        } else if let note = ExtraConfigDirText.statusNote(status, l10n: l10n) {
+            Text(note)
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+        } else {
+            HStack(spacing: 2) {
+                Text(status.displayConfigPath)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: status.fullConfigPath)])
+                } label: {
+                    Image(systemName: "arrow.right.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.blue)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+/// User-facing wording for extra config roots. Every state that leaves a root
+/// without hooks says why — never a bare "skipped".
+enum ExtraConfigDirText {
+    static func inspection(_ inspection: ConfigDirInspection, cli: ConfigDirCLI, l10n: L10n) -> String? {
+        switch inspection {
+        case .ready:
+            return nil
+        case .missing:
+            return l10n["extra_dir_missing"]
+        case .notADirectory:
+            return l10n["extra_dir_not_directory"]
+        case .unrecognized:
+            return String(format: l10n["extra_dir_unrecognized"], cli.displayName, cli.environmentKey)
+        case .belongsTo(let other):
+            return String(format: l10n["extra_dir_belongs_to"], other.displayName, cli.displayName)
+        }
+    }
+
+    static func error(_ error: ExtraConfigDirError, cli: ConfigDirCLI, l10n: L10n) -> String {
+        switch error {
+        case .invalidPath:
+            return l10n["extra_dir_invalid_path"]
+        case .isPrimary:
+            return String(format: l10n["extra_dir_is_primary"], cli.displayName)
+        case .duplicate:
+            return l10n["extra_dir_duplicate"]
+        case .unusable(let inspection):
+            return self.inspection(inspection, cli: cli, l10n: l10n) ?? l10n["extra_dir_invalid_path"]
+        }
+    }
+
+    static func added(_ dir: ExtraConfigDir, outcome: ExtraConfigDirInstallOutcome, l10n: L10n) -> String {
+        let path = ClaudeConfigPaths.displayPath(dir.path)
+        switch outcome {
+        case .installed:
+            return String(format: l10n["extra_config_dirs_added"], path)
+        case .sourceDisabled:
+            return String(format: l10n["extra_config_dirs_added_source_off"], path, dir.cli.displayName)
+        case .skipped(let inspection):
+            let reason = self.inspection(inspection, cli: dir.cli, l10n: l10n) ?? ""
+            return String(format: l10n["extra_config_dirs_added_skipped"], path, reason)
+        case .failed:
+            let configPath = ConfigInstaller.extraConfigDirCLI(for: dir)?.displayConfigPath ?? path
+            return String(format: l10n["extra_config_dirs_write_failed"], configPath)
+        }
+    }
+
+    /// Why a registered root has no hooks right now, if something is wrong.
+    static func statusProblem(_ status: ExtraConfigDirStatus, l10n: L10n) -> String? {
+        guard status.sourceEnabled, status.dir.enabled else { return nil }
+        if let reason = inspection(status.inspection, cli: status.dir.cli, l10n: l10n) {
+            return String(format: l10n["extra_dir_hooks_skipped"], reason)
+        }
+        return nil
+    }
+
+    /// Neutral state line (paused, CLI off, not installed yet); nil when the
+    /// hooks are in and the row shows the config file instead.
+    static func statusNote(_ status: ExtraConfigDirStatus, l10n: L10n) -> String? {
+        if !status.sourceEnabled {
+            return String(format: l10n["extra_dir_source_off"], status.dir.cli.displayName)
+        }
+        if !status.dir.enabled { return l10n["extra_dir_paused"] }
+        if !status.hooksInstalled { return l10n["not_installed"] }
+        return nil
     }
 }
 

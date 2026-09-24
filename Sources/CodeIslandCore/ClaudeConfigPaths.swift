@@ -87,6 +87,34 @@ public enum ClaudeConfigPaths {
     /// Where per-project transcripts live.
     public static func projectsDir() -> String { configDir() + "/projects" }
 
+    /// The primary config dir followed by every enabled extra one registered in
+    /// Settings → Hooks (`ExtraConfigDirs`), without duplicates. Readers that
+    /// look *for* a session or its usage go through this; the hook installer
+    /// and the Settings "currently using" line keep using `configDir()`.
+    public static func allConfigDirs() -> [String] {
+        ExtraConfigDirs.roots(primary: configDir(), extras: ExtraConfigDirs.enabledPaths(for: .claude))
+    }
+
+    /// The dir a Claude Code process with no `$CLAUDE_CONFIG_DIR` of its own
+    /// uses: the auto-detect chain minus the preference and CodeIsland's own
+    /// environment, which describe the *user's* setup, not that process.
+    public static func defaultDirForUnsetEnvironment(homeDir: String = NSHomeDirectory()) -> String {
+        resolve(preference: nil, environment: nil, homeDir: homeDir, directoryExists: defaultDirectoryExists)
+    }
+
+    /// First existing `<root>/projects/<projectDir>/<sessionId>.jsonl` across
+    /// `roots` — a session's transcript sits under whichever account ran it.
+    public static func transcriptPath(
+        projectDir: String,
+        sessionId: String,
+        roots: [String] = allConfigDirs(),
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> String? {
+        roots.lazy
+            .map { "\($0)/projects/\(projectDir)/\(sessionId).jsonl" }
+            .first(where: fileExists)
+    }
+
     /// The `settings.json` that holds hook configuration.
     public static func settingsPath() -> String { configDir() + "/settings.json" }
 

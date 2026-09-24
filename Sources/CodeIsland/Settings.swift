@@ -148,6 +148,9 @@ enum SettingsKey {
     // Claude Code config dir override (empty = auto-detect). Must match
     // ClaudeConfigPaths.preferenceKey — that resolver is the only reader.
     static let claudeConfigDir = "claude_config_dir"
+    // Extra Claude Code / Codex / Grok config roots (JSON list, Settings → Hooks).
+    // Must match ExtraConfigDirs.preferenceKey — CodeIslandCore reads it directly.
+    static let extraConfigDirs = "extra_config_dirs_v1"
 
     // Webhook forwarding: POST hook events to an external URL
     static let webhookEnabled = "webhookEnabled"
@@ -246,6 +249,7 @@ struct SettingsDefaults {
     static let excludedHookCwdSubstrings = ""
 
     static let claudeConfigDir = ""
+    static let extraConfigDirs = ""
 
     static let webhookEnabled = false
     static let webhookURL = ""
@@ -330,6 +334,7 @@ class SettingsManager {
             SettingsKey.autoApproveSources: SettingsDefaults.autoApproveSources,
             SettingsKey.excludedHookCwdSubstrings: SettingsDefaults.excludedHookCwdSubstrings,
             SettingsKey.claudeConfigDir: SettingsDefaults.claudeConfigDir,
+            SettingsKey.extraConfigDirs: SettingsDefaults.extraConfigDirs,
             SettingsKey.webhookEnabled: SettingsDefaults.webhookEnabled,
             SettingsKey.webhookURL: SettingsDefaults.webhookURL,
             SettingsKey.webhookEventFilter: SettingsDefaults.webhookEventFilter,
