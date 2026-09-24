@@ -83,6 +83,14 @@ private struct PushChannelEditor: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 eventToggles
+                VStack(alignment: .leading, spacing: 2) {
+                    Toggle(l10n["push_include_details"], isOn: $config.includeDetails)
+                        .font(.system(size: 12))
+                    Text(l10n["push_include_details_desc"])
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 testRow
                 status
             }

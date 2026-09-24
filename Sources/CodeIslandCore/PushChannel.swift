@@ -32,6 +32,15 @@ public enum PushChannelKind: String, CaseIterable, Codable, Sendable, Identifiab
         case .dingtalk, .feishu, .wecom, .slack: return ""
         }
     }
+
+    /// A team chat: everyone in the group reads what is posted, so a new
+    /// channel sends headlines only (`PushChannelConfig.includeDetails`).
+    public var isGroupChat: Bool {
+        switch self {
+        case .dingtalk, .feishu, .wecom, .slack: return true
+        case .bark, .ntfy, .telegram: return false
+        }
+    }
 }
 
 /// Why a channel can't send yet. The settings UI shows it inline, and a test
@@ -69,6 +78,11 @@ public struct PushChannelConfig: Codable, Equatable, Sendable, Identifiable {
     /// ntfy priority (1–5) for pushes that block an agent; the rest go at
     /// the default priority 3, or lower if the user picked lower.
     public var priority: Int
+    /// Commands, replies, error text and question options. Off, a push says
+    /// only who, which project and what happened (tool name / question
+    /// label). Defaults off for team chats, on for personal channels —
+    /// also for settings saved before this switch existed.
+    public var includeDetails: Bool
 
     public var id: String { kind.rawValue }
 
@@ -86,10 +100,11 @@ public struct PushChannelConfig: Codable, Equatable, Sendable, Identifiable {
         self.icon = ""
         self.sound = ""
         self.priority = Self.defaultPriority
+        self.includeDetails = !kind.isGroupChat
     }
 
     private enum CodingKeys: String, CodingKey {
-        case kind, enabled, events, endpoint, target, token, secret, group, icon, sound, priority
+        case kind, enabled, events, endpoint, target, token, secret, group, icon, sound, priority, includeDetails
     }
 
     /// Every field but `kind` is optional on decode, and unknown event names
@@ -109,6 +124,7 @@ public struct PushChannelConfig: Codable, Equatable, Sendable, Identifiable {
         icon = try c.decodeIfPresent(String.self, forKey: .icon) ?? icon
         sound = try c.decodeIfPresent(String.self, forKey: .sound) ?? sound
         priority = try c.decodeIfPresent(Int.self, forKey: .priority) ?? priority
+        includeDetails = try c.decodeIfPresent(Bool.self, forKey: .includeDetails) ?? includeDetails
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -124,6 +140,7 @@ public struct PushChannelConfig: Codable, Equatable, Sendable, Identifiable {
         try c.encode(icon, forKey: .icon)
         try c.encode(sound, forKey: .sound)
         try c.encode(priority, forKey: .priority)
+        try c.encode(includeDetails, forKey: .includeDetails)
     }
 
     /// First reason this channel cannot send, or nil when it can.

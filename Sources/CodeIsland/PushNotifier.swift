@@ -138,14 +138,18 @@ final class PushNotifier: ObservableObject {
             return skip(reason, kind, subject)
         }
 
-        let message = PushMessageFormatter.render(
-            content,
-            subject: subject,
-            strings: Self.strings(),
-            summaryLimit: summaryLimit,
-            now: now
-        )
+        // Rendered once per detail level; team chats default to headlines only.
+        var rendered: [Bool: PushMessage] = [:]
         for channel in targets {
+            let message = rendered[channel.includeDetails] ?? PushMessageFormatter.render(
+                content,
+                subject: subject,
+                strings: Self.strings(),
+                summaryLimit: summaryLimit,
+                includeDetails: channel.includeDetails,
+                now: now
+            )
+            rendered[channel.includeDetails] = message
             deliver(message, to: channel, kind: kind, now: now)
         }
         log.info("push \(kind.rawValue, privacy: .public) session=\(subject.sessionId, privacy: .public) → \(targets.map(\.kind.rawValue).joined(separator: ","), privacy: .public)")

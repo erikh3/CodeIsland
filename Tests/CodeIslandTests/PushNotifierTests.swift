@@ -177,6 +177,42 @@ final class PushNotifierTests: XCTestCase {
         for response in responses { _ = try await awaitValue(of: response) }
     }
 
+    /// A team chat added with default settings hears that an approval is
+    /// waiting, not the command; the phone still gets the command.
+    func testTeamChatGetsTheHeadlineAndThePhoneTheDetails() async throws {
+        var bark = PushChannelConfig(kind: .bark)
+        bark.enabled = true
+        bark.target = "TESTKEY"
+        var dingtalk = PushChannelConfig(kind: .dingtalk)
+        dingtalk.enabled = true
+        dingtalk.endpoint = "https://oapi.dingtalk.com/robot/send?access_token=abc"
+        defaults.set(PushChannelConfig.encodeList([bark, dingtalk]), forKey: SettingsKey.pushChannels)
+
+        let appState = AppState()
+        let event = try makeEvent([
+            "hook_event_name": "PermissionRequest",
+            "session_id": "push-team",
+            "cwd": "/tmp/push-team",
+            "tool_name": "Bash",
+            "tool_input": ["command": "cat > deploy.key <<EOF\nPRIVATE KEY BODY\nEOF"],
+        ])
+        let response = Task<Data, Never> {
+            await withCheckedContinuation { appState.handlePermissionRequest(event, continuation: $0) }
+        }
+        await Task.yield()
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark, .dingtalk]))
+        await waitForRequests(2)
+
+        let barkBody = try XCTUnwrap(transport.requests.first { $0.url.host == "api.day.app" }?.jsonBody)
+        XCTAssertEqual(barkBody["body"] as? String, "cat > deploy.key <<EOF …")
+        let dingBody = try XCTUnwrap(transport.requests.first { $0.url.host == "oapi.dingtalk.com" }?.jsonBody)
+        let content = try XCTUnwrap((dingBody["text"] as? [String: Any])?["content"] as? String)
+        XCTAssertEqual(content, "🔐 Claude · push-team\n\(L10n.shared["push_msg_permission"]): Bash\n\(PushRequestBuilder.keywordFooter)")
+
+        appState.denyPermission(expectedSessionId: "push-team")
+        _ = await response.value
+    }
+
     func testChannelEventFilterIsHonoured() async throws {
         configureBark(events: [.completion])
         let appState = AppState()

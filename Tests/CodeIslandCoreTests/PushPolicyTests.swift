@@ -210,6 +210,50 @@ final class PushMessageFormatterTests: XCTestCase {
         XCTAssertTrue(message.body.contains("[REDACTED]"))
     }
 
+    /// A heredoc's body is a file's contents, a script or a key: only the
+    /// command's first line leaves the Mac, with a mark that more followed.
+    func testPermissionDetailSendsOnlyTheCommandsFirstLine() {
+        let message = render(.permission(
+            tool: "Bash",
+            detail: "\ncat > .env <<'EOF'\nDB_URL=postgres://app@db/app\nSTRIPE=hunter2\nEOF"
+        ))
+        XCTAssertEqual(message.body, "cat > .env <<'EOF' …")
+        XCTAssertFalse(message.text.contains("hunter2"))
+        XCTAssertEqual(render(.permission(tool: "Bash", detail: "swift build\n  \n")).body, "swift build")
+    }
+
+    /// Team chats get who, where and what happened — never the command,
+    /// reply, error text or answer options.
+    func testHeadlineOnlyRenderingLeavesEveryDetailOut() {
+        func brief(_ content: PushContent) -> PushMessage {
+            PushMessageFormatter.render(content, subject: subject, strings: strings, includeDetails: false)
+        }
+        let permission = brief(.permission(tool: "Bash", detail: "rm -rf build"))
+        XCTAssertEqual(permission.title, "🔐 Claude · vibe-notch")
+        XCTAssertEqual(permission.headline, "Needs approval: Bash")
+        XCTAssertEqual(permission.body, "")
+
+        let question = brief(.question(
+            items: [
+                PushQuestionItem(question: "Which database password?", options: ["hunter2", "letmein"], header: "DB"),
+                PushQuestionItem(question: "Deploy?", options: ["Yes", "No"], header: "Deploy"),
+            ],
+            isSecret: false
+        ))
+        XCTAssertEqual(question.headline, "Has a question: DB · Deploy")
+        XCTAssertEqual(question.body, "")
+        XCTAssertEqual(brief(.question(items: [PushQuestionItem(question: "Why?")], isSecret: false)).text, "Has a question")
+
+        XCTAssertEqual(brief(.completion(summary: "Pushed the fix to prod.")).text, "Finished")
+        XCTAssertEqual(brief(.error(type: "rate_limit", detail: "API Error: quota for org-123")).text, "Stopped on an error (rate_limit)")
+
+        let reminder = brief(.reminder(pending: .permission(tool: "Bash", detail: "make deploy"), waitingSince: nil))
+        XCTAssertEqual(reminder.body, "Needs approval: Bash")
+
+        let elsewhere = brief(.answerElsewhere(pending: .permission(tool: "Bash", detail: "ls ~/secret"), app: "Claude Desktop"))
+        XCTAssertEqual(elsewhere.body, "Respond in Claude Desktop.")
+    }
+
     func testCommandsKeepTheirGlobsAndBackticks() {
         let message = render(.permission(tool: "Bash", detail: "rm **/*.tmp && echo `date`"))
         XCTAssertEqual(message.body, "rm **/*.tmp && echo `date`")

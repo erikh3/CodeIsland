@@ -78,20 +78,24 @@ public struct PushSubject: Equatable, Sendable {
     }
 }
 
-public struct PushQuestionItem: Equatable, Sendable {
+public struct PushQuestionItem: Hashable, Sendable {
     public var question: String
     public var options: [String]
+    /// Short label of the question (AskUserQuestion's `header`, "Auth
+    /// method") — all of it a headline-only push shows.
+    public var header: String?
 
-    public init(question: String, options: [String] = []) {
+    public init(question: String, options: [String] = [], header: String? = nil) {
         self.question = question
         self.options = options
+        self.header = header
     }
 }
 
 /// Structured content, taken from the same queue entries the island renders
 /// (permissionQueue / questionQueue / the completion card), so the phone and
 /// the notch never disagree about what is being asked.
-public indirect enum PushContent: Equatable, Sendable {
+public indirect enum PushContent: Hashable, Sendable {
     /// `detail`: command, file path or other one-line summary of the call.
     case permission(tool: String?, detail: String?)
     /// `isSecret`: the answer is sensitive (Codex `isSecret`); neither the
@@ -257,14 +261,28 @@ public enum PushMessageFormatter {
     /// Default cap on the completion summary; the user can change it.
     public static let defaultSummaryLimit = 200
 
+    /// Longest question label a headline-only push shows.
+    public static let headerLimit = 40
+
+    /// - `includeDetails`: false renders the headline only — who, which
+    ///   project, what happened and the tool name or question label — with no
+    ///   command, reply, error text or options. Team chats default to it
+    ///   (`PushChannelConfig.includeDetails`): everyone in the group reads them.
     public static func render(
         _ content: PushContent,
         subject: PushSubject,
         strings: PushStrings,
         summaryLimit: Int = defaultSummaryLimit,
+        includeDetails: Bool = true,
         now: Date = Date()
     ) -> PushMessage {
-        let parts = lines(for: content, strings: strings, summaryLimit: summaryLimit, now: now)
+        let parts = lines(
+            for: content,
+            strings: strings,
+            summaryLimit: summaryLimit,
+            includeDetails: includeDetails,
+            now: now
+        )
         let who = subject.label
         return PushMessage(
             kind: content.kind,
@@ -280,27 +298,38 @@ public enum PushMessageFormatter {
         for content: PushContent,
         strings: PushStrings,
         summaryLimit: Int,
+        includeDetails: Bool = true,
         now: Date
     ) -> (headline: String, body: String) {
         switch content {
         case .permission(let tool, let detail):
             let toolName = tool?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let headline = toolName.isEmpty ? strings.permission : "\(strings.permission): \(toolName)"
-            return (headline, clean(detail, limit: detailLimit) ?? "")
+            guard includeDetails else { return (headline, "") }
+            return (headline, clean(firstLine(of: detail), limit: detailLimit) ?? "")
 
         case .question(let items, let isSecret):
             // The card never streams a secret prompt to a peripheral either
             // (QuestionPayload.isSecret); a third-party push server is further
             // off-device than the Buddy.
             if isSecret { return (strings.question, strings.secretQuestion) }
+            guard includeDetails else {
+                let labels = items.compactMap { clean($0.header, limit: headerLimit) }
+                let headline = labels.isEmpty
+                    ? strings.question
+                    : "\(strings.question): \(labels.joined(separator: " · "))"
+                return (headline, "")
+            }
             return (strings.question, questionBody(items, strings: strings))
 
         case .completion(let summary):
+            guard includeDetails else { return (strings.completion, "") }
             return (strings.completion, clean(summary, limit: max(summaryLimit, 20), markdown: true) ?? "")
 
         case .error(let type, let detail):
             let type = type?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let headline = type.isEmpty ? strings.error : "\(strings.error) (\(type))"
+            guard includeDetails else { return (headline, "") }
             return (headline, clean(detail, limit: max(summaryLimit, 20), markdown: true) ?? "")
 
         case .reminder(let pending, let waitingSince):
@@ -313,14 +342,26 @@ public enum PushMessageFormatter {
             }
             // A reminder about a reminder would only repeat the headline.
             guard let pending, pending.kind != .reminder else { return (headline, "") }
-            let inner = lines(for: pending, strings: strings, summaryLimit: summaryLimit, now: now)
+            let inner = lines(
+                for: pending,
+                strings: strings,
+                summaryLimit: summaryLimit,
+                includeDetails: includeDetails,
+                now: now
+            )
             let body = [inner.headline, inner.body].filter { !$0.isEmpty }.joined(separator: "\n")
             return (headline, body)
 
         case .answerElsewhere(let pending, let app):
             // What is asked reads exactly like an island approval / question;
             // the last line says where it has to be answered.
-            let inner = lines(for: pending, strings: strings, summaryLimit: summaryLimit, now: now)
+            let inner = lines(
+                for: pending,
+                strings: strings,
+                summaryLimit: summaryLimit,
+                includeDetails: includeDetails,
+                now: now
+            )
             let place = app?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let whereTo = place.isEmpty ? strings.answerOnMac : String(format: strings.answerIn, place)
             let body = [inner.body, whereTo].filter { !$0.isEmpty }.joined(separator: "\n")
@@ -349,6 +390,21 @@ public enum PushMessageFormatter {
             }
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// The first non-empty line of a permission detail, with "…" when more
+    /// followed. A command's first line says what it does; the rest is
+    /// typically a heredoc body — a file's contents, a script, a key — that
+    /// has no business on a lock screen or in a group chat.
+    static func firstLine(of detail: String?) -> String? {
+        guard let detail else { return nil }
+        let lines = detail.components(separatedBy: .newlines)
+        guard let index = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else {
+            return nil
+        }
+        let first = lines[index].trimmingCharacters(in: .whitespaces)
+        let more = lines[(index + 1)...].contains { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        return more ? first + " …" : first
     }
 
     /// Plain, redacted, bounded text. Keeps line structure (a reply's bullet

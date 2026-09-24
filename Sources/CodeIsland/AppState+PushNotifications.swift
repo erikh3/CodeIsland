@@ -171,7 +171,9 @@ extension AppState {
     static func pushContent(forQuestion request: QuestionRequest) -> PushContent {
         let payloads = request.askUserQuestionState?.items.map(\.payload) ?? [request.question]
         return .question(
-            items: payloads.map { PushQuestionItem(question: $0.question, options: $0.options ?? []) },
+            items: payloads.map {
+                PushQuestionItem(question: $0.question, options: $0.options ?? [], header: $0.header)
+            },
             isSecret: payloads.contains { $0.isSecret }
         )
     }

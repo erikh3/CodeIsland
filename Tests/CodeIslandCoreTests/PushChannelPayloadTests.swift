@@ -308,6 +308,27 @@ final class PushChannelPayloadTests: XCTestCase {
         XCTAssertEqual(ntfy?.endpoint, "https://ntfy.sh", "missing fields keep their defaults")
     }
 
+    /// Team chats start headline-only, personal channels with details — and
+    /// so do channels saved before the switch existed.
+    func testIncludeDetailsDefaultsByChannelKindAndRoundTrips() {
+        for kind in PushChannelKind.allCases {
+            XCTAssertEqual(PushChannelConfig(kind: kind).includeDetails, !kind.isGroupChat, kind.rawValue)
+        }
+        XCTAssertEqual(
+            PushChannelKind.allCases.filter(\.isGroupChat),
+            [.dingtalk, .feishu, .wecom, .slack]
+        )
+        let legacy = #"[{"kind":"slack","enabled":true},{"kind":"bark","enabled":true,"target":"k"}]"#
+        let decoded = PushChannelConfig.decodeList(legacy)
+        XCTAssertEqual(decoded.first { $0.kind == .slack }?.includeDetails, false)
+        XCTAssertEqual(decoded.first { $0.kind == .bark }?.includeDetails, true)
+
+        var slack = PushChannelConfig(kind: .slack)
+        slack.includeDetails = true
+        let roundTripped = PushChannelConfig.decodeList(PushChannelConfig.encodeList([slack]))
+        XCTAssertEqual(roundTripped.first { $0.kind == .slack }?.includeDetails, true)
+    }
+
     func testAcceptsNeedsEnabledConfiguredAndSelectedKind() {
         var config = PushChannelConfig(kind: .ntfy)
         config.target = "t"

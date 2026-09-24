@@ -505,13 +505,38 @@ public struct HookEvent {
 
     /// Credential / home-path redactions applied by ``sanitizedSummary(_:limit:)``,
     /// compiled once — the summary runs on every Codex PreToolUse and approval.
+    ///
+    /// Keyed shapes only match where the key is plainly a credential slot — a
+    /// header, a `--flag`, an assignment, a quoted JSON key, a URL's userinfo
+    /// or query — never a bare word followed by a space, so prose like "the
+    /// token refresh" or "the auth module" (completion pushes run replies
+    /// through here) keeps its words.
     private static let summaryRedactions: [(regex: NSRegularExpression, template: String)] = [
-        (#"(?i)(authorization\s*[:=]\s*(?:bearer\s+)?)([\"']?)[^\"'\s]+"#, "$1[REDACTED]"),
+        // scheme://user:password@host — git remotes, database URLs.
+        (#"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@:"']+:[^\s/@"']+@"#, "$1[REDACTED]@"),
+        (#"(?i)(authorization\s*[:=]\s*(?:(?:bearer|basic|token|digest|negotiate|bot)\s+)?)([\"']?)[^\"'\s]+"#, "$1[REDACTED]"),
         (#"(?i)((?:aws[-_]?secret[-_]?access[-_]?key|aws[-_]?(?:session|security)[-_]?token|x[-_]amz[-_]security[-_]token)\s*[:=]\s*)([\"']?)[^\"'\s]+"#, "$1[REDACTED]"),
-        (#"(?i)((?:x[-_])?(?:api[-_]?key|auth[-_]?token|access[-_]?token|secret|password)\s*:\s*)([\"']?)[^\"'\s]+"#, "$1[REDACTED]"),
-        (#"(?i)((?:--)?(?:api[-_]?key|token|secret|password|passwd|auth)(?:\s+|=))([^\s]+)"#, "$1[REDACTED]"),
-        (#"(?i)([?&](?:api[-_]?key|token|secret|signature|sig|password)=)[^&\s\"']+"#, "$1[REDACTED]"),
+        (#"(?i)((?:x[-_])?(?:api[-_]?key|(?:auth|access|private|refresh|id|bearer|bot|deploy|session)[-_]?token|client[-_]?secret|secret|password|passwd)\s*:\s*)([\"']?)[^\"'\s]+"#, "$1[REDACTED]"),
+        // {"api_key": "…"}, {'password': '…'}
+        (#"(?i)(["'][a-z0-9_.-]*?(?:api[-_]?key|apikey|token|secret|password|passwd|private[-_]?key|access[-_]?key|credentials?)["']\s*:\s*["'])[^"']*(["'])"#, "$1[REDACTED]$2"),
+        // Cookie / Set-Cookie headers carry session credentials whole.
+        (#"(?i)((?:set-)?cookie\s*:\s*)[^"'\n]+"#, "$1[REDACTED]"),
+        // curl -u user:password, curl -b 'session=…'
+        (#"(?i)(\bcurl\b[^|;&]*?\s(?:-u\s*|--user(?:\s+|=)))(["']?)([^\s:"']*):[^\s"']+"#, "$1$2$3:[REDACTED]"),
+        (#"(?i)(\bcurl\b[^|;&]*?\s(?:-b|--cookie)(?:\s+|=))(["']?)[^\s"']+"#, "$1$2[REDACTED]"),
+        // mysql -phunter2 (a bare -p prompts instead), sshpass -p hunter2
+        (#"(\bmysql\w*\b[^|;&]*?\s-p)([^\s"'-][^\s"']*)"#, "$1[REDACTED]"),
+        (#"(\bsshpass\b[^|;&]*?\s-p\s*)([^\s"']+)"#, "$1[REDACTED]"),
+        (#"(?i)(--(?:api[-_]?key|token|secret|password|passwd|auth|auth[-_]?token|access[-_]?token)(?:\s+|=))([\"']?)[^\s\"']+"#, "$1$2[REDACTED]"),
+        // TOKEN=…, DB_PASSWORD=…, password="…"
+        (#"(?i)((?:api[-_]?key|apikey|token|secret|password|passwd)=)([\"']?)[^\s\"'&]+"#, "$1$2[REDACTED]"),
+        (#"(?i)([?&](?:api[-_]?key|apikey|key|access[-_]?key|secret[-_]?key|token|access[-_]?token|auth[-_]?token|refresh[-_]?token|id[-_]?token|private[-_]?token|secret|client[-_]?secret|signature|sig|sign|password|passwd|auth)=)[^&\s\"'#]+"#, "$1[REDACTED]"),
         (#"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16})\b"#, "[REDACTED]"),
+        // GitLab, Slack, Google API key / OAuth, npm, Hugging Face, Stripe,
+        // SendGrid, PyPI, JWTs.
+        (#"\b(?:glpat-[A-Za-z0-9_-]{20,}|xox[abposre]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|ya29\.[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{36}|hf_[A-Za-z0-9]{30,}|[rs]k_(?:live|test)_[A-Za-z0-9]{16,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|pypi-[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})"#, "[REDACTED]"),
+        // Telegram bot token, bare or in a /bot<token>/ URL path.
+        (#"\b(?:bot)?\d{6,12}:[A-Za-z0-9_-]{30,}"#, "[REDACTED]"),
         (#"/(?:Users|home)/[^/\s]+"#, "~"),
         (#"\b[A-Za-z0-9_\-+/=]{48,}\b"#, "[REDACTED]"),
     ].compactMap { pattern, template in
