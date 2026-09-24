@@ -129,22 +129,42 @@ extension AppState {
     }
 
     /// AiWork daemon turn boundary (its streams bypass the hook reducer).
-    func pushAiWorkTurnEnded(_ eventName: String, sessionId: String) {
+    func pushAiWorkTurnEnded(_ eventName: String, sessionId: String, data: [String: AnyCodableLike]? = nil) {
         switch eventName {
         case "stream.completed": pushTurnEnded(sessionId: sessionId, failed: false)
-        case "stream.failed": pushTurnEnded(sessionId: sessionId, failed: true)
+        case "stream.failed":
+            pushTurnEnded(sessionId: sessionId, failed: true, errorDetail: Self.aiworkFailureText(data))
         default: return  // stream.aborted: the user stopped it
         }
     }
 
+    /// What a `stream.failed` event itself says went wrong, if anything.
+    nonisolated static func aiworkFailureText(_ data: [String: AnyCodableLike]?) -> String? {
+        guard let data else { return nil }
+        let candidates = [
+            data["error"]?.asString,
+            data["error"]?.asObject?["message"]?.asString,
+            data["error_message"]?.asString,
+            data["terminal_notice"]?.asObject?["summary"]?.asString,
+            data["reason"]?.asString,
+        ]
+        return candidates.lazy
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+    }
+
     /// A turn ended in a source that bypasses the hook reducer (AiWork,
     /// Claude Desktop Cowork): its completion, or its error when it failed.
-    func pushTurnEnded(sessionId: String, failed: Bool) {
+    ///
+    /// - `errorDetail`: the failure's own text, from the event that reported
+    ///   it. Never the session's last reply — that can be the previous
+    ///   turn's; with nothing better the push says only that it failed.
+    func pushTurnEnded(sessionId: String, failed: Bool, errorDetail: String? = nil) {
         let notifier = PushNotifier.shared
         guard notifier.isEnabled else { return }
         let session = sessions[sessionId]
         let content: PushContent = failed
-            ? .error(type: nil, detail: session?.lastAssistantMessage)
+            ? .error(type: nil, detail: errorDetail)
             : .completion(summary: Self.pushCompletionSummary(session))
         notifier.notify(
             content,
@@ -199,9 +219,9 @@ extension AppState {
         case .completion:
             // One nudge for a finished turn nobody looked at. If the turn's own
             // completion push reached the phone, the nudge would only repeat
-            // it. (That push is decided just before the reminder's clock starts,
-            // hence the slack.)
-            if notifier.hasPushed(.completion, sessionId: sessionId, since: reminder.waitingSince.addingTimeInterval(-5)) {
+            // it; if the turn failed, "finished" would be wrong. (Both are
+            // decided just before the reminder's clock starts, hence the slack.)
+            if notifier.shouldSkipCompletionReminder(sessionId: sessionId, since: reminder.waitingSince.addingTimeInterval(-5)) {
                 return .skipped(.duplicate)
             }
             pending = .completion(summary: Self.pushCompletionSummary(sessions[sessionId]))

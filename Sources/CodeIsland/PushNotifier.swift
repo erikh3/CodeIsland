@@ -34,10 +34,12 @@ struct PushPendingRequest {
     let current: @MainActor () -> PushContent?
 }
 
-/// Sends pushes to a phone or a team chat. Decides once per moment (gate →
-/// channel selection → dedupe), then fans out to every channel that takes
-/// the kind. Fire-and-forget like the webhook: a slow or failing push server
-/// never touches the hook pipeline, it only updates `lastDelivery`.
+/// Sends pushes to a phone or a team chat. Decides once per moment (channel
+/// selection → gate → global cap → dedupe), then hands the push to every
+/// channel that takes the kind, through that channel's queue (its own rate
+/// limit, one retry for pushes that must not get lost). Fire-and-forget
+/// like the webhook: a slow or failing push server never touches the hook
+/// pipeline, it only updates `lastDelivery`.
 ///
 /// Entry points:
 /// - `notify(_:subject:…)` for any structured content;
@@ -201,11 +203,36 @@ final class PushNotifier: ObservableObject {
         "\(kind.rawValue)|\(sessionId)|\(key)"
     }
 
-    /// Whether a push of `kind` for this session went out at or after `date`
-    /// (remembered for an hour).
-    func hasPushed(_ kind: PushEventKind, sessionId: String, since date: Date) -> Bool {
-        guard let sent = deduplicator.lastSent(kind: kind, sessionId: sessionId) else { return false }
+    // MARK: Turn ends
+
+    /// When a push of each kind last reached at least one channel, per
+    /// session ("kind|session"). Delivered, not merely admitted: a push that
+    /// failed on every channel told nobody anything.
+    private var delivered: [String: Date] = [:]
+    /// When each session's turn last ended on an error, pushed or not.
+    private var turnFailures: [String: Date] = [:]
+    /// How long both are remembered — past any follow-up interval.
+    private static let turnMemory: TimeInterval = 3_600
+
+    /// Whether the one reminder for a finished turn nobody looked at should
+    /// be skipped: its completion push already reached the phone (the
+    /// nudge would only repeat it), or the turn ended on an error — "still
+    /// waiting · finished" would misreport a failed turn, whether or not
+    /// its error push went out.
+    func shouldSkipCompletionReminder(sessionId: String, since date: Date) -> Bool {
+        if let failed = turnFailures[sessionId], failed >= date { return true }
+        guard let sent = delivered["\(PushEventKind.completion.rawValue)|\(sessionId)"] else { return false }
         return sent >= date
+    }
+
+    private func noteDelivered(_ kind: PushEventKind, sessionId: String, at date: Date) {
+        delivered = delivered.filter { date.timeIntervalSince($0.value) < Self.turnMemory }
+        delivered["\(kind.rawValue)|\(sessionId)"] = date
+    }
+
+    private func noteTurnFailed(sessionId: String, at date: Date) {
+        turnFailures = turnFailures.filter { date.timeIntervalSince($0.value) < Self.turnMemory }
+        turnFailures[sessionId] = date
     }
 
     // MARK: Settings
@@ -253,6 +280,9 @@ final class PushNotifier: ObservableObject {
         interrupted: Bool = false,
         request: PushPendingRequest? = nil
     ) -> PushDecision {
+        if content.kind == .error, isEnabled {
+            noteTurnFailed(sessionId: subject.sessionId, at: clock())
+        }
         let decision = decide(
             content,
             subject: subject,
@@ -275,7 +305,9 @@ final class PushNotifier: ObservableObject {
     ) -> PushDecision {
         guard isEnabled else { return .disabled }
         let kind = content.kind
-        let targets = channels.filter { $0.accepts(kind) }
+        // A turn that ended on an error is still a turn end: a channel that
+        // only takes finished turns hears about it too, as the error.
+        let targets = channels.filter { $0.accepts(kind) || (kind == .error && $0.accepts(.completion)) }
         guard !targets.isEmpty else { return skip(.noChannel, kind, subject) }
 
         let gate = PushGateInput(
@@ -453,6 +485,9 @@ final class PushNotifier: ObservableObject {
             }
             guard let self else { return }
             self.lastDelivery[channel.kind] = PushDeliveryRecord(date: self.clock(), kind: item.kind, result: result)
+            if result.ok {
+                self.noteDelivered(item.kind, sessionId: item.message.sessionId, at: item.enqueued)
+            }
             self.retryIfWorthIt(item, after: response, ok: result.ok)
         }
     }
@@ -520,6 +555,8 @@ final class PushNotifier: ObservableObject {
         lastDecision = nil
         tracked = [:]
         pruneScheduled = false
+        delivered = [:]
+        turnFailures = [:]
         disarmCatchUpTimer()
         outboxTasks.values.forEach { $0.cancel() }
         outboxTasks = [:]

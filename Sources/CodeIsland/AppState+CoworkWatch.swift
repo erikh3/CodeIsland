@@ -302,7 +302,12 @@ extension AppState {
                 sessionId: key
             )
             enqueueCompletion(key)
-            pushTurnEnded(sessionId: key, failed: update.audit.lastTurnFailed)
+            // A failed turn's `result` record carries the error text.
+            pushTurnEnded(
+                sessionId: key,
+                failed: update.audit.lastTurnFailed,
+                errorDetail: update.audit.lastTurnFailed ? update.audit.lastResultText : nil
+            )
         } else if update.permissionsRequested > 0,
                   snapshot.status == .waitingApproval || snapshot.status == .waitingQuestion {
             // Display-only wait, like Cursor's in-IDE question (#265): the sound

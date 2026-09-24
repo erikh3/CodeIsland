@@ -558,6 +558,42 @@ final class PushNotifierTests: XCTestCase {
         let body = try XCTUnwrap(sentBodies().first)
         XCTAssertEqual(body["subtitle"] as? String, L10n.shared["push_msg_completion"])
         XCTAssertEqual(body["body"] as? String, "Found a.dmg")
+
+        // The next turn fails: its own error text, never the previous reply.
+        audit.apply(.userPrompt(text: "and again", isSynthetic: false))
+        audit.apply(.turnEnded(isError: true, resultText: "API Error: Overloaded"))
+        appState.applyCoworkUpdate(CoworkSessionWatcher.SessionUpdate(
+            sessionId: metadata.sessionId,
+            metadata: metadata,
+            audit: audit,
+            transcriptPath: nil,
+            lastActivity: nil,
+            isLive: true,
+            promptsStarted: 1,
+            turnsCompleted: 1,
+            permissionsRequested: 0
+        ))
+        await waitForRequests(2)
+        let failed = try XCTUnwrap(sentBodies().last)
+        XCTAssertEqual(failed["subtitle"] as? String, L10n.shared["push_msg_error"])
+        XCTAssertEqual(failed["body"] as? String, "API Error: Overloaded")
+    }
+
+    /// With no error text of its own, a failed turn says only that it failed.
+    func testTurnFailureWithoutTextDoesNotReuseTheLastReply() async throws {
+        let appState = AppState()
+        appState.sessions["push-no-text"] = SessionSnapshot()
+        appState.sessions["push-no-text"]?.lastAssistantMessage = "Reply from the turn before"
+        appState.pushTurnEnded(sessionId: "push-no-text", failed: true)
+        await waitForRequests(1)
+        let body = try XCTUnwrap(sentBodies().first)
+        XCTAssertEqual(body["body"] as? String, L10n.shared["push_msg_error"])
+        XCTAssertNil(body["subtitle"])
+
+        XCTAssertEqual(AppState.aiworkFailureText(["error": .object(["message": .string(" model overloaded ")])]), "model overloaded")
+        XCTAssertEqual(AppState.aiworkFailureText(["reason": .string("quota exceeded")]), "quota exceeded")
+        XCTAssertNil(AppState.aiworkFailureText(["final_text": .string("half a reply")]))
+        XCTAssertNil(AppState.aiworkFailureText(nil))
     }
 
     // MARK: Follow-up reminders
@@ -626,6 +662,7 @@ final class PushNotifierTests: XCTestCase {
             "last_assistant_message": "Done.",
         ]))
         XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark]))
+        await waitForDelivery()
         let afterPushed = FollowUpReminder(
             kind: .completion, sessionId: "push-seen", attempt: 1, maxAttempts: 1,
             waitingSince: Date(), delivery: .deferred
@@ -650,6 +687,74 @@ final class PushNotifierTests: XCTestCase {
         let reminder = try XCTUnwrap(sentBodies().last)
         XCTAssertEqual(reminder["level"] as? String, "active", "a finished turn does not break through Focus")
         XCTAssertEqual(reminder["body"] as? String, "\(L10n.shared["push_msg_completion"])\nRefactor finished.")
+    }
+
+    private func waitForDelivery(_ channel: PushChannelKind = .bark) async {
+        for _ in 0..<200 where PushNotifier.shared.lastDelivery[channel] == nil {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
+    /// The completion push was admitted but never arrived: the reminder is
+    /// the only word the phone gets, so it goes.
+    func testCompletionReminderStillGoesWhenTheCompletionPushFailed() async throws {
+        PushNotifier.shared.transport = RecordingTransport(response: PushTransportResponse(
+            statusCode: nil,
+            errorDescription: "The Internet connection appears to be offline."
+        ))
+        let appState = AppState()
+        appState.handleEvent(try makeEvent([
+            "hook_event_name": "Stop",
+            "session_id": "push-lost",
+            "last_assistant_message": "Done.",
+        ]))
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark]))
+        await waitForDelivery()
+        XCTAssertEqual(PushNotifier.shared.lastDelivery[.bark]?.result.ok, false)
+
+        PushNotifier.shared.transport = transport
+        let reminder = FollowUpReminder(
+            kind: .completion, sessionId: "push-lost", attempt: 1, maxAttempts: 1,
+            waitingSince: Date(), delivery: .deferred
+        )
+        XCTAssertEqual(appState.pushFollowUpReminder(reminder), .sent([.bark]))
+    }
+
+    /// A turn that failed gets no "still waiting · finished" — whether its
+    /// error push went out (away) or was held back (present).
+    func testFailedTurnGetsNoFinishedReminder() async throws {
+        let appState = AppState()
+        for (session, present) in [("push-failed-away", false), ("push-failed-present", true)] {
+            presence = present ? PushPresenceSnapshot(idleSeconds: 2) : PushPresenceSnapshot(screenLocked: true)
+            appState.handleEvent(try makeEvent([
+                "hook_event_name": "StopFailure",
+                "session_id": session,
+                "error": "rate_limit",
+                "last_assistant_message": "API Error: Rate limit reached",
+            ]))
+            presence = PushPresenceSnapshot(screenLocked: true)
+            let reminder = FollowUpReminder(
+                kind: .completion, sessionId: session, attempt: 1, maxAttempts: 1,
+                waitingSince: Date(), delivery: .deferred
+            )
+            XCTAssertEqual(appState.pushFollowUpReminder(reminder), .skipped(.duplicate), session)
+        }
+    }
+
+    /// A channel that only takes finished turns still hears that a turn
+    /// ended — on an error.
+    func testFailedTurnReachesAChannelThatOnlyTakesFinishedTurns() async throws {
+        configureBark(events: [.completion])
+        let appState = AppState()
+        appState.handleEvent(try makeEvent([
+            "hook_event_name": "StopFailure",
+            "session_id": "push-fail-completion-only",
+            "error": "overloaded",
+            "last_assistant_message": "API Error: Overloaded",
+        ]))
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark]))
+        await waitForRequests(1)
+        XCTAssertEqual(sentBodies().first?["subtitle"] as? String, "\(L10n.shared["push_msg_error"]) (overloaded)")
     }
 
     func testReminderCheckboxCanBeTurnedOff() {
