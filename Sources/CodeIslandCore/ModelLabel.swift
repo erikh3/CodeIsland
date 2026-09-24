@@ -9,19 +9,48 @@ import Foundation
 public struct ModelObservation: Equatable, Sendable {
     public let model: String
     public let effort: String?
+    /// The transcript line's own `timestamp`, kept raw: it is only parsed
+    /// (``observedAt``) by the attach-time backfill, never on the hot path.
+    public let lineTimestamp: String?
 
-    public init(model: String, effort: String?) {
+    public init(model: String, effort: String?, lineTimestamp: String? = nil) {
         self.model = model
         self.effort = effort
+        self.lineTimestamp = lineTimestamp
+    }
+
+    /// When the line was written, if it said.
+    public var observedAt: Date? {
+        lineTimestamp.flatMap(ClaudeUsageScanner.parseISO8601)
+    }
+
+    /// The same model and effort, whenever the line was written.
+    public static func == (lhs: ModelObservation, rhs: ModelObservation) -> Bool {
+        lhs.model == rhs.model && lhs.effort == rhs.effort
     }
 
     /// Build from raw transcript values; nil for missing ids and placeholders
     /// such as Claude's `<synthetic>` (API-error stand-ins, not a real model).
-    public static func from(model: Any?, effort: Any?) -> ModelObservation? {
+    public static func from(model: Any?, effort: Any?, timestamp: Any? = nil) -> ModelObservation? {
         guard let raw = model as? String else { return nil }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !trimmed.hasPrefix("<") else { return nil }
-        return ModelObservation(model: trimmed, effort: ModelLabel.normalizedEffort(effort as? String))
+        return ModelObservation(
+            model: trimmed,
+            effort: ModelLabel.normalizedEffort(effort as? String),
+            lineTimestamp: timestamp as? String
+        )
+    }
+
+    /// Model and effort from a Codex `turn_context` line.
+    public static func fromCodexTurnContext(_ json: [String: Any]) -> ModelObservation? {
+        guard let payload = json["payload"] as? [String: Any] else { return nil }
+        let settings = (payload["collaboration_mode"] as? [String: Any])?["settings"] as? [String: Any]
+        return from(
+            model: (payload["model"] as? String) ?? (settings?["model"] as? String),
+            effort: (payload["effort"] as? String) ?? (settings?["reasoning_effort"] as? String),
+            timestamp: json["timestamp"]
+        )
     }
 
     /// Newest assistant model/effort in a Claude transcript blob, sidechain
@@ -101,6 +130,33 @@ public enum ModelLabel {
         }
         let base = current[..<open].trimmingCharacters(in: .whitespaces)
         return base == observed ? current : observed
+    }
+
+    /// Whether `observed` names the model `current` already holds — the same
+    /// id, or the bare API id of `current`'s context variant.
+    public static func isSameModel(current: String?, observed: String) -> Bool {
+        guard let current else { return false }
+        return mergedModelId(current: current, observed: observed) == current
+    }
+
+    /// `id` with its context variant set explicitly: `[1m]` on, or no
+    /// bracket suffix at all.
+    public static func withLongContext(_ id: String, _ longContext: Bool) -> String {
+        var base = id
+        if base.hasSuffix("]"), let open = base.lastIndex(of: "[") {
+            base = base[..<open].trimmingCharacters(in: .whitespaces)
+        }
+        return longContext ? base + "[1m]" : base
+    }
+
+    /// What Claude Code's `/model` output says about the 1M context variant —
+    /// "Set model to `Opus 5 (1M context) (default)` and saved…" is true,
+    /// "Set model to Fable 5 and saved…" false — or nil when the text is not
+    /// a model switch. (The display name is all it gives, not the id.)
+    public static func longContextSwitch(inCommandOutput text: String) -> Bool? {
+        let lower = text.lowercased()
+        guard lower.contains("set model to") else { return nil }
+        return lower.contains("1m context") || lower.contains("[1m]")
     }
 
     // MARK: - Private

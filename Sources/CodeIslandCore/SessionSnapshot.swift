@@ -191,6 +191,14 @@ public struct SessionSnapshot: Sendable {
     /// Reasoning effort of the latest turn ("xhigh", "max", …), read from the
     /// transcript next to the turn's model. Hooks don't report it.
     public var reasoningEffort: String?
+    /// When a hook last reported `model`. An attach-time transcript backfill
+    /// must not replace it with a model from an older line
+    /// (`claude --resume --model X` over a transcript that ran on Y).
+    public var modelReportedAt: Date?
+    /// What the latest `/model` switch said about the 1M context variant; nil
+    /// until one is seen. Transcript lines carry only the bare API id, so this
+    /// is the one place a switch *to or from* the `[1m]` variant shows up.
+    public var configuredLongContext: Bool?
 
     public init(startTime: Date = Date()) {
         self.startTime = startTime
@@ -1325,7 +1333,10 @@ public func reduceEvent(
         sessions[sessionId] = SessionSnapshot(startTime: Date())
         // Re-apply metadata from this event (common extraction above wrote to the old session)
         if let cwd = event.rawJSON["cwd"] as? String, !cwd.isEmpty { sessions[sessionId]?.cwd = cwd }
-        if let model = event.rawJSON["model"] as? String, !model.isEmpty { sessions[sessionId]?.model = model }
+        if let model = event.rawJSON["model"] as? String, !model.isEmpty {
+            sessions[sessionId]?.model = model
+            sessions[sessionId]?.modelReportedAt = Date()
+        }
         if let ppid = event.rawJSON["_ppid"] as? Int, ppid > 0 {
             let newPid = pid_t(ppid)
             if sessions[sessionId]?.cliPid != newPid {
@@ -1606,7 +1617,11 @@ public func fillMissingParentMetadataFromSubagentEvent(
         }
     }
 
+    // Claude and Cursor child hooks carry the parent's transcript; a Codex
+    // child's is its own rollout. Tailing that as the parent's would label
+    // the parent with the child's model and effort.
     if sessions[sessionId]?.transcriptPath == nil,
+       !isCodexSubagentEvent(event, session: sessions[sessionId]),
        let transcriptPath = event.rawJSON["transcript_path"] as? String, !transcriptPath.isEmpty {
         sessions[sessionId]?.transcriptPath = transcriptPath
     }
@@ -1694,6 +1709,7 @@ public func extractMetadata(into sessions: inout [String: SessionSnapshot], sess
     // it asynchronously after reduce (maybeRefreshGitBranch).
     if let model = event.rawJSON["model"] as? String, !model.isEmpty {
         sessions[sessionId]?.model = model
+        sessions[sessionId]?.modelReportedAt = Date()
     }
     if let mode = event.rawJSON["permission_mode"] as? String {
         sessions[sessionId]?.permissionMode = mode

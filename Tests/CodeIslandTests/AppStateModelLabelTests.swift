@@ -56,6 +56,30 @@ final class AppStateModelLabelTests: XCTestCase {
         XCTAssertEqual(appState.sessions["s1"]?.modelLabel, "Opus 5.5 1M · xhigh")
     }
 
+    func testResumeWithADifferentModelKeepsTheModelTheHookReported() throws {
+        // `claude --resume <id> --model sonnet` over a transcript that ran on Opus.
+        let path = try writeTranscript([
+            userLine("earlier work"),
+            #"{"parentUuid":"p","isSidechain":false,"message":{"model":"claude-opus-5-5","role":"assistant","content":[{"type":"text","text":"ok"}]},"type":"assistant","effort":"xhigh","timestamp":"2026-09-01T10:00:00.000Z","uuid":"u"}"#,
+        ], name: "resume.jsonl")
+        let appState = AppState()
+        defer { appState.detachTranscriptTailer(sessionId: "resumed") }
+        func hook(_ payload: [String: Any]) throws -> HookEvent {
+            var payload = payload
+            payload["session_id"] = "resumed"
+            payload["transcript_path"] = path
+            payload["cwd"] = tempDir.path
+            return try XCTUnwrap(HookEvent(from: JSONSerialization.data(withJSONObject: payload)))
+        }
+
+        appState.handleEvent(try hook(["hook_event_name": "SessionStart", "source": "resume", "model": "claude-sonnet-5"]))
+        appState.handleEvent(try hook(["hook_event_name": "UserPromptSubmit", "prompt": "carry on"]))
+
+        XCTAssertEqual(appState.attachedTranscriptPaths["resumed"], path, "the attach backfill ran")
+        XCTAssertEqual(appState.sessions["resumed"]?.model, "claude-sonnet-5")
+        XCTAssertNil(appState.sessions["resumed"]?.reasoningEffort, "Opus's effort is not Sonnet's")
+    }
+
     // MARK: - Subagents' own models
 
     func testClaudeSubagentModelComesFromItsOwnTranscriptNotTheParent() throws {

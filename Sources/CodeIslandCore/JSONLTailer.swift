@@ -51,6 +51,8 @@ public struct ConversationTailDelta: Equatable, Sendable {
     /// The file was replaced and this chunk re-reads it from the start: it is
     /// the new file's history, not things that just happened.
     public let replaysWholeFile: Bool
+    /// A `/model` switch in the chunk turned the 1M context variant on or off.
+    public let configuredLongContext: Bool?
 
     public init(
         sessionId: String,
@@ -64,7 +66,8 @@ public struct ConversationTailDelta: Equatable, Sendable {
         taskEvents: [AgentTaskEvent] = [],
         sessionRecap: SessionRecap? = nil,
         modelObservation: ModelObservation? = nil,
-        replaysWholeFile: Bool = false
+        replaysWholeFile: Bool = false,
+        configuredLongContext: Bool? = nil
     ) {
         self.sessionId = sessionId
         self.lastUserPrompt = lastUserPrompt
@@ -78,6 +81,7 @@ public struct ConversationTailDelta: Equatable, Sendable {
         self.sessionRecap = sessionRecap
         self.modelObservation = modelObservation
         self.replaysWholeFile = replaysWholeFile
+        self.configuredLongContext = configuredLongContext
     }
 
     /// A delta only carries signal when at least one field is non-nil.
@@ -86,6 +90,7 @@ public struct ConversationTailDelta: Equatable, Sendable {
             && !hasActivity && cursorQuestion == nil
             && taskEvents.isEmpty
             && sessionRecap == nil && modelObservation == nil
+            && configuredLongContext == nil
     }
 }
 
@@ -373,7 +378,8 @@ public final class JSONLTailer: @unchecked Sendable {
                 taskEvents: scan.delta.taskEvents,
                 sessionRecap: scan.delta.sessionRecap,
                 modelObservation: scan.delta.modelObservation,
-                replaysWholeFile: replaysWholeFile
+                replaysWholeFile: replaysWholeFile,
+                configuredLongContext: scan.delta.configuredLongContext
             )
             onDelta(delta)
         }
@@ -417,11 +423,14 @@ public final class JSONLTailer: @unchecked Sendable {
             // Session metadata (recap + model label).
             public var sessionRecap: SessionRecap?
             public var modelObservation: ModelObservation?
+            /// A `/model` switch's word on the 1M context variant.
+            public var configuredLongContext: Bool?
             public var isEmpty: Bool {
                 lastUserPrompt == nil && lastAssistantMessage == nil && turnStatus == nil
                     && !hasActivity && cursorQuestion == nil
                     && taskEvents.isEmpty
                     && sessionRecap == nil && modelObservation == nil
+                    && configuredLongContext == nil
             }
         }
         public let delta: Delta
@@ -557,8 +566,13 @@ public final class JSONLTailer: @unchecked Sendable {
                 switch claudeCommandEcho(text) {
                 case .local?:
                     // /model, /effort, /clear…: no turn, so no new prompt —
-                    // and no reason to drop the recap.
-                    break
+                    // and no reason to drop the recap. /model's output is the
+                    // only record of a switch to or from the 1M variant; a
+                    // model seen earlier in the chunk predates it.
+                    if let longContext = ModelLabel.longContextSwitch(inCommandOutput: text) {
+                        delta.configuredLongContext = longContext
+                        delta.modelObservation = nil
+                    }
                 case .prompt(let command)?:
                     delta.lastUserPrompt = command
                 case nil:
@@ -580,7 +594,8 @@ public final class JSONLTailer: @unchecked Sendable {
             if json["isSidechain"] as? Bool != true,
                let observation = ModelObservation.from(
                    model: message["model"],
-                   effort: (json["perTurnEffort"] as? String) ?? (json["effort"] as? String)
+                   effort: (json["perTurnEffort"] as? String) ?? (json["effort"] as? String),
+                   timestamp: json["timestamp"]
                ) {
                 delta.modelObservation = observation
             }
@@ -591,14 +606,8 @@ public final class JSONLTailer: @unchecked Sendable {
             }
         case "turn_context":
             // Codex writes the turn's model and effort once per turn.
-            if let payload = json["payload"] as? [String: Any] {
-                let settings = (payload["collaboration_mode"] as? [String: Any])?["settings"] as? [String: Any]
-                if let observation = ModelObservation.from(
-                    model: (payload["model"] as? String) ?? (settings?["model"] as? String),
-                    effort: (payload["effort"] as? String) ?? (settings?["reasoning_effort"] as? String)
-                ) {
-                    delta.modelObservation = observation
-                }
+            if let observation = ModelObservation.fromCodexTurnContext(json) {
+                delta.modelObservation = observation
             }
         case "event_msg":
             delta.hasActivity = true

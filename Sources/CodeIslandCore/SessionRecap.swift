@@ -68,7 +68,8 @@ extension SessionSnapshot {
             recap: delta.sessionRecap,
             sawUserPrompt: delta.lastUserPrompt != nil,
             modelObservation: delta.modelObservation,
-            recapIsAuthoritative: false
+            longContextSwitch: delta.configuredLongContext,
+            isBackfill: false
         )
     }
 
@@ -77,21 +78,33 @@ extension SessionSnapshot {
     /// The scan is authoritative for the recap: a fresh recap is always within
     /// the tail (only small bookkeeping lines follow one until the next prompt),
     /// so "no recap in the tail" means a restored/persisted recap went stale
-    /// while nobody was watching.
+    /// while nobody was watching. It is *not* authoritative for a model a hook
+    /// reported after the scanned lines were written (see
+    /// ``applyBackfilledModelObservation(_:)``).
     public mutating func applyTranscriptBackfill(_ scan: JSONLTailer.ScanResult.Delta) -> Bool {
         applyTranscriptMetadata(
             recap: scan.sessionRecap,
             sawUserPrompt: scan.lastUserPrompt != nil,
             modelObservation: scan.modelObservation,
-            recapIsAuthoritative: true
+            longContextSwitch: scan.configuredLongContext,
+            isBackfill: true
         )
+    }
+
+    /// A model/effort read from transcript history (not a live line): it
+    /// yields to a model a hook reported after that line was written —
+    /// `claude --resume --model X` over a transcript that ran on Y keeps X,
+    /// and takes the line's effort only when the line was on X too.
+    public mutating func applyBackfilledModelObservation(_ observation: ModelObservation) -> Bool {
+        applyModelObservation(observation, isBackfill: true)
     }
 
     private mutating func applyTranscriptMetadata(
         recap newRecap: SessionRecap?,
         sawUserPrompt: Bool,
         modelObservation: ModelObservation?,
-        recapIsAuthoritative: Bool
+        longContextSwitch: Bool?,
+        isBackfill: Bool
     ) -> Bool {
         var changed = false
         // The scan only reports a recap that no later prompt in the same chunk
@@ -100,7 +113,7 @@ extension SessionSnapshot {
         let resolvedRecap: SessionRecap?
         if let newRecap {
             resolvedRecap = newRecap
-        } else if sawUserPrompt || recapIsAuthoritative {
+        } else if sawUserPrompt || isBackfill {
             resolvedRecap = nil
         } else {
             resolvedRecap = recap
@@ -110,16 +123,46 @@ extension SessionSnapshot {
             changed = true
         }
 
-        if let modelObservation {
-            let mergedModel = ModelLabel.mergedModelId(current: model, observed: modelObservation.model)
-            if mergedModel != model {
-                model = mergedModel
-                changed = true
+        // A `/model` switch to or from the 1M variant. From history, only while
+        // no hook has reported the model since: that report is newer.
+        if let longContextSwitch, !(isBackfill && modelReportedAt != nil) {
+            configuredLongContext = longContextSwitch
+            if let current = model {
+                let switched = ModelLabel.withLongContext(current, longContextSwitch)
+                if switched != current {
+                    model = switched
+                    changed = true
+                }
             }
-            if modelObservation.effort != reasoningEffort {
-                reasoningEffort = modelObservation.effort
-                changed = true
-            }
+        }
+
+        if let modelObservation, applyModelObservation(modelObservation, isBackfill: isBackfill) {
+            changed = true
+        }
+        return changed
+    }
+
+    private mutating func applyModelObservation(_ observation: ModelObservation, isBackfill: Bool) -> Bool {
+        if isBackfill, let reportedAt = modelReportedAt,
+           (observation.observedAt ?? .distantPast) < reportedAt {
+            guard ModelLabel.isSameModel(current: model, observed: observation.model),
+                  observation.effort != reasoningEffort else { return false }
+            reasoningEffort = observation.effort
+            return true
+        }
+        var changed = false
+        // Transcript lines carry the bare API id; after a `/model` switch its
+        // word on the 1M variant decides the decoration, otherwise a
+        // hook-reported `[1m]` id of the same model survives.
+        let mergedModel = configuredLongContext.map { ModelLabel.withLongContext(observation.model, $0) }
+            ?? ModelLabel.mergedModelId(current: model, observed: observation.model)
+        if mergedModel != model {
+            model = mergedModel
+            changed = true
+        }
+        if observation.effort != reasoningEffort {
+            reasoningEffort = observation.effort
+            changed = true
         }
         return changed
     }

@@ -298,6 +298,91 @@ final class SessionRecapTests: XCTestCase {
         XCTAssertNil(session.recap, "no recap in the tail means none is current")
     }
 
+    private func timedAssistantLine(model: String, effort: String, at timestamp: String) -> String {
+        #"{"parentUuid":"p1","isSidechain":false,"message":{"model":"\#(model)","id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}]},"type":"assistant","uuid":"u4","timestamp":"\#(timestamp)","effort":"\#(effort)"}"#
+    }
+
+    func testBackfillKeepsAModelAHookReportedAfterTheScannedLines() throws {
+        // `claude --resume --model sonnet` over a transcript that ran on Opus:
+        // SessionStart reported the new model before the attach scan.
+        var session = SessionSnapshot()
+        session.model = "claude-sonnet-5"
+        session.modelReportedAt = try XCTUnwrap(ClaudeUsageScanner.parseISO8601("2026-09-12T04:00:00.000Z"))
+
+        let older = scan([timedAssistantLine(model: "claude-opus-5-5", effort: "xhigh", at: "2026-09-12T03:59:00.000Z")])
+        XCTAssertFalse(session.applyTranscriptBackfill(older))
+        XCTAssertEqual(session.model, "claude-sonnet-5")
+        XCTAssertNil(session.reasoningEffort, "Opus's effort does not describe Sonnet")
+
+        // An older line on the same model still lends its effort.
+        let sameModel = scan([timedAssistantLine(model: "claude-sonnet-5", effort: "high", at: "2026-09-12T03:58:00.000Z")])
+        XCTAssertTrue(session.applyTranscriptBackfill(sameModel))
+        XCTAssertEqual(session.modelLabel, "Sonnet 5 · high")
+
+        // A line written after the report is newer than it.
+        let newer = scan([timedAssistantLine(model: "claude-opus-5-5", effort: "max", at: "2026-09-12T04:01:00.000Z")])
+        XCTAssertTrue(session.applyTranscriptBackfill(newer))
+        XCTAssertEqual(session.modelLabel, "Opus 5.5 · max")
+    }
+
+    func testBackfillOfARestoredSessionTakesTheTranscriptModel() {
+        // Persisted model, no hook report since the relaunch: /model may have
+        // switched while CodeIsland wasn't running.
+        var session = SessionSnapshot()
+        session.model = "claude-sonnet-5"
+        let delta = scan([timedAssistantLine(model: "claude-opus-5-5", effort: "xhigh", at: "2026-09-12T03:59:00.000Z")])
+        XCTAssertTrue(session.applyTranscriptBackfill(delta))
+        XCTAssertEqual(session.modelLabel, "Opus 5.5 · xhigh")
+    }
+
+    func testSessionStartHookRecordsWhenItReportedTheModel() throws {
+        var sessions: [String: SessionSnapshot] = [:]
+        let before = Date()
+        _ = reduceEvent(sessions: &sessions, event: try hookEvent([
+            "hook_event_name": "SessionStart", "session_id": "s1", "source": "resume",
+            "model": "claude-sonnet-5", "cwd": "/repo",
+        ]), maxHistory: 10)
+        XCTAssertEqual(sessions["s1"]?.model, "claude-sonnet-5")
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(sessions["s1"]?.modelReportedAt), before)
+    }
+
+    func testModelSwitchOutputSetsThe1MVariant() {
+        let on = scan([assistantLine(model: "claude-opus-5-5", effort: "xhigh"), modelCommandLine, modelOutputLine])
+        XCTAssertEqual(on.configuredLongContext, true)
+        XCTAssertNil(on.modelObservation, "a model seen before the switch is out of date")
+
+        let offOutput = #"{"type":"user","message":{"role":"user","content":"<local-command-stdout>Set model to \u001b[1mOpus 5.5\u001b[22m and saved as your default for new sessions</local-command-stdout>"}}"#
+        XCTAssertEqual(scan([offOutput]).configuredLongContext, false, "ANSI bold is not a [1m] tag")
+        XCTAssertNil(scan([#"{"type":"user","message":{"role":"user","content":"<local-command-stdout>Set effort level to high</local-command-stdout>"}}"#]).configuredLongContext)
+    }
+
+    func testSwitchingToAndFromThe1MVariantRelabelsTheSession() {
+        var session = SessionSnapshot()
+        session.model = "claude-opus-5-5"
+        func live(longContext: Bool? = nil, model: String? = nil) -> ConversationTailDelta {
+            ConversationTailDelta(
+                sessionId: "s1", lastUserPrompt: nil, lastAssistantMessage: nil,
+                modelObservation: model.map { ModelObservation(model: $0, effort: "xhigh") },
+                configuredLongContext: longContext
+            )
+        }
+        XCTAssertTrue(session.applyTranscriptMetadata(from: live(longContext: true)))
+        XCTAssertEqual(session.modelLabel, "Opus 5.5 1M")
+        _ = session.applyTranscriptMetadata(from: live(model: "claude-opus-5-5"))
+        XCTAssertEqual(session.modelLabel, "Opus 5.5 1M · xhigh", "the bare API id keeps the 1M variant")
+
+        XCTAssertTrue(session.applyTranscriptMetadata(from: live(longContext: false)))
+        XCTAssertEqual(session.modelLabel, "Opus 5.5 · xhigh")
+        _ = session.applyTranscriptMetadata(from: live(model: "claude-opus-5-5"))
+        XCTAssertEqual(session.modelLabel, "Opus 5.5 · xhigh", "and loses it once switched off")
+
+        // Switching model and variant at once: the next line names the model.
+        session.model = "claude-sonnet-5"
+        _ = session.applyTranscriptMetadata(from: live(longContext: true))
+        _ = session.applyTranscriptMetadata(from: live(model: "claude-opus-5"))
+        XCTAssertEqual(session.model, "claude-opus-5[1m]")
+    }
+
     func testScanFileTailReadsOnlyTheWindowAndSurvivesACutFirstLine() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("codeisland-recap-tail-\(UUID().uuidString).jsonl")
