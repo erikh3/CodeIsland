@@ -12,6 +12,28 @@ final class AppStateGrokSessionSwitchTests: XCTestCase {
     private let cwd = "/Users/a123/git_file/test_project"
     private let previousId = "01a0226f-1be5-7591-9031-cab500723788"
     private let resumedId = "01a05ffe-e470-76b1-b227-cedb9ae65aea"
+    private var savedSmartSuppress: Any?
+
+    /// These hooks name Ghostty as the terminal, and every `Stop` shows a
+    /// completion. With Smart Suppress on (its default) that asks the real
+    /// terminal-visibility probe, which — whenever Ghostty happens to be the
+    /// frontmost app on the machine running the tests — scripts System Events
+    /// from a background thread. Nothing here is about suppression, so keep
+    /// the outcome independent of the desktop.
+    override func setUp() {
+        super.setUp()
+        savedSmartSuppress = UserDefaults.standard.object(forKey: SettingsKey.smartSuppress)
+        UserDefaults.standard.set(false, forKey: SettingsKey.smartSuppress)
+    }
+
+    override func tearDown() {
+        if let savedSmartSuppress {
+            UserDefaults.standard.set(savedSmartSuppress, forKey: SettingsKey.smartSuppress)
+        } else {
+            UserDefaults.standard.removeObject(forKey: SettingsKey.smartSuppress)
+        }
+        super.tearDown()
+    }
 
     private func transcriptPath(_ sessionId: String) -> String {
         "/Users/a123/.grok/sessions/%2FUsers%2Fa123%2Fgit_file%2Ftest_project/\(sessionId)/chat_history.jsonl"
