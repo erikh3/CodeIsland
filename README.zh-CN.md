@@ -45,7 +45,8 @@
 
 **👀 一眼看清全部**
 
-- 每个会话的状态、当前工具和最新回复，实时更新
+- 每个会话的状态、当前工具和最新回复，实时更新；完成的回复按 Markdown 渲染（列表、表格、代码块）
+- Agent 自己的任务清单显示为进度条，显示 Claude Code 的「离开期间回顾」，可选显示模型与推理强度
 - 卡片上显示 Git 分支与 worktree；会话可按项目或工具分组
 - Claude 用量统计，以及可选开启的套餐额度（5 小时 / 每周）
 - 每个工具一个像素风吉祥物，随 Agent 状态做动作
@@ -71,6 +72,8 @@
 - 静默时段、按事件的 8-bit 音效、「小圆点」完成提示模式
 - 全屏时自动隐藏、自动避让菜单栏图标、展开 / 收起速度可调
 - 静默规则：指定目录的会话永不打扰
+- 锁屏、屏保、显示器睡眠时自动静音；单个工具失败不再响错误音，只有整轮失败才响
+- 可选的跟进提醒：审批、提问和你还没看的完成结果，过几分钟再提醒一次
 
 </td>
 <td width="50%" valign="top">
@@ -80,7 +83,8 @@
 - SSH 远程主机：服务器上的会话和本地会话并排显示
 - iPhone 与 Apple Watch Buddy：灵动岛、锁屏、StandBy
 - 蓝牙连接的 ESP32 桌面小屏
-- Webhook 转发到钉钉 / 飞书 / Slack
+- 推送到手机或群聊：Bark、ntfy、钉钉、飞书、企业微信、Slack、Telegram，默认只在你离开时推
+- Webhook 转发原始事件，方便接自己的自动化
 - 7 种界面语言；签名公证，自动更新
 
 </td>
@@ -133,7 +137,9 @@
 </tr>
 </table>
 
-**同样支持：** Trae CN、Trae CLI / Trae CLI Next、Qoder CN、QoderWork 与 Qoder CLI、Cursor CLI、CodeBuddy CN、Claude Desktop（Code 标签页）、ZCode。其他使用 Claude 风格 hook 的工具，可以在 设置 → Hooks 里添加为**自定义 CLI**。
+**同样支持：** Trae CN、Trae CLI / Trae CLI Next、Qoder CN、QoderWork 与 Qoder CLI、Cursor CLI、CodeBuddy CN、Claude Desktop（Code 标签页与 [Cowork](#cowork)）、ZCode。其他使用 Claude 风格 hook 的工具，可以在 设置 → Hooks 里添加为**自定义 CLI**。
+
+**多个账号？** 在 **设置 → Hooks** 里登记额外的 Claude Code、Codex、Grok 配置目录（比如第二个 `CLAUDE_CONFIG_DIR`），每个目录单独安装 hook、单独显示状态，会话、transcript 和用量统计都会覆盖到。
 
 **知道它跑在哪：** 运行在 **tmux**、**zellij**、**Herdr** 或 **T3 Code** 里的会话，终端徽标旁会多一个标签，点击跳转会直达对应的面板或线程。
 
@@ -258,6 +264,26 @@ Antigravity 的 `PreToolUse` hook 只能拒绝工具调用、不能批准，所�
 
 </details>
 
+<a name="cowork"></a>
+<details>
+<summary><b>Claude Desktop Cowork</b></summary>
+
+<br>
+
+Cowork 跑在 Claude Desktop 的沙盒里，hook 不会触发，所以 CodeIsland 改为读取 Claude Desktop 保存在你 Mac 上的会话文件（`~/Library/Application Support/Claude/local-agent-mode-sessions/`，只读，不在那里安装或写入任何东西）。Cowork 对话会有自己的卡片：标题、实时状态、正在运行的工具、最新回复和完成提示音；有待处理的权限请求时显示为等待中。审批仍在 Claude Desktop 里完成，点击卡片会打开对应的对话。只显示最近几分钟内活跃的会话，旧会话不会变成幽灵卡片。开关在 **设置 → Hooks → Claude Desktop**。
+
+</details>
+
+<a name="push"></a>
+<details>
+<summary><b>推送到手机和群聊</b></summary>
+
+<br>
+
+**设置 → 行为 → 推送通知** 可以把审批、提问（附编号选项）、完成、整轮出错和跟进提醒推送到 Bark、ntfy、钉钉、飞书 / Lark、企业微信、Slack 或 Telegram。可以同时启用多个通道，每个通道单独选择推送哪些事件，「发送测试」按钮会显示服务端的真实返回。默认只在你离开时推送（锁屏、屏保、显示器睡眠，或键盘鼠标 5 分钟没有操作），子 Agent 的回合不推送。命令和消息会经过和应用其他部分相同的凭据脱敏。推送只负责通知，审批仍需回到 Mac 上操作。
+
+</details>
+
 ## 工作原理
 
 ```
@@ -265,27 +291,27 @@ AI 工具（Claude Code / Codex / Gemini / Cursor / …）
   └─ 触发 hook ─→ codeisland-bridge（原生 Swift 小程序）
                     └─ Unix socket /tmp/codeisland-<uid>.sock
                          └─ CodeIsland 实时更新刘海
-                              └─ 可选：iPhone / Watch / ESP32 Buddy、Webhook
+                              └─ 可选：iPhone / Watch / ESP32 Buddy、推送、Webhook
 ```
 
 CodeIsland 往每个工具自己的配置里装一个轻量 hook。工具触发事件时（会话开始、工具调用、权限请求、提问、结束），bridge 把事件以 JSON 形式经本机 Unix socket 转发过来，刘海立即更新。需要你做决定的事件，答案也沿同一条路回传。
 
-**隐私：** 除非你主动开启，事件不会离开你的 Mac。CodeIsland 发出的网络请求只有：Sparkle 更新检查；以及仅在你打开时才有的 Claude 套餐额度查询（用你自己的 Claude Code 登录请求 `api.anthropic.com`）和发往你所配置地址的 Webhook 转发。
+**隐私：** 除非你主动开启，事件不会离开你的 Mac。CodeIsland 发出的网络请求只有：Sparkle 更新检查；以及仅在你打开时才有的 Claude 套餐额度查询（用你自己的 Claude Code 登录请求 `api.anthropic.com`）、发往你所配置地址的 Webhook 转发，以及发往你所配置服务的推送。
 
 ## 设置
 
 | 页面 | 内容 |
 |------|------|
 | **通用** | 语言、开机启动、显示器选择 |
-| **行为** | 自动展开、智能抑制、完成提示方式、会话清理、静默规则、自动放行、Webhook |
-| **外观** | 面板尺寸、刘海宽度、字号、回复行数、展开 / 收起速度、Git 分支、用量统计、套餐额度 |
+| **行为** | 自动展开（审批与提问分开设置）、悬停展开延迟、智能抑制、完成提示方式、跟进提醒、会话清理、静默规则、自动放行、推送通知、Webhook |
+| **外观** | 面板尺寸、刘海宽度、字号、回复行数、展开 / 收起速度、项目名、Git 分支、任务进度、会话回顾、模型标签、用量统计、套餐额度 |
 | **角色** | 预览所有像素角色和它们的动画 |
-| **声音** | 按事件的 8-bit 音效、音量、静默时段 |
+| **声音** | 按事件的 8-bit 音效、音量、静默时段、离开时自动静音 |
 | **快捷键** | 全局快捷键：开关面板、批准、拒绝、始终允许、跳过、跳转 |
 | **远程** | SSH 主机及每台主机的目录过滤 |
-| **Hooks** | 各工具安装状态、重新安装 / 卸载、自定义 CLI |
+| **Hooks** | 各工具安装状态、重新安装 / 卸载、额外配置目录、Claude Desktop Cowork、自定义 CLI |
 | **Buddy** | iPhone / Apple Watch 配对、ESP32 硬件桌宠 |
-| **关于** | 版本、检查更新、导出诊断信息 |
+| **关于** | 版本、本版本更新说明、检查更新、导出诊断信息 |
 
 ### 键盘快捷键
 

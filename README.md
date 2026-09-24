@@ -45,7 +45,8 @@ It works with **30+ AI coding tools**, installs its hooks for you, and keeps eve
 
 **👀 See everything at a glance**
 
-- Live status, current tool and latest reply for every session
+- Live status, current tool and latest reply for every session; finished replies render as Markdown (lists, tables, code)
+- The agent's own task checklist as a progress bar, Claude Code's "while you were away" recap, and (opt-in) model + reasoning effort
 - Git branch and worktree on each card; group sessions by project or tool
 - Claude usage stats, plus opt-in plan limits (5-hour and weekly)
 - A pixel-art mascot per tool, animated by what the agent is doing
@@ -71,6 +72,8 @@ It works with **30+ AI coding tools**, installs its hooks for you, and keeps eve
 - Quiet hours, per-event 8-bit sounds, a "glance dot" completion mode
 - Hides in full screen, steps around menu-bar icons, adjustable open/close speed
 - Silence rules for directories you never want to hear about
+- Mutes itself while the screen is locked or asleep; a failed tool call no longer rings the error sound, only a turn that dies does
+- Opt-in follow-up reminders for approvals, questions and finished work you haven't looked at yet
 
 </td>
 <td width="50%" valign="top">
@@ -80,7 +83,8 @@ It works with **30+ AI coding tools**, installs its hooks for you, and keeps eve
 - SSH remote hosts — server sessions show up next to local ones
 - iPhone & Apple Watch Buddy: Dynamic Island, Lock Screen, StandBy
 - An ESP32 desk buddy over Bluetooth
-- Webhook forwarding to DingTalk / Lark / Slack
+- Pushes to your phone or team chat — Bark, ntfy, DingTalk, Lark, WeCom, Slack, Telegram — only while you're away
+- Webhook forwarding of raw events for your own automations
 - 7 UI languages; signed, notarized, auto-updating
 
 </td>
@@ -133,7 +137,9 @@ It works with **30+ AI coding tools**, installs its hooks for you, and keeps eve
 </tr>
 </table>
 
-**Also covered:** Trae CN, Trae CLI / Trae CLI Next, Qoder CN, QoderWork and Qoder CLI, Cursor CLI, CodeBuddy CN, Claude Desktop (Code tab), ZCode — plus any tool with Claude-style hooks, added as a **custom CLI** in Settings → Hooks.
+**Also covered:** Trae CN, Trae CLI / Trae CLI Next, Qoder CN, QoderWork and Qoder CLI, Cursor CLI, CodeBuddy CN, Claude Desktop (Code tab, and [Cowork](#cowork)), ZCode — plus any tool with Claude-style hooks, added as a **custom CLI** in Settings → Hooks.
+
+**Several accounts?** Register extra Claude Code, Codex and Grok config directories (e.g. a second `CLAUDE_CONFIG_DIR`) in **Settings → Hooks**; each gets its own hooks and status, and sessions, transcripts and usage cover all of them.
 
 **Knows where it runs:** sessions inside **tmux**, **zellij**, **Herdr** or **T3 Code** get a chip next to the terminal badge, and click-to-jump goes to the right pane or thread.
 
@@ -258,6 +264,26 @@ Add a host in **Settings → Remote**. CodeIsland installs a small helper and th
 
 </details>
 
+<a name="cowork"></a>
+<details>
+<summary><b>Claude Desktop Cowork</b></summary>
+
+<br>
+
+Cowork runs inside Claude Desktop's sandbox, where hooks never fire, so CodeIsland reads the session files Claude Desktop keeps on your Mac instead (`~/Library/Application Support/Claude/local-agent-mode-sessions/`, read-only — nothing is installed or written there). Cowork conversations get a card with their title, live status, the running tool, the latest reply and a completion sound; a pending permission request lights up as waiting. Approvals are still answered in Claude Desktop — click the card to open that conversation. Only sessions active in the last few minutes appear, so old ones never come back as ghost cards. Toggle it under **Settings → Hooks → Claude Desktop**.
+
+</details>
+
+<a name="push"></a>
+<details>
+<summary><b>Phone & chat pushes</b></summary>
+
+<br>
+
+**Settings → Behavior → Push notifications** sends approvals, questions (with numbered options), finished turns, turn errors and follow-up reminders to Bark, ntfy, DingTalk, Lark / Feishu, WeCom, Slack or Telegram — several at once, each with its own event choices and a **Send test** button that shows the service's real reply. By default a push only goes out while you're away (screen locked, screen saver, displays asleep, or no keyboard / mouse input for 5 minutes), and subagent turns are never pushed. Commands and messages go through the same credential redaction as the rest of the app. Pushes answer nothing: approve on the Mac.
+
+</details>
+
 ## How it works
 
 ```
@@ -265,27 +291,27 @@ AI tool (Claude Code / Codex / Gemini / Cursor / …)
   └─ hook fires ─→ codeisland-bridge (native Swift binary)
                      └─ Unix socket /tmp/codeisland-<uid>.sock
                           └─ CodeIsland updates the notch in real time
-                               └─ optional: iPhone / Watch / ESP32 Buddy, webhook
+                               └─ optional: iPhone / Watch / ESP32 Buddy, push, webhook
 ```
 
 CodeIsland installs lightweight hooks into each tool's own config. When the tool fires an event — session start, tool call, permission request, question, stop — the bridge forwards it as JSON over a local Unix socket, and the island updates instantly. For events that wait on you, the answer travels back the same way.
 
-**Privacy:** events never leave your Mac unless you opt in. The only network requests CodeIsland makes are Sparkle update checks, plus — only if you turn them on — Claude plan-limit lookups (sent to `api.anthropic.com` with your own Claude Code login) and webhook forwarding to the URL you configure.
+**Privacy:** events never leave your Mac unless you opt in. The only network requests CodeIsland makes are Sparkle update checks, plus — only if you turn them on — Claude plan-limit lookups (sent to `api.anthropic.com` with your own Claude Code login), webhook forwarding to the URL you configure, and pushes to the services you set up.
 
 ## Settings
 
 | Page | What's there |
 |------|--------------|
 | **General** | Language, launch at login, display selection |
-| **Behavior** | Auto-expand, smart suppress, completion style, session cleanup, silence rules, auto-approve, webhook |
-| **Appearance** | Panel size, notch width, font size, reply lines, open/close speed, git branch, usage stats, plan limits |
+| **Behavior** | Auto-expand (approvals and questions separately), hover delay, smart suppress, completion style, follow-up reminders, session cleanup, silence rules, auto-approve, push notifications, webhook |
+| **Appearance** | Panel size, notch width, font size, reply lines, open/close speed, project name, git branch, task progress, session recap, model label, usage stats, plan limits |
 | **Mascots** | Preview every character and its animations |
-| **Sound** | 8-bit sounds per event, volume, quiet hours |
+| **Sound** | 8-bit sounds per event, volume, quiet hours, mute while away |
 | **Shortcuts** | Global hotkeys for toggle, approve, deny, always-allow, skip, jump |
 | **Remote** | SSH hosts and per-host directory filters |
-| **Hooks** | Install status per tool, reinstall / uninstall, custom CLIs |
+| **Hooks** | Install status per tool, reinstall / uninstall, extra config directories, Claude Desktop Cowork, custom CLIs |
 | **Buddy** | iPhone / Apple Watch pairing, ESP32 hardware buddy |
-| **About** | Version, updates, diagnostics export |
+| **About** | Version, this version's release notes, updates, diagnostics export |
 
 ### Keyboard shortcuts
 
