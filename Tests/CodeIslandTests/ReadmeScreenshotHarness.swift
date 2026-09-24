@@ -433,6 +433,8 @@ private struct DefaultsSandbox {
             SettingsKey.showUsageStats, SettingsKey.showClaudeQuota, SettingsKey.showGitBranch,
             SettingsKey.aiMessageLines, SettingsKey.mascotSpeed, SettingsKey.notchHeightMode,
             SettingsKey.customNotchHeight, SettingsKey.collapseOnMouseLeave, SettingsKey.maxToolHistory,
+            SettingsKey.showSessionRecap, SettingsKey.showModelLabel, SettingsKey.showTaskProgress,
+            SettingsKey.showProjectName, SettingsKey.autoExpandOnQuestion, SettingsKey.followUpReminderMinutes,
         ] + ShortcutAction.allCases.flatMap { action in
             [
                 SettingsKey.shortcutEnabled(action.rawValue),
