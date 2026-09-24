@@ -107,9 +107,10 @@ public enum ChatMessageTextFormatter {
         return result
     }
 
+    /// `*`, `_` and `~` inside a word stay literal — see MarkdownInlineLiterals.
     private static func renderInlineOnly(_ text: String) -> AttributedString {
         if let attr = try? AttributedString(
-            markdown: text,
+            markdown: MarkdownInlineLiterals.escapingWordDelimiters(text),
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         ) {
             return attr

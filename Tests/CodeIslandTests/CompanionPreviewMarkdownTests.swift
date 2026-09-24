@@ -45,6 +45,14 @@ final class CompanionPreviewMarkdownTests: XCTestCase {
         XCTAssertEqual(text, flattened)
     }
 
+    func testFlatteningKeepsAsterisksUnderscoresAndTildesThatAreText() {
+        // These used to reach the phone as "234 = 24", "init.py" and "/code/a".
+        XCTAssertEqual(
+            AppState.companionReplyText("- **Fixed**: 2*3*4 = 24 in `calc.py`\n- edited __init__.py under ~/code/a, see a~b~c"),
+            "Fixed: 2*3*4 = 24 in calc.py · edited __init__.py under ~/code/a, see a~b~c"
+        )
+    }
+
     func testFlatteningLeavesUserMessagesAlone() {
         let messages = [ChatMessage(isUser: true, text: "# not a heading, a prompt"), ChatMessage(isUser: false, text: "# Title")]
         XCTAssertEqual(AppState.companionMessages(messages).map(\.text), ["# not a heading, a prompt", "Title"])

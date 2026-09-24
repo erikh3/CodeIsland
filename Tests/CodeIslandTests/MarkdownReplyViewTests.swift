@@ -209,6 +209,14 @@ final class MarkdownReplyViewTests: XCTestCase {
         XCTAssertTrue(preview.runs.contains { $0.swiftUI.foregroundColor == IslandMarkdownStyle.inlineCode })
     }
 
+    func testCappedPreviewsKeepLiteralAsterisksUnderscoresAndTildes() {
+        let reply = "## Result\n2*3*4 = 24 — see __init__.py and ~/code/a~b~c"
+        for singleLine in [true, false] {
+            let preview = String(IslandMarkdownInline.preview(reply, singleLine: singleLine).characters)
+            XCTAssertTrue(preview.hasSuffix("2*3*4 = 24 — see __init__.py and ~/code/a~b~c"), preview)
+        }
+    }
+
     // MARK: - Compact bar
 
     func testCodexLiveOutputSummaryFlattensMarkdown() {
