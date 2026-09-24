@@ -24,6 +24,61 @@ public enum MarkdownPreviewText {
         String(attributed(MarkdownBlockParser.parse(text), singleLine: singleLine).characters)
     }
 
+    // MARK: - Source budget
+
+    /// Bytes of text outside code fences worth flattening. A preview shows
+    /// a few lines at most — the island caps rows at five, the iPhone and
+    /// Watch take 240 characters, the Codex live bar 160 — while flattening
+    /// parses and inline-renders the whole reply: ~120ms for a 139 KB Codex
+    /// output, redone for every streamed chunk, on the main thread.
+    public static let sourceBudget = 8 * 1024
+    /// Bytes in all, code included. Code only contributes its first line to
+    /// a preview, so it doesn't count against `sourceBudget` — a long sample
+    /// can't hide the text after it — but an unclosed fence must still end.
+    public static let sourceHardLimit = 64 * 1024
+
+    /// The head of `text` a preview is built from: whole lines up to the
+    /// budget, then as much of the next line as fits. Short replies come
+    /// back unchanged.
+    public static func previewSource(_ text: String) -> String {
+        guard text.utf8.count > sourceBudget else { return text }
+        var prose = 0
+        var total = 0
+        var fence: MarkdownBlockParser.Fence?
+        var lineStart = text.startIndex
+        while lineStart < text.endIndex {
+            let lineEnd = text.utf8[lineStart...].firstIndex(of: UInt8(ascii: "\n")) ?? text.endIndex
+            let line = text[lineStart..<lineEnd]
+            let bytes = line.utf8.count
+            var isProse = false
+            if let open = fence {
+                if MarkdownBlockParser.closesFence(String(line), open) { fence = nil }
+            } else if let open = openingFence(line) {
+                fence = open
+            } else {
+                isProse = true
+            }
+            let allowance = isProse
+                ? min(sourceBudget - prose, sourceHardLimit - total)
+                : sourceHardLimit - total
+            if bytes > allowance {
+                return String(text[..<lineStart]) + String(line.prefix(max(0, allowance)))
+            }
+            if isProse { prose += bytes }
+            total += bytes + 1
+            guard lineEnd < text.endIndex else { break }
+            lineStart = text.utf8.index(after: lineEnd)
+        }
+        return text
+    }
+
+    private static func openingFence(_ line: Substring) -> MarkdownBlockParser.Fence? {
+        guard let first = line.first(where: { $0 != " " && $0 != "\t" }), first == "`" || first == "~" else {
+            return nil
+        }
+        return MarkdownBlockParser.openingFence(String(line))
+    }
+
     // MARK: - Segments
 
     /// One segment per block, already inline-rendered. Empty blocks (a lone

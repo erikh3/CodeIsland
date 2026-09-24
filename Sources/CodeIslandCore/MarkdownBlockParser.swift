@@ -230,7 +230,7 @@ public enum MarkdownBlockParser {
         return Fence(marker: marker, length: length, indent: indent, info: info)
     }
 
-    private static func closesFence(_ line: String, _ fence: Fence) -> Bool {
+    static func closesFence(_ line: String, _ fence: Fence) -> Bool {
         // CommonMark caps the closing fence's indent at three spaces; models
         // indent it to match whatever the code sat under, so accept any.
         let trimmed = line.trimmingCharacters(in: .whitespaces)

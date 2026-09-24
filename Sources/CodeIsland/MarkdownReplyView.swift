@@ -234,34 +234,36 @@ enum IslandMarkdownStyle {
 /// the same reason ChatMessageTextFormatter caches — card bodies re-run on
 /// every hover and expand animation.
 enum IslandMarkdownInline {
-    private static var textCache: [String: AttributedString] = [:]
-    private static var truncatingTextCache: [String: AttributedString] = [:]
-    private static var previewCache: [String: AttributedString] = [:]
-    private static var singleLinePreviewCache: [String: AttributedString] = [:]
     private static let cacheLimit = 256
+    private static var textCache = TextRenderCache<String, AttributedString>(countLimit: cacheLimit)
+    private static var truncatingTextCache = TextRenderCache<String, AttributedString>(countLimit: cacheLimit)
+    private static var previewCache = TextRenderCache<String, AttributedString>(countLimit: cacheLimit)
+    private static var singleLinePreviewCache = TextRenderCache<String, AttributedString>(countLimit: cacheLimit)
 
     /// Wrapping text (paragraphs, headings, list items).
     static func text(_ source: String) -> AttributedString {
-        cached(source, in: &textCache) {
+        textCache.value(for: source) {
             styled(ChatMessageTextFormatter.inlineSpans(source), truncates: false)
         }
     }
 
     /// Single-line text that may be cut with an ellipsis (table cells).
     static func truncatingText(_ source: String) -> AttributedString {
-        cached(source, in: &truncatingTextCache) {
+        truncatingTextCache.value(for: source) {
             styled(ChatMessageTextFormatter.inlineSpans(source), truncates: true)
         }
     }
 
+    /// Keyed by the head a preview is built from, not the whole reply.
     static func preview(_ source: String, singleLine: Bool) -> AttributedString {
+        let head = MarkdownPreviewText.previewSource(source)
         if singleLine {
-            return cached(source, in: &singleLinePreviewCache) {
-                styled(ChatMessageTextFormatter.markdownPreview(source, singleLine: true), truncates: true)
+            return singleLinePreviewCache.value(for: head) {
+                styled(ChatMessageTextFormatter.markdownPreview(head, singleLine: true), truncates: true)
             }
         }
-        return cached(source, in: &previewCache) {
-            styled(ChatMessageTextFormatter.markdownPreview(source, singleLine: false), truncates: true)
+        return previewCache.value(for: head) {
+            styled(ChatMessageTextFormatter.markdownPreview(head, singleLine: false), truncates: true)
         }
     }
 
@@ -285,19 +287,6 @@ enum IslandMarkdownInline {
         return result
     }
 
-    private static func cached(
-        _ key: String,
-        in cache: inout [String: AttributedString],
-        render: () -> AttributedString
-    ) -> AttributedString {
-        if let hit = cache[key] { return hit }
-        let value = render()
-        if cache.count >= cacheLimit {
-            cache.removeAll(keepingCapacity: true)
-        }
-        cache[key] = value
-        return value
-    }
 }
 
 // MARK: - Blocks
