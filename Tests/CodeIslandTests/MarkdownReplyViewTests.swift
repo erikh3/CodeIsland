@@ -104,4 +104,18 @@ final class MarkdownReplyViewTests: XCTestCase {
         XCTAssertTrue(preview.runs.allSatisfy { $0.swiftUI.backgroundColor == nil })
         XCTAssertTrue(preview.runs.contains { $0.swiftUI.foregroundColor == IslandMarkdownStyle.inlineCode })
     }
+
+    // MARK: - Compact bar
+
+    func testCodexLiveOutputSummaryFlattensMarkdown() {
+        var session = SessionSnapshot()
+        session.source = "codex"
+        session.status = .processing
+        session.liveCodexOutput = "## Plan\n- **read** the files\n- run `swift test`\n\n| a | b |\n|---|---|\n| 1 | 2 |"
+
+        XCTAssertEqual(
+            SessionLiveOutputDisplay.summary(for: session),
+            "Plan · read the files · run swift test · a, b · 1, 2"
+        )
+    }
 }

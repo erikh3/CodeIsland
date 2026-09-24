@@ -685,7 +685,11 @@ enum SessionLiveOutputDisplay {
               SessionSnapshot.normalizedSupportedSource(session.source) == "codex",
               let liveOutput = session.liveCodexOutput else { return nil }
 
-        let normalized = liveOutput
+        // Streamed replies are Markdown; flatten it so the one-line bar shows
+        // words, not `##`, `**` or table pipes. Cached: the bar re-renders
+        // far more often than the output changes.
+        let flattened = ChatMessageTextFormatter.markdownPreview(liveOutput, singleLine: true)
+        let normalized = String(flattened.characters)
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
