@@ -147,6 +147,38 @@ final class PushSigningAndResponseTests: XCTestCase {
         XCTAssertEqual(redirected.redirectedTo, "https://bark.example.com:8443/…", "path and query can be credentials")
     }
 
+    // MARK: Logging
+
+    /// Server errors echo what they were sent; the log (exported with
+    /// diagnostics) gets them without the channel's credentials or any IP.
+    func testLoggableSummaryScrubsTheChannelsSecretsAndAddresses() {
+        var bark = PushChannelConfig(kind: .bark)
+        bark.target = "Abc123DeviceKeyXyz"
+        let barkFailure = PushDeliveryResult(ok: false, statusCode: 400, message: "failed to push: device key Abc123DeviceKeyXyz not registered")
+        XCTAssertEqual(barkFailure.loggableSummary(for: bark), "HTTP 400 · failed to push: device key [REDACTED] not registered")
+
+        var wecom = PushChannelConfig(kind: .wecom)
+        wecom.endpoint = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=693a91f6-7xxx-4bc4-97a0-0ec2sifa5aaa"
+        let wecomFailure = PushDeliveryResult(
+            ok: false,
+            statusCode: 200,
+            message: "errcode 93000: invalid webhook url, key 693a91f6-7xxx-4bc4-97a0-0ec2sifa5aaa, from ip: 203.0.113.9 / 2001:db8::1"
+        )
+        let logged = wecomFailure.loggableSummary(for: wecom)
+        XCTAssertFalse(logged.contains("693a91f6"), logged)
+        XCTAssertFalse(logged.contains("203.0.113.9"), logged)
+        XCTAssertFalse(logged.contains("2001:db8"), logged)
+        XCTAssertTrue(logged.hasPrefix("HTTP 200 · errcode 93000: invalid webhook url"), logged)
+
+        var telegram = PushChannelConfig(kind: .telegram)
+        telegram.token = "bot123456:ABCdefGHI"
+        let telegramFailure = PushDeliveryResult(ok: false, statusCode: 401, message: "401: Unauthorized for 123456:ABCdefGHI")
+        XCTAssertFalse(telegramFailure.loggableSummary(for: telegram).contains("ABCdefGHI"))
+
+        let plain = PushDeliveryResult(ok: false, statusCode: 502, message: "Bad Gateway at 12:30")
+        XCTAssertEqual(plain.loggableSummary(for: bark), "HTTP 502 · Bad Gateway at 12:30")
+    }
+
     // MARK: Redirects
 
     private func post(_ url: String, auth: String? = "Basic abc") -> URLRequest {

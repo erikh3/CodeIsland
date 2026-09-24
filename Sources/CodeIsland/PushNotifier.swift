@@ -185,7 +185,7 @@ final class PushNotifier: ObservableObject {
             let response = await transport.send(request)
             let result = PushDeliveryResult.from(response, kind: channel.kind, requestURL: request.url)
             if !result.ok {
-                log.error("push to \(channel.kind.rawValue, privacy: .public) failed: \(result.summary, privacy: .public)")
+                log.error("push to \(channel.kind.rawValue, privacy: .public) failed: \(result.loggableSummary(for: channel), privacy: .public)")
             }
             self?.lastDelivery[channel.kind] = PushDeliveryRecord(date: self?.clock() ?? Date(), kind: kind, result: result)
         }

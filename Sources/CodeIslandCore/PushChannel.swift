@@ -639,6 +639,47 @@ public struct PushDeliveryResult: Equatable, Sendable {
         let status = statusCode.map { "HTTP \($0)" }
         return [status, message.isEmpty ? nil : message].compactMap { $0 }.joined(separator: " · ")
     }
+
+    /// `summary` fit for the unified log, which a diagnostics export ships
+    /// off the Mac: servers echo what they were sent (bark-server the device
+    /// key, WeCom the caller's public IP), so this channel's own credentials
+    /// and every IP address are taken out, then the usual credential shapes.
+    public func loggableSummary(for channel: PushChannelConfig) -> String {
+        var text = summary
+        for secret in Self.secrets(of: channel) where text.contains(secret) {
+            text = text.replacingOccurrences(of: secret, with: "[REDACTED]")
+        }
+        for regex in Self.addressPatterns {
+            text = regex.stringByReplacingMatches(
+                in: text,
+                range: NSRange(text.startIndex..., in: text),
+                withTemplate: "[IP]"
+            )
+        }
+        return HookEvent.sanitizedSummary(text, limit: 400) ?? ""
+    }
+
+    /// Every configured value that is, or may contain, a credential: device
+    /// key / topic / chat id, tokens, secrets, and the webhook's userinfo,
+    /// path segments and query values. Longest first, so a value that
+    /// contains another is replaced whole.
+    static func secrets(of channel: PushChannelConfig) -> [String] {
+        var values = [channel.target, channel.token, channel.secret]
+        if channel.token.hasPrefix("bot") { values.append(String(channel.token.dropFirst(3))) }
+        if let parts = URLComponents(string: channel.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            values += [parts.user, parts.password].compactMap { $0 }
+            values += parts.path.split(separator: "/").map(String.init).filter { $0.count >= 8 }
+            values += (parts.queryItems ?? []).compactMap(\.value)
+        }
+        let trimmed = values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { $0.count >= 4 }
+        return Array(Set(trimmed)).sorted { $0.count > $1.count }
+    }
+
+    private static let addressPatterns: [NSRegularExpression] = [
+        #"\b(?:\d{1,3}\.){3}\d{1,3}\b"#,
+        #"\b(?:[0-9A-Fa-f]{1,4}:){4,7}[0-9A-Fa-f]{1,4}\b"#,
+        #"\b[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?"#,
+    ].compactMap { try? NSRegularExpression(pattern: $0) }
 }
 
 public enum PushResponseInterpreter {
