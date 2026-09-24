@@ -44,6 +44,11 @@ struct PersistedSession: Codable {
     /// before the transcript backfill finishes. nil when empty (and in files
     /// written before the field existed).
     var agentTasks: AgentTaskList? = nil
+    // Session recap + reasoning effort. Defaulted so older files (and call
+    // sites) without them keep decoding/compiling; restore is re-checked
+    // against the transcript by the attach-time backfill.
+    var recap: SessionRecap? = nil
+    var reasoningEffort: String? = nil
 }
 
 enum SessionPersistence {
@@ -85,7 +90,9 @@ enum SessionPersistence {
                 lastActivity: s.lastActivity,
                 transcriptPath: s.transcriptPath,
                 closedSubagentIds: s.closedSubagentIds.isEmpty ? nil : s.closedSubagentIds,
-                agentTasks: s.agentTasks.isEmpty ? nil : s.agentTasks
+                agentTasks: s.agentTasks.isEmpty ? nil : s.agentTasks,
+                recap: s.recap,
+                reasoningEffort: s.reasoningEffort
             )
         }
         do {

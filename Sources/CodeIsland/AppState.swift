@@ -3161,6 +3161,15 @@ final class AppState {
             snapshot.herdrBinaryPath = p.herdrBinaryPath
             snapshot.lastActivity = p.lastActivity
             snapshot.transcriptPath = p.transcriptPath
+            snapshot.recap = p.recap
+            snapshot.reasoningEffort = p.reasoningEffort
+            // A prompt typed while CodeIsland wasn't running supersedes the
+            // saved recap; the transcript tail is the judge. Restored cards
+            // don't always get a tailer, so check now rather than on attach.
+            if snapshot.recap != nil, let path = snapshot.transcriptPath,
+               let scan = JSONLTailer.scanFileTail(path: path) {
+                _ = snapshot.applyTranscriptBackfill(scan)
+            }
             if let closed = p.closedSubagentIds, !closed.isEmpty {
                 snapshot.restoreClosedSubagentIds(closed)
             }

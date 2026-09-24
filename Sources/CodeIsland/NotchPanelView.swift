@@ -100,6 +100,7 @@ struct NotchPanelView: View {
     @AppStorage(SettingsKey.collapsedWidthScale) private var collapsedWidthScale = SettingsDefaults.collapsedWidthScale
     @AppStorage(SettingsKey.hapticOnHover) private var hapticOnHover = SettingsDefaults.hapticOnHover
     @AppStorage(SettingsKey.hapticIntensity) private var hapticIntensity = SettingsDefaults.hapticIntensity
+    @AppStorage(SettingsKey.showSessionRecap) private var showSessionRecap = SettingsDefaults.showSessionRecap
 
     /// Delayed hover: prevents accidental expansion when mouse passes through
     @State private var hoverTimer: Timer?
@@ -129,6 +130,12 @@ struct NotchPanelView: View {
     /// once the surface expands (from hover or any other path) it disappears.
     private var shouldShowPrehover: Bool {
         showBar && !shouldShowExpanded && hoverPhase == .prehover
+    }
+
+    private var collapsedRecapTooltip: String {
+        guard showSessionRecap, !shouldShowExpanded else { return "" }
+        let sid = appState.rotatingSessionId ?? appState.activeSessionId ?? appState.sessions.keys.sorted().first
+        return SessionMetadataStyle.collapsedRecapTooltip(for: sid.flatMap { appState.sessions[$0] })
     }
 
     /// Mascot size — fits within the menu bar height
@@ -180,6 +187,10 @@ struct NotchPanelView: View {
                         CompactRightWing(appState: appState, expanded: shouldShowExpanded, hasNotch: hasNotch)
                     }
                     .frame(height: notchHeight)
+                    // Recap on hover while collapsed — shows whenever hover
+                    // doesn't expand the panel (smart suppress with the
+                    // terminal frontmost); expanded cards show it inline.
+                    .help(collapsedRecapTooltip)
                 } else if showIdleIndicator {
                     IdleIndicatorBar(
                         mascotSize: mascotSize,
@@ -2570,6 +2581,7 @@ private struct SessionCard: View {
     @AppStorage(SettingsKey.showAgentDetails) private var showAgentDetails = SettingsDefaults.showAgentDetails
     @AppStorage(SettingsKey.autoCollapseAfterSessionJump) private var autoCollapseAfterSessionJump = SettingsDefaults.autoCollapseAfterSessionJump
     @AppStorage(SettingsKey.showTaskProgress) private var showTaskProgress = SettingsDefaults.showTaskProgress
+    @AppStorage(SettingsKey.showSessionRecap) private var showSessionRecap = SettingsDefaults.showSessionRecap
     private var fontSize: CGFloat { CGFloat(contentFontSize) }
     private var aiLineLimit: Int? { aiMessageLines > 0 ? aiMessageLines : nil }
     private var approvalQueueIndex: Int? {
@@ -2839,6 +2851,18 @@ private struct SessionCard: View {
                         }
                     }
                 }
+                .padding(.leading, 4)
+            }
+
+            // Claude Code's idle recap — the newest thing in an idle session,
+            // so it sits under the chat rows. visibleRecap is nil while working.
+            if showSessionRecap, let recap = session.visibleRecap {
+                SessionRecapRow(
+                    text: recap.text,
+                    fontSize: fontSize,
+                    lineLimit: aiLineLimit.map { max($0, 2) }
+                )
+                .equatable()
                 .padding(.leading, 4)
             }
             } // end Column 2 VStack
@@ -3582,6 +3606,44 @@ private func subagentTooltipText(_ sub: SubagentState) -> String {
         }
     }
     return detail.isEmpty ? typeLabel : "\(typeLabel) — \(detail)"
+}
+
+// MARK: - Session metadata (recap)
+
+enum SessionMetadataStyle {
+    /// Recap glyph tint — distinct from the green ">" user and orange "$"
+    /// reply markers so a recap never reads as the agent speaking.
+    static let recapAccent = Color(red: 0.6, green: 0.68, blue: 1.0)
+
+    /// Tooltip for the collapsed bar: the displayed idle session's recap.
+    static func collapsedRecapTooltip(for session: SessionSnapshot?) -> String {
+        guard let session, let recap = session.visibleRecap else { return "" }
+        return "↻ \(session.projectDisplayName)\n\(recap.text)"
+    }
+}
+
+/// Claude Code's "while you were away" recap on an idle card: a ↻ marker and
+/// secondary-colored text, set apart from the "$" last-reply rows.
+private struct SessionRecapRow: View, Equatable {
+    let text: String
+    let fontSize: CGFloat
+    let lineLimit: Int?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 4) {
+            Text("↻")
+                .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                .foregroundStyle(SessionMetadataStyle.recapAccent)
+            Text(text)
+                .font(.system(size: fontSize, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.55))
+                .lineLimit(lineLimit)
+                .truncationMode(.tail)
+        }
+        .help(text)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(L10n.shared["session_recap"]): \(text)")
+    }
 }
 
 /// Strip internal directives (::code-comment{}, ::git-*{}, etc.) from message text

@@ -42,6 +42,15 @@ extension AppState {
             sessions[sessionId] = session
         }
 
+        // Recap + model/effort from the transcript tail, by the same rules as
+        // live deltas. Authoritative for the recap, so a persisted one that a
+        // newer prompt superseded while nobody was watching is dropped here.
+        if let scan = JSONLTailer.scanFileTail(path: path),
+           var session = sessions[sessionId],
+           session.applyTranscriptBackfill(scan) {
+            sessions[sessionId] = session
+        }
+
         if sessions[sessionId]?.source == "codex",
            let turnStatus = Self.latestCodexTurnStatus(path: path),
            var session = sessions[sessionId] {
@@ -295,9 +304,16 @@ extension AppState {
             }
         }
 
+        // Recap + model/effort label. Written back without bumping lastActivity:
+        // a recap arrives minutes after the turn ended and is not activity.
+        let metadataChanged = session.applyTranscriptMetadata(from: delta)
+
         if mutated {
             session.lastActivity = Date()
             sessions[delta.sessionId] = session
+        } else if metadataChanged {
+            sessions[delta.sessionId] = session
+            scheduleSave()
         }
         if questionStateChanged {
             // Hooks stay silent while Cursor waits on its question, so nothing

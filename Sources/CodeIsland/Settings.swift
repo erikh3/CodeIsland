@@ -75,6 +75,7 @@ enum SettingsKey {
 
     // Session cards
     static let showGitBranch = "showGitBranch"
+    static let showSessionRecap = "showSessionRecap"
 
     // Token-usage footer (local Claude transcript aggregation)
     static let showUsageStats = "showUsageStats"
@@ -197,6 +198,7 @@ struct SettingsDefaults {
     static let followUpReminderMinutes = 0
     static let autoMuteWhenAway = true
     static let showGitBranch = true
+    static let showSessionRecap = true
     static let showUsageStats = true
     static let showClaudeQuota = false
 
@@ -293,6 +295,7 @@ class SettingsManager {
             SettingsKey.followUpReminderMinutes: SettingsDefaults.followUpReminderMinutes,
             SettingsKey.autoMuteWhenAway: SettingsDefaults.autoMuteWhenAway,
             SettingsKey.showGitBranch: SettingsDefaults.showGitBranch,
+            SettingsKey.showSessionRecap: SettingsDefaults.showSessionRecap,
             SettingsKey.showUsageStats: SettingsDefaults.showUsageStats,
             SettingsKey.showClaudeQuota: SettingsDefaults.showClaudeQuota,
             SettingsKey.rotationInterval: SettingsDefaults.rotationInterval,
