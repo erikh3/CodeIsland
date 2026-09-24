@@ -15,9 +15,9 @@ extension AppState {
     /// from transcript history without blocking the main actor — transcripts
     /// run to tens of MB.
     ///
-    /// `endOffset` is the file size captured just before the tailer attached,
-    /// so the scan and the live tail read disjoint bytes and no operation or
-    /// prompt is seen twice.
+    /// `endOffset` is the offset the tailer starts reading at, so the scan and
+    /// the live tail read disjoint bytes and no operation or prompt is seen
+    /// twice — or by neither.
     func startAgentTaskBackfill(sessionId: String, path: String, endOffset: UInt64, attachmentToken: UUID) {
         guard endOffset > 0 else {
             pendingAgentTaskBackfills.removeValue(forKey: sessionId)

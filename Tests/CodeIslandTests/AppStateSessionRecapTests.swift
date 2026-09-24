@@ -117,6 +117,39 @@ final class AppStateSessionRecapTests: XCTestCase {
         XCTAssertNil(appState.sessions["s1"]?.recap)
     }
 
+    func testAPromptBeingWrittenAtAttachStillClearsTheRestoredRecap() async throws {
+        // The prompt row is half-written when the attach scan runs: the scan
+        // can't parse it, so the recap survives it. The tailer must pick the
+        // row up from where the scan stopped rather than from the file's end.
+        let prompt = userLine("typed right as the island attached") + "\n"
+        let cut = prompt.index(prompt.startIndex, offsetBy: prompt.count / 2)
+        let url = tempDir.appendingPathComponent("attach-gap.jsonl")
+        try (recapLine("Old recap") + "\n" + String(prompt[..<cut])).write(to: url, atomically: true, encoding: .utf8)
+
+        let appState = AppState()
+        var session = SessionSnapshot()
+        session.transcriptPath = url.path
+        session.recap = SessionRecap(text: "Old recap", createdAt: Date(timeIntervalSince1970: 1))
+        appState.sessions["s1"] = session
+        appState.attachTranscriptTailerIfNeeded(sessionId: "s1")
+        defer { appState.detachTranscriptTailer(sessionId: "s1") }
+        XCTAssertEqual(appState.sessions["s1"]?.recap?.text, "Old recap")
+
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(String(prompt[cut...]).utf8))
+        try handle.close()
+
+        var attempts = 0
+        while appState.sessions["s1"]?.recap != nil, attempts < 150 {
+            attempts += 1
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertNil(appState.sessions["s1"]?.recap)
+        XCTAssertEqual(appState.sessions["s1"]?.lastUserPrompt, "typed right as the island attached")
+    }
+
     // MARK: - Persistence
 
     func testPersistedSessionRoundTripsRecapAndEffort() throws {

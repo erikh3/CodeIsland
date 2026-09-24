@@ -524,6 +524,82 @@ final class JSONLTailerTests: XCTestCase {
         tailer.detach(sessionId: "s1")
     }
 
+    // MARK: - Attach offset shared with the backfill
+
+    /// Lines written after the caller's backfill stopped but before the watch
+    /// was armed must be read at once — no later write may ever come (a
+    /// Codex turn that already ended).
+    func testAttachAtAnOffsetReadsWhatFollowsItWithoutWaitingForAWrite() throws {
+        let url = temporaryFileURL()
+        let seen = userLine(text: "already backfilled") + "\n"
+        let missed = assistantLine(text: "written in the gap") + "\n"
+        try Data((seen + missed).utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let delivered = expectation(description: "gap line delivered")
+        let captured = LockedValue<ConversationTailDelta?>(nil)
+        let tailer = JSONLTailer(
+            queue: DispatchQueue(label: "tailer-test"),
+            onDelta: { delta in
+                captured.set(delta)
+                delivered.fulfill()
+            }
+        )
+        tailer.attach(sessionId: "s1", filePath: url.path, initialOffset: UInt64(seen.utf8.count))
+
+        wait(for: [delivered], timeout: 2)
+        XCTAssertEqual(captured.value?.lastAssistantMessage, "written in the gap")
+        XCTAssertNil(captured.value?.lastUserPrompt, "bytes before the offset belong to the backfill")
+        tailer.detach(sessionId: "s1")
+    }
+
+    func testAttachAtAnOffsetCompletesARowThatWasStillBeingWritten() throws {
+        let url = temporaryFileURL()
+        let full = assistantLine(text: "finished later") + "\n"
+        let cut = full.index(full.startIndex, offsetBy: full.count / 2)
+        let head = userLine(text: "q") + "\n"
+        try Data((head + String(full[..<cut])).utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let scan = try XCTUnwrap(JSONLTailer.scanTailForAttach(path: url.path))
+        XCTAssertEqual(scan.endOffset, UInt64(head.utf8.count), "the tailer starts at the row being written")
+        XCTAssertEqual(scan.delta.lastUserPrompt, "q")
+        XCTAssertNil(scan.delta.lastAssistantMessage)
+
+        let delivered = expectation(description: "completed row delivered")
+        let tailer = JSONLTailer(
+            queue: DispatchQueue(label: "tailer-test"),
+            onDelta: { delta in
+                if delta.lastAssistantMessage == "finished later" { delivered.fulfill() }
+            }
+        )
+        tailer.attach(sessionId: "s1", filePath: url.path, initialOffset: scan.endOffset)
+        XCTAssertTrue(waitUntil { tailer.activeSessionCount == 1 })
+        try appendToFile(url: url, content: String(full[cut...]))
+
+        wait(for: [delivered], timeout: 2)
+        tailer.detach(sessionId: "s1")
+    }
+
+    func testScanTailForAttachSkipsTheCutFirstRowAndReadsAnUnterminatedLastRow() throws {
+        let url = temporaryFileURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let early = userLine(text: String(repeating: "e", count: 400)) + "\n"
+        let prompt = userLine(text: "in window") + "\n"
+        // Cursor never ends its last row with a newline.
+        let last = #"{"role":"assistant","message":{"content":[{"type":"text","text":"cursor reply"}]}}"#
+        try Data((early + prompt + last).utf8).write(to: url)
+
+        let scan = try XCTUnwrap(JSONLTailer.scanTailForAttach(path: url.path, maxBytes: prompt.utf8.count + last.utf8.count + 10))
+        XCTAssertEqual(scan.delta.lastUserPrompt, "in window", "the cut first row is dropped, not misparsed")
+        XCTAssertEqual(scan.delta.lastAssistantMessage, "cursor reply")
+        XCTAssertEqual(scan.endOffset, UInt64(early.utf8.count + prompt.utf8.count))
+
+        // A window that starts exactly on a row boundary keeps that row.
+        let exact = try XCTUnwrap(JSONLTailer.scanTailForAttach(path: url.path, maxBytes: prompt.utf8.count + last.utf8.count))
+        XCTAssertEqual(exact.delta.lastUserPrompt, "in window")
+    }
+
     // MARK: - Fixtures
 
     private func assistantLine(text: String) -> String {

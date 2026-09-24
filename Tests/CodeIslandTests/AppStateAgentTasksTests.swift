@@ -60,6 +60,42 @@ final class AppStateAgentTasksTests: XCTestCase {
         XCTAssertNil(appState.pendingAgentTaskBackfills[sessionId])
     }
 
+    func testAttachWhileTheLastPlanRowIsBeingWrittenStillShowsThePlan() async throws {
+        // The rollout's final update_plan is half-written when CodeIsland
+        // attaches. The backfill skips unterminated rows, and a tailer that
+        // started at the file's end read only the row's tail — the plan was
+        // lost until Codex happened to update it again.
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codeisland-agent-task-gap-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let head = #"{"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}"# + "\n"
+        let plan = #"{"type":"response_item","payload":{"type":"function_call","name":"update_plan","arguments":"{\"plan\":[{\"step\":\"Read\",\"status\":\"completed\"},{\"step\":\"Patch\",\"status\":\"in_progress\"}]}","call_id":"call_gap"}}"# + "\n"
+        let cut = plan.index(plan.startIndex, offsetBy: plan.count / 2)
+        try (head + String(plan[..<cut])).write(to: url, atomically: true, encoding: .utf8)
+
+        let appState = AppState()
+        let sessionId = "codex-plan-gap"
+        var session = SessionSnapshot()
+        session.source = "codex"
+        session.transcriptPath = url.path
+        appState.sessions[sessionId] = session
+        defer { appState.detachTranscriptTailer(sessionId: sessionId) }
+
+        appState.attachTranscriptTailerIfNeeded(sessionId: sessionId)
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(String(plan[cut...]).utf8))
+        try handle.close()
+
+        var attempts = 0
+        while appState.sessions[sessionId]?.agentTasks.isEmpty != false, attempts < 150 {
+            attempts += 1
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(appState.sessions[sessionId]?.agentTasks.items.map(\.title), ["Read", "Patch"])
+    }
+
     func testBackfillReplaysTailEventsThatLandedDuringTheScan() {
         let history: [AgentTaskEvent] = [
             .create(opId: "toolu_c1", title: "Write parser", activeForm: nil),

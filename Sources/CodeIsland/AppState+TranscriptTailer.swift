@@ -45,9 +45,13 @@ extension AppState {
         // Recap + model/effort from the transcript tail, by the same rules as
         // live deltas. Authoritative for the recap, so a persisted one that a
         // newer prompt superseded while nobody was watching is dropped here.
-        if let scan = JSONLTailer.scanFileTail(path: path),
+        // Its end offset is where the tailer and the checklist backfill pick
+        // up, so a line written meanwhile (the prompt that makes this recap
+        // stale, Codex's last update_plan) is read by exactly one of them.
+        let tailScan = JSONLTailer.scanTailForAttach(path: path)
+        if let tailScan,
            var session = sessions[sessionId],
-           session.applyTranscriptBackfill(scan) {
+           session.applyTranscriptBackfill(tailScan.delta) {
             sessions[sessionId] = session
         }
 
@@ -106,17 +110,18 @@ extension AppState {
         }
 
         // Checklist history is rebuilt off the main actor from the bytes the
-        // tailer will not see: sized now, before attach picks its offset.
-        let agentTaskBackfillEnd = Self.transcriptFileSize(path)
+        // tailer will not see: everything before the tailer's start offset.
+        let attachOffset = tailScan?.endOffset ?? Self.transcriptFileSize(path)
         let attachmentToken = transcriptTailer.attach(
             sessionId: sessionId,
-            filePath: path
+            filePath: path,
+            initialOffset: attachOffset
         )
         attachedTranscriptTokens[sessionId] = attachmentToken
         startAgentTaskBackfill(
             sessionId: sessionId,
             path: path,
-            endOffset: agentTaskBackfillEnd,
+            endOffset: attachOffset,
             attachmentToken: attachmentToken
         )
     }

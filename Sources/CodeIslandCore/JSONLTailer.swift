@@ -156,8 +156,15 @@ public final class JSONLTailer: @unchecked Sendable {
 
     // MARK: - Public API
 
+    /// Start tailing `filePath`.
+    ///
+    /// - Parameter initialOffset: where the caller's own backfill stopped
+    ///   (``scanTailForAttach(path:maxBytes:)``'s `endOffset`). Lines from
+    ///   there on are delivered — including any appended before the watch was
+    ///   armed, read right away rather than on the next write. nil starts at
+    ///   the end of the file as it is when the watch opens it.
     @discardableResult
-    public func attach(sessionId: String, filePath: String) -> UUID {
+    public func attach(sessionId: String, filePath: String, initialOffset: UInt64? = nil) -> UUID {
         let attachmentToken = UUID()
         queue.async { [weak self] in
             guard let self else { return }
@@ -167,7 +174,8 @@ public final class JSONLTailer: @unchecked Sendable {
             self.attachOnQueue(
                 sessionId: sessionId,
                 filePath: filePath,
-                initialOffset: nil,
+                initialOffset: initialOffset.map { off_t(clamping: $0) },
+                readPendingBytes: initialOffset != nil,
                 generation: generation,
                 attachmentToken: attachmentToken
             )
@@ -212,6 +220,7 @@ public final class JSONLTailer: @unchecked Sendable {
         sessionId: String,
         filePath: String,
         initialOffset: off_t?,
+        readPendingBytes: Bool = false,
         generation: UInt64,
         attachmentToken: UUID
     ) {
@@ -255,6 +264,12 @@ public final class JSONLTailer: @unchecked Sendable {
 
         watches[sessionId] = watch
         source.resume()
+        // Bytes written after the caller's backfill stopped but before the
+        // source was armed raise no event of their own; don't leave them
+        // waiting for the next write (a finished turn may never write again).
+        if readPendingBytes, fileStat.st_size > offset {
+            handleEvents([], watch: watch)
+        }
     }
 
     private func detachOnQueue(sessionId: String) {
@@ -444,6 +459,51 @@ public final class JSONLTailer: @unchecked Sendable {
         // it as complete, and an incomplete one simply fails to parse.
         data.append(0x0A)
         return scanLines(data).delta
+    }
+
+    /// An attach-time scan of a transcript's tail, plus where it stopped.
+    public struct AttachScan: Equatable {
+        public let delta: ScanResult.Delta
+        /// Just past the last complete line when the scan ran. Hand it to
+        /// ``attach(sessionId:filePath:initialOffset:)`` (and to any other
+        /// backfill) so every line is read exactly once: a line still being
+        /// written, or appended after the scan, belongs to the live tail.
+        public let endOffset: UInt64
+    }
+
+    /// Scan the last `maxBytes` of a transcript — the attach-time backfill of
+    /// recap / model state, by the same rules as the live tail. nil when the
+    /// file can't be read.
+    public static func scanTailForAttach(path: String, maxBytes: Int = 128 * 1024) -> AttachScan? {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return nil }
+        // One byte before the window says whether it starts on a line boundary.
+        let start = size > UInt64(maxBytes) ? size - UInt64(maxBytes) - 1 : 0
+        guard (try? handle.seek(toOffset: start)) != nil,
+              let data = try? handle.read(upToCount: Int(size - start)) ?? Data() else { return nil }
+
+        var firstLine = data.startIndex
+        if start > 0 {
+            // The window's first line is cut unless the byte before it ended
+            // one. No newline at all: the window sits inside one huge row (a
+            // tool result) — nothing to scan, and the tailer starts at the end.
+            guard let boundary = data.firstIndex(of: 0x0A) else {
+                return AttachScan(delta: ScanResult.Delta(), endOffset: size)
+            }
+            firstLine = data.index(after: boundary)
+        }
+        // The tailer starts after the last newline. The unterminated rest is
+        // either a row still being written (it fails to parse here, and the
+        // tailer completes it) or a writer that never ends its last row with a
+        // newline (Cursor), whose row is parsed now and again once terminated —
+        // harmless for the idempotent recap / model / prompt fields.
+        let endOffset = data.lastIndex(of: 0x0A).map {
+            start + UInt64(data.distance(from: data.startIndex, to: $0) + 1)
+        } ?? start
+        var window = Data(data[firstLine...])
+        window.append(0x0A)
+        return AttachScan(delta: scanLines(window).delta, endOffset: endOffset)
     }
 
     private static func apply(line: Data.SubSequence, into delta: inout ScanResult.Delta) {
