@@ -105,6 +105,10 @@ public struct FollowUpReminder: Equatable, Sendable {
 /// - **Tracked** (completions): started by an event with `track`; a newer
 ///   event for the same session restarts it, and it is dropped once done.
 ///
+/// A reminder the owner decides not to deliver after all — the user turned
+/// out to be looking at the item — is handed back with `postpone`: nothing
+/// was spent, and it comes due again an interval later.
+///
 /// Holding back (lock screen, quiet hours) does not pause the clock: an item
 /// that comes due while held is marked owed, and the first tick after the hold
 /// delivers it at once as a catch-up. Missed attempts collapse into that one
@@ -265,6 +269,26 @@ public struct FollowUpReminderScheduler: Sendable {
         )
     }
 
+    /// Hand back a reminder `collectDue` just produced that reached nobody:
+    /// the user was already looking at the item. The attempt is not spent
+    /// and the item is not silenced — being in front of it once says nothing
+    /// about the next time — it simply comes due again an interval from
+    /// `now`. Ignored when the entry has since moved on to another wait
+    /// (answered, restarted, a newer request) or been silenced.
+    public mutating func postpone(_ reminder: FollowUpReminder, now: Date) {
+        guard isEnabled else { return }
+        let key = Key(reminder.kind, reminder.sessionId)
+        guard var entry = entries[key],
+              entry.waitingSince == reminder.waitingSince,
+              entry.requestId == reminder.requestId,
+              entry.delivered == reminder.attempt else { return }
+        entry.delivered = reminder.attempt - 1
+        entry.owed = false
+        entry.done = false
+        entry.anchor = now
+        entries[key] = entry
+    }
+
     /// Stop reminding about an item (seen, jumped to, handled elsewhere).
     public mutating func silence(_ key: Key) {
         guard let entry = entries[key] else { return }
@@ -308,6 +332,9 @@ public struct FollowUpReminderScheduler: Sendable {
     /// oldest first, so the caller can pick "the most urgent" from the head.
     public mutating func collectDue(now: Date, heldBack: Bool) -> [FollowUpReminder] {
         guard let interval else { return [] }
+        // A tracked item's last reminder is kept until the next pass, so the
+        // owner can still postpone it; nothing else reads a done entry.
+        entries = entries.filter { $0.value.synced || !$0.value.done }
         var out: [FollowUpReminder] = []
         for (key, entry) in entries where !entry.done {
             let isDue = now >= entry.anchor.addingTimeInterval(interval)
@@ -331,13 +358,9 @@ public struct FollowUpReminderScheduler: Sendable {
                 requestId: entry.requestId
             ))
             if attempt >= maxAttempts {
-                if entry.synced {
-                    entries[key]?.done = true
-                    entries[key]?.owed = false
-                    entries[key]?.delivered = attempt
-                } else {
-                    entries.removeValue(forKey: key)
-                }
+                entries[key]?.done = true
+                entries[key]?.owed = false
+                entries[key]?.delivered = attempt
             } else {
                 entries[key]?.delivered = attempt
                 entries[key]?.owed = false

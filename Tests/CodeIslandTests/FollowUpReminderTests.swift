@@ -195,16 +195,22 @@ final class FollowUpReminderTests: XCTestCase {
         XCTAssertFalse(followUps.hintActive)
     }
 
-    func testCardUnderThePointerIsNotReminded() async throws {
+    /// The card under the pointer is not reminded about while it is being
+    /// read — but reading it once is not answering it: the reminder comes
+    /// back an interval later, with no attempt spent.
+    func testCardUnderThePointerPostponesItsReminder() async throws {
         try await requestApproval("looking")
         XCTAssertEqual(appState.surface, .approvalCard(sessionId: "looking"))
         pointerOverPanel = true
 
         await advance(60)
         XCTAssertEqual(fired, [])
+        XCTAssertEqual(played, [])
+        XCTAssertEqual(followUps.armedWakeDate, now.addingTimeInterval(60), "postponed, not silenced")
         pointerOverPanel = false
-        await advance(600)
-        XCTAssertEqual(fired, [], "seen once is seen — no restart while it waits")
+        await advance(60)
+        XCTAssertEqual(fired.map(\.attempt), [1], "the skipped reminder was not counted")
+        XCTAssertEqual(played, ["PermissionRequest"])
     }
 
     /// An auto-opened card with nobody in front of it is exactly who the
@@ -216,7 +222,7 @@ final class FollowUpReminderTests: XCTestCase {
         XCTAssertEqual(appState.surface, .approvalCard(sessionId: "unattended"))
     }
 
-    func testSessionTabInFrontCancels() async throws {
+    func testSessionTabInFrontPostpones() async throws {
         UserDefaults.standard.set(true, forKey: SettingsKey.smartSuppress)
         followUps.terminalFrontmost = { _ in true }
         followUps.tabVisible = { _ in true }
@@ -225,6 +231,37 @@ final class FollowUpReminderTests: XCTestCase {
 
         await advance(60)
         XCTAssertEqual(fired, [])
+        XCTAssertEqual(played, [])
+
+        // The terminal happened to be in front at that moment; the user then
+        // moved on to something else and the request is still waiting.
+        followUps.terminalFrontmost = { _ in false }
+        followUps.tabVisible = { _ in false }
+        appState.surface = .collapsed
+        await advance(60)
+        XCTAssertEqual(fired.map(\.attempt), [1])
+        XCTAssertEqual(played, ["PermissionRequest"])
+    }
+
+    /// A finished turn has a single reminder; the terminal being in front at
+    /// its due time must not use it up.
+    func testCompletionWithItsTabInFrontIsPostponedNotDropped() async throws {
+        UserDefaults.standard.set(true, forKey: SettingsKey.smartSuppress)
+        followUps.terminalFrontmost = { _ in true }
+        followUps.tabVisible = { _ in true }
+        appState.handleEvent(try event([
+            "hook_event_name": "Stop", "session_id": "front-done", "_term_app": "iTerm.app",
+        ]))
+        await advance(60)
+        XCTAssertEqual(fired, [])
+
+        followUps.terminalFrontmost = { _ in false }
+        followUps.tabVisible = { _ in false }
+        await advance(60)
+        XCTAssertEqual(fired.map(\.kind), [.completion])
+        XCTAssertEqual(played, ["Stop"])
+        await advance(600)
+        XCTAssertEqual(fired.count, 1, "still only one reminder for a finished turn")
     }
 
     func testOtherTabOfTheSameTerminalStillReminds() async throws {

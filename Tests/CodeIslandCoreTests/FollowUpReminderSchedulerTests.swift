@@ -185,6 +185,67 @@ final class FollowUpReminderSchedulerTests: XCTestCase {
         XCTAssertEqual(scheduler.collectDue(now: at(60), heldBack: false).map(\.sessionId), ["b"])
     }
 
+    // MARK: - Postponed (the user was looking)
+
+    func testPostponedReminderSpendsNothingAndComesBackAnIntervalLater() {
+        var scheduler = FollowUpReminderScheduler(interval: 60)
+        scheduler.sync(kind: .approval, requests: ["a": "r1"], now: t0)
+        let first = scheduler.collectDue(now: at(60), heldBack: false)
+        XCTAssertEqual(first.map(\.attempt), [1])
+
+        scheduler.postpone(first[0], now: at(61))
+        XCTAssertEqual(scheduler.nextWakeDate(), at(121))
+        XCTAssertEqual(scheduler.collectDue(now: at(120), heldBack: false), [])
+        let again = scheduler.collectDue(now: at(121), heldBack: false)
+        XCTAssertEqual(again.map(\.attempt), [1], "the postponed attempt was not spent")
+        XCTAssertEqual(again.first?.waitingSince, t0)
+    }
+
+    /// Even the last attempt comes back: postponing never silences.
+    func testPostponingTheFinalAttemptKeepsTheItemAlive() throws {
+        var scheduler = FollowUpReminderScheduler(interval: 60)
+        scheduler.sync(kind: .question, waiting: ["q"], now: t0)
+        var last: FollowUpReminder?
+        for minute in 1...3 {
+            last = scheduler.collectDue(now: at(Double(minute) * 60), heldBack: false).first
+        }
+        XCTAssertEqual(last?.isFinal, true)
+        scheduler.postpone(try XCTUnwrap(last), now: at(180))
+        XCTAssertEqual(scheduler.collectDue(now: at(240), heldBack: false).map(\.attempt), [3])
+        XCTAssertNil(scheduler.nextWakeDate())
+    }
+
+    func testPostponedCompletionKeepsItsSingleReminder() {
+        var scheduler = FollowUpReminderScheduler(interval: 60)
+        scheduler.track(kind: .completion, sessionId: "c", now: t0)
+        let due = scheduler.collectDue(now: at(60), heldBack: false)
+        XCTAssertEqual(due.map(\.isFinal), [true])
+
+        scheduler.postpone(due[0], now: at(60))
+        XCTAssertFalse(scheduler.isEmpty)
+        XCTAssertEqual(scheduler.collectDue(now: at(120), heldBack: false).map(\.attempt), [1])
+        XCTAssertEqual(scheduler.collectDue(now: at(600), heldBack: false), [])
+        XCTAssertTrue(scheduler.isEmpty, "delivered for real this time, and gone")
+    }
+
+    func testPostponeLeavesAnEntryThatMovedOnAlone() {
+        var scheduler = FollowUpReminderScheduler(interval: 60)
+        scheduler.sync(kind: .approval, requests: ["a": "r1"], now: t0)
+        let stale = scheduler.collectDue(now: at(60), heldBack: false)[0]
+
+        // The session's next request took over while the owner was deciding.
+        scheduler.sync(kind: .approval, requests: ["a": "r2"], now: at(62))
+        scheduler.postpone(stale, now: at(63))
+        XCTAssertEqual(scheduler.nextWakeDate(), at(122), "r2 keeps its own clock")
+
+        // A silenced item stays silenced.
+        scheduler.track(kind: .completion, sessionId: "c", now: at(100))
+        let done = scheduler.collectDue(now: at(160), heldBack: false).filter { $0.kind == .completion }[0]
+        scheduler.silence(Key(.completion, "c"))
+        scheduler.postpone(done, now: at(161))
+        XCTAssertFalse(scheduler.trackedKeys.contains(Key(.completion, "c")))
+    }
+
     // MARK: - Held back (lock screen, quiet hours)
 
     func testHeldBackItemIsReportedOnceThenCaughtUpOnReturn() {

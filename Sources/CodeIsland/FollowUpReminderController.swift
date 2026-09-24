@@ -236,18 +236,22 @@ final class FollowUpReminderController {
             // A catch-up skips the "is the user looking" checks: the hold it
             // waited out proves nobody was, whatever app is still in front.
             if reminder.delivery == .onTime {
-                if isBeingLookedAt(key) {
-                    scheduler.silence(key)
-                    continue
-                }
-                if await isSessionInFront(sessionId: reminder.sessionId) {
-                    scheduler.silence(key)
-                    continue
+                var inFront = isBeingLookedAt(key)
+                if !inFront {
+                    inFront = await isSessionInFront(sessionId: reminder.sessionId)
                 }
                 // State may have moved while the tab check was off-actor. An
                 // entry the sync has since handed to the session's next
                 // request is that request's now: leave it alone.
                 guard isStillPending(reminder) else { continue }
+                if inFront {
+                    // The user is in front of it right now, so this one
+                    // reached nobody and costs nothing: it comes back an
+                    // interval later. Being in front once is no answer —
+                    // only jumping to the session silences it for good.
+                    scheduler.postpone(reminder, now: now)
+                    continue
+                }
             }
             delivered.append(reminder)
         }
