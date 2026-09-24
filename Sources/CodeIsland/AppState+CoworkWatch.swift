@@ -269,6 +269,13 @@ extension AppState {
             noteCoworkTurnHost(key)
         }
         attachTranscriptTailerIfNeeded(sessionId: key)
+        // Claude Desktop's configured model only seeds the label, after the
+        // transcript backfill had its say: the transcript names the model that
+        // actually answered, in its own spelling, and overwriting it on every
+        // metadata save flipped the label between the two.
+        if sessions[key]?.model == nil, let model = metadata.model {
+            sessions[key]?.model = model
+        }
         // A permission card or question in Claude Desktop: reminders, and a
         // push when a live one first appears.
         noteDisplayOnlyWait(
@@ -329,9 +336,6 @@ extension AppState {
         }
         if let cwd = metadata.hostCwd {
             snapshot.cwd = cwd
-        }
-        if let model = metadata.model {
-            snapshot.model = model
         }
         if let transcriptPath {
             snapshot.transcriptPath = transcriptPath

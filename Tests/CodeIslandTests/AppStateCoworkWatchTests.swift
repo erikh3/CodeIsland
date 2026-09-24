@@ -94,6 +94,42 @@ final class AppStateCoworkWatchTests: XCTestCase {
         XCTAssertEqual(card.recentMessages.map(\.text), ["list the installers"])
     }
 
+    func testConfiguredModelOnlySeedsTheLabel() {
+        let appState = AppState()
+        appState.applyCoworkUpdate(update(audit: audit([CoworkAuditFixture.userPrompt])))
+        XCTAssertEqual(appState.sessions[key]?.model, "claude-opus-4-5-20251101", "nothing better known yet")
+
+        // The transcript tailer reports the model that answered, spelled its way.
+        appState.sessions[key]?.model = "claude-opus-4-5"
+        var resaved = metadata()
+        resaved.title = "Renamed task"
+        appState.applyCoworkUpdate(update(
+            metadata: resaved,
+            audit: audit([CoworkAuditFixture.userPrompt, CoworkAuditFixture.assistantReply])
+        ))
+        XCTAssertEqual(appState.sessions[key]?.model, "claude-opus-4-5")
+        appState.applyCoworkUpdate(update(metadata: resaved, isLive: false))
+        XCTAssertEqual(appState.sessions[key]?.model, "claude-opus-4-5", "a metadata save does not flip it back")
+    }
+
+    func testTranscriptModelWinsOnAttach() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cowork-model-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let transcript = dir.appendingPathComponent("\(cliSessionId).jsonl").path
+        let lines = [
+            #"{"type":"user","message":{"role":"user","content":"list the installers"}}"#,
+            #"{"type":"assistant","message":{"model":"claude-sonnet-4-5","role":"assistant","content":[{"type":"text","text":"On it"}]}}"#,
+        ]
+        try (lines.joined(separator: "\n") + "\n").write(toFile: transcript, atomically: true, encoding: .utf8)
+
+        let appState = AppState()
+        appState.applyCoworkUpdate(update(audit: audit([CoworkAuditFixture.userPrompt]), transcriptPath: transcript))
+        XCTAssertEqual(appState.sessions[key]?.model, "claude-sonnet-4-5")
+        appState.removeSession(key)
+    }
+
     func testKeysStayInTheirOwnNamespace() {
         XCTAssertEqual(AppState.coworkSessionKey(storeId), "cowork:\(storeId)")
         XCTAssertEqual(AppState.coworkStoreSessionId(fromKey: key), storeId)
