@@ -272,13 +272,28 @@ public enum MarkdownBlockParser {
         let after = rest.dropFirst(level)
         // "#hashtag" is text; a heading needs whitespace (or nothing) after the #s.
         if let first = after.first, first != " ", first != "\t" { return nil }
-        var text = after.trimmingCharacters(in: .whitespaces)
-        if text.allSatisfy({ $0 == "#" }) {
-            text = ""
-        } else if let closing = text.range(of: #"[ \t]+#+$"#, options: .regularExpression) {
-            text = String(text[..<closing.lowerBound])
+        let text = after.trimmingCharacters(in: .whitespaces)
+        if text.allSatisfy({ $0 == "#" }) { return (level, "") }
+        return (level, String(droppingClosingSequence(text)))
+    }
+
+    /// "Title ##" → "Title": a closing run of `#`s counts only after a space
+    /// or tab ("C#" keeps its #). Scans back from the end once — the regex
+    /// `[ \t]+#+$` this replaces retried from every blank, quadratic in a long
+    /// run of spaces, and parsing runs on the main thread.
+    private static func droppingClosingSequence(_ text: String) -> Substring {
+        var hashesStart = text.endIndex
+        while hashesStart > text.startIndex, text[text.index(before: hashesStart)] == "#" {
+            hashesStart = text.index(before: hashesStart)
         }
-        return (level, text)
+        guard hashesStart < text.endIndex, hashesStart > text.startIndex else { return text[...] }
+        var contentEnd = hashesStart
+        while contentEnd > text.startIndex {
+            let previous = text.index(before: contentEnd)
+            guard text[previous] == " " || text[previous] == "\t" else { break }
+            contentEnd = previous
+        }
+        return contentEnd < hashesStart ? text[..<contentEnd] : text[...]
     }
 
     /// `===` / `---` under a paragraph. CommonMark accepts a single `-`, but

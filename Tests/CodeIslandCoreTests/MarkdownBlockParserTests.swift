@@ -44,6 +44,30 @@ final class MarkdownBlockParserTests: XCTestCase {
         XCTAssertEqual(parse("#"), [.heading(level: 1, text: "")], "a streamed lone # is an empty heading, not a crash")
     }
 
+    func testClosingSequenceNeedsABlankBeforeIt() {
+        XCTAssertEqual(parse("# Title\t###"), [.heading(level: 1, text: "Title")])
+        XCTAssertEqual(parse("# a # b ##"), [.heading(level: 1, text: "a # b")])
+        XCTAssertEqual(parse("# issue \\#"), [.heading(level: 1, text: "issue \\#")], "an escaped # is text")
+        XCTAssertEqual(parse("## ## #"), [.heading(level: 2, text: "##")])
+        XCTAssertEqual(parse("## ###"), [.heading(level: 2, text: "")])
+    }
+
+    func testHeadingWithALongRunOfBlanksParsesInLinearTime() {
+        // The closing-sequence regex retried from every blank: 5 000 spaces
+        // took ~0.5s and 20 000 about 10s, on the main thread.
+        let heading = "# a" + String(repeating: " ", count: 20_000) + "b"
+        let start = Date()
+        let blocks = parse(heading)
+        let elapsedMs = Date().timeIntervalSince(start) * 1000
+        XCTAssertEqual(blocks, [.heading(level: 1, text: "a" + String(repeating: " ", count: 20_000) + "b")])
+        XCTAssertLessThan(elapsedMs, 50)
+
+        let tabs = "## x" + String(repeating: "\t", count: 20_000) + "y"
+        let tabStart = Date()
+        _ = parse(tabs)
+        XCTAssertLessThan(Date().timeIntervalSince(tabStart) * 1000, 50)
+    }
+
     func testHashWithoutSpaceOrTooManyHashesIsText() {
         XCTAssertEqual(parse("#hashtag"), [.paragraph("#hashtag")])
         XCTAssertEqual(parse("####### seven"), [.paragraph("####### seven")])
