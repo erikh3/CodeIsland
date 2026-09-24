@@ -182,6 +182,9 @@ public struct SessionSnapshot: Sendable {
     /// (a turn may have switched branches). nil for non-repo and remote cwds.
     public var gitBranch: String?
     public var gitIsWorktree: Bool = false
+    /// The agent's own task checklist (TaskCreate/TaskUpdate, TodoWrite,
+    /// Codex update_plan), fed by hooks here and by the transcript tailer.
+    public var agentTasks = AgentTaskList()
 
     public init(startTime: Date = Date()) {
         self.startTime = startTime
@@ -1073,6 +1076,14 @@ public func reduceEvent(
     let isWaiting = sessions[sessionId]?.status == .waitingApproval
         || sessions[sessionId]?.status == .waitingQuestion
 
+    // Agent checklist progress. Subagent tool events were consumed by
+    // handleSubagentEvent above, so a child's own list never lands here.
+    let agentTasksBeforeEvent = sessions[sessionId]?.agentTasks
+    let agentTaskEvents = AgentTaskHookParser.events(from: event, normalizedEventName: eventName)
+    if !agentTaskEvents.isEmpty {
+        sessions[sessionId]?.agentTasks.apply(agentTaskEvents, now: Date())
+    }
+
     // Update this session's state
     switch eventName {
     case "UserPromptSubmit":
@@ -1431,6 +1442,12 @@ public func reduceEvent(
         effects.append(.enqueueCompletion(sessionId: sessionId))
     default:
         break
+    }
+
+    // SessionStart rebuilt the snapshot, but a resumed or compacted
+    // conversation is still working through the same checklist.
+    if eventName == "SessionStart", let agentTasksBeforeEvent {
+        sessions[sessionId]?.agentTasks = agentTasksBeforeEvent
     }
 
     sessions[sessionId]?.lastActivity = Date()

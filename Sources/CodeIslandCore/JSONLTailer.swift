@@ -40,6 +40,9 @@ public struct ConversationTailDelta: Equatable, Sendable {
     /// File path paired with `attachmentToken`; an additional guard against
     /// applying a delta after the session switched rollout files.
     public let filePath: String?
+    /// Checklist events (TaskCreate/TodoWrite/update_plan rows, new prompts)
+    /// in transcript order. See `AgentTaskTranscript`.
+    public let taskEvents: [AgentTaskEvent]
 
     public init(
         sessionId: String,
@@ -49,7 +52,8 @@ public struct ConversationTailDelta: Equatable, Sendable {
         hasActivity: Bool = false,
         cursorQuestion: CursorQuestionSignal? = nil,
         attachmentToken: UUID? = nil,
-        filePath: String? = nil
+        filePath: String? = nil,
+        taskEvents: [AgentTaskEvent] = []
     ) {
         self.sessionId = sessionId
         self.lastUserPrompt = lastUserPrompt
@@ -59,12 +63,14 @@ public struct ConversationTailDelta: Equatable, Sendable {
         self.cursorQuestion = cursorQuestion
         self.attachmentToken = attachmentToken
         self.filePath = filePath
+        self.taskEvents = taskEvents
     }
 
     /// A delta only carries signal when at least one field is non-nil.
     public var isEmpty: Bool {
         lastUserPrompt == nil && lastAssistantMessage == nil && turnStatus == nil
             && !hasActivity && cursorQuestion == nil
+            && taskEvents.isEmpty
     }
 }
 
@@ -320,7 +326,8 @@ public final class JSONLTailer: @unchecked Sendable {
                 hasActivity: scan.delta.hasActivity,
                 cursorQuestion: scan.delta.cursorQuestion,
                 attachmentToken: watch.attachmentToken,
-                filePath: watch.filePath
+                filePath: watch.filePath,
+                taskEvents: scan.delta.taskEvents
             )
             onDelta(delta)
         }
@@ -356,9 +363,11 @@ public final class JSONLTailer: @unchecked Sendable {
             public var turnStatus: ConversationTurnStatus?
             public var hasActivity = false
             public var cursorQuestion: CursorQuestionSignal?
+            public var taskEvents: [AgentTaskEvent] = []
             public var isEmpty: Bool {
                 lastUserPrompt == nil && lastAssistantMessage == nil && turnStatus == nil
                     && !hasActivity && cursorQuestion == nil
+                    && taskEvents.isEmpty
             }
         }
         public let delta: Delta
@@ -415,6 +424,11 @@ public final class JSONLTailer: @unchecked Sendable {
 
         guard let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { return }
         if json["isMeta"] as? Bool == true { return }
+
+        // Checklist progress rides on rows this scanner already decodes
+        // (Claude user/assistant, Codex event_msg + update_plan calls), so it
+        // costs no extra JSON parse on the streaming path.
+        delta.taskEvents.append(contentsOf: AgentTaskTranscript.events(fromLine: json))
 
         // Re-verify the type after a real parse — the byte probe can be fooled by
         // nested content that happens to contain the literal `"type":"assistant"`.
@@ -695,6 +709,7 @@ public final class JSONLTailer: @unchecked Sendable {
                         case 0x72:  // 'r'
                             if hasExactValue(ptr, at: valueStart, total: total, expect: responseItemBytes) {
                                 return isCodexPublicResponseCandidate(ptr, total: total)
+                                    || isCodexPlanUpdateCandidate(ptr, total: total)
                                     ? .codexResponseItem : .irrelevant
                             }
                         default:
@@ -772,6 +787,18 @@ public final class JSONLTailer: @unchecked Sendable {
         return containsMarker(ptr, total: prefixLength, marker: codexMessagePayloadMarker)
             && containsMarker(ptr, total: prefixLength, marker: codexAssistantRoleMarker)
             && containsMarker(ptr, total: prefixLength, marker: codexOutputTextMarker)
+    }
+
+    private static let codexPlanUpdateMarker: [UInt8] = Array(#""name":"update_plan""#.utf8)
+
+    /// `update_plan` calls carry the checklist (`AgentTaskTranscript`). The
+    /// tool name sits right after the payload type, so the same bounded prefix
+    /// probe keeps every other function call on the no-parse path.
+    private static func isCodexPlanUpdateCandidate(
+        _ ptr: UnsafePointer<UInt8>,
+        total: Int
+    ) -> Bool {
+        containsMarker(ptr, total: min(total, 4096), marker: codexPlanUpdateMarker)
     }
 
     private static func containsMarker(

@@ -1,0 +1,448 @@
+import Foundation
+import Darwin
+
+/// A checklist tool an agent can call. Names are matched case- and
+/// separator-insensitively because forks re-spell them (`todo_write`,
+/// `write_todos`, `todowrite`).
+enum AgentTaskTool: Equatable {
+    /// Claude Code ≥ 2.1 `TaskCreate {subject, description, activeForm}`.
+    case taskCreate
+    /// Claude Code ≥ 2.1 `TaskUpdate {taskId, status, subject?, activeForm?}`.
+    case taskUpdate
+    /// Whole-list todo writers: Claude `TodoWrite`, Gemini `write_todos`,
+    /// OpenCode `todowrite`, Qwen `todo_write` — `{todos: [...]}`.
+    case todoSnapshot
+    /// Codex `update_plan {explanation?, plan: [{step, status}]}`.
+    case planSnapshot
+
+    init?(toolName: String?) {
+        guard let toolName else { return nil }
+        let key = toolName.lowercased().filter { $0 != "_" && $0 != "-" && $0 != " " }
+        switch key {
+        case "taskcreate": self = .taskCreate
+        case "taskupdate": self = .taskUpdate
+        case "todowrite", "writetodos": self = .todoSnapshot
+        case "updateplan": self = .planSnapshot
+        default: return nil
+        }
+    }
+
+    /// Events implied by a *call* of this tool (its input alone).
+    func callEvents(opId: String?, input: [String: Any]) -> [AgentTaskEvent] {
+        switch self {
+        case .taskCreate:
+            guard let opId,
+                  let subject = AgentTaskParsing.string(input, ["subject", "title", "content"]) else { return [] }
+            return [.create(
+                opId: opId,
+                title: subject,
+                activeForm: AgentTaskParsing.string(input, ["activeForm", "active_form"])
+            )]
+        case .taskUpdate:
+            guard let taskId = AgentTaskParsing.idString(input["taskId"] ?? input["task_id"] ?? input["id"]) else {
+                return []
+            }
+            let change = AgentTaskParsing.change(fromUpdateInput: input)
+            guard change != AgentTaskChange() else { return [] }
+            return [.update(opId: opId, taskId: taskId, change: change, expectedFrom: nil)]
+        case .todoSnapshot:
+            guard let drafts = AgentTaskParsing.drafts(from: input["todos"]) else { return [] }
+            return [.replace(opId: opId, items: drafts)]
+        case .planSnapshot:
+            guard let drafts = AgentTaskParsing.drafts(from: input["plan"]) else { return [] }
+            return [.replace(opId: opId, items: drafts)]
+        }
+    }
+
+    /// Events implied by a successful *result* of this tool (hook
+    /// `tool_response`). Snapshot tools repeat their call — same op key, so
+    /// the list applies it once.
+    func resultEvents(opId: String?, input: [String: Any], response: Any?) -> [AgentTaskEvent] {
+        switch self {
+        case .taskCreate:
+            let dict = AgentTaskParsing.jsonObject(response)
+            let task = dict?["task"] as? [String: Any]
+            let taskId = AgentTaskParsing.idString(task?["id"])
+                ?? AgentTaskParsing.createdTaskId(fromResultText: response as? String)
+            guard let taskId else { return [] }
+            return [.created(
+                opId: opId,
+                taskId: taskId,
+                title: (task?["subject"] as? String) ?? AgentTaskParsing.string(input, ["subject", "title", "content"]),
+                activeForm: AgentTaskParsing.string(input, ["activeForm", "active_form"])
+            )]
+        case .taskUpdate:
+            let dict = AgentTaskParsing.jsonObject(response) ?? [:]
+            if dict["success"] as? Bool == false {
+                // e.g. a TaskCompleted hook blocked the completion.
+                return opId.map { [.opFailed(opId: $0)] } ?? []
+            }
+            guard let taskId = AgentTaskParsing.idString(input["taskId"] ?? input["task_id"] ?? dict["taskId"]) else {
+                return []
+            }
+            var change = AgentTaskParsing.change(fromUpdateInput: input)
+            let statusChange = dict["statusChange"] as? [String: Any]
+            if change.status == nil, !change.isDeletion, let to = statusChange?["to"] {
+                switch AgentTaskStatus.parse(to) {
+                case .status(let status): change.status = status
+                case .removed: change.isDeletion = true
+                case .unknown: break
+                }
+            }
+            guard change != AgentTaskChange() else { return [] }
+            var expectedFrom: AgentTaskStatus?
+            if case .status(let from) = AgentTaskStatus.parse(statusChange?["from"]) {
+                expectedFrom = from
+            }
+            return [.update(opId: opId, taskId: taskId, change: change, expectedFrom: expectedFrom)]
+        case .todoSnapshot, .planSnapshot:
+            return callEvents(opId: opId, input: input)
+        }
+    }
+}
+
+enum AgentTaskParsing {
+    static func string(_ dict: [String: Any], _ keys: [String]) -> String? {
+        for key in keys {
+            if let value = dict[key] as? String {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+        }
+        return nil
+    }
+
+    /// Task ids are strings on the wire ("1"), but tolerate numbers.
+    static func idString(_ value: Any?) -> String? {
+        if let string = value as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let number = value as? NSNumber, !(value is Bool) {
+            return number.stringValue
+        }
+        return nil
+    }
+
+    /// Tool arguments arrive as an object from hooks but as a JSON *string*
+    /// in Codex rollouts (`function_call.arguments`).
+    static func jsonObject(_ value: Any?) -> [String: Any]? {
+        if let dict = value as? [String: Any] { return dict }
+        guard let string = value as? String,
+              string.first == "{",
+              let data = string.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    static func change(fromUpdateInput input: [String: Any]) -> AgentTaskChange {
+        var change = AgentTaskChange()
+        switch AgentTaskStatus.parse(input["status"]) {
+        case .status(let status): change.status = status
+        case .removed: change.isDeletion = true
+        case .unknown: break
+        }
+        change.title = string(input, ["subject", "title"])
+        change.activeForm = string(input, ["activeForm", "active_form"])
+        return change
+    }
+
+    /// Rows of a whole-list snapshot. nil when `value` is not a list at all
+    /// (malformed call); an empty array is a real "list cleared".
+    static func drafts(from value: Any?) -> [AgentTaskDraft]? {
+        let array: [Any]
+        if let list = value as? [Any] {
+            array = list
+        } else if let string = value as? String,
+                  string.first == "[",
+                  let data = string.data(using: .utf8),
+                  let list = (try? JSONSerialization.jsonObject(with: data)) as? [Any] {
+            array = list
+        } else {
+            return nil
+        }
+        return array.compactMap { element in
+            guard let row = element as? [String: Any],
+                  let title = string(row, ["content", "subject", "step", "title", "description", "text", "task"]) else {
+                return nil
+            }
+            let status: AgentTaskStatus
+            switch AgentTaskStatus.parse(row["status"]) {
+            case .status(let parsed): status = parsed
+            case .removed: return nil
+            case .unknown: status = .pending
+            }
+            return AgentTaskDraft(
+                title: title,
+                activeForm: string(row, ["activeForm", "active_form"]),
+                status: status
+            )
+        }
+    }
+
+    /// Claude's text result for TaskCreate: "Task #7 created successfully: …".
+    static func createdTaskId(fromResultText text: String?) -> String? {
+        guard let text,
+              let hash = text.range(of: "Task #"),
+              let end = text.range(of: " created successfully", range: hash.upperBound..<text.endIndex) else {
+            return nil
+        }
+        let id = text[hash.upperBound..<end.lowerBound].trimmingCharacters(in: .whitespaces)
+        return id.isEmpty || id.contains(" ") ? nil : id
+    }
+
+    static func resultText(_ content: Any?) -> String? {
+        if let text = content as? String { return text }
+        guard let blocks = content as? [[String: Any]] else { return nil }
+        return blocks.lazy.compactMap { $0["text"] as? String }.first
+    }
+}
+
+// MARK: - Hooks
+
+/// Checklist events carried by one hook event.
+public enum AgentTaskHookParser {
+    /// `normalizedEventName` is `EventNormalizer.normalize(event.eventName)`.
+    /// Callers must route subagent (`agent_id`) events elsewhere first — a
+    /// child's own checklist does not belong on the parent card.
+    public static func events(from event: HookEvent, normalizedEventName: String) -> [AgentTaskEvent] {
+        switch normalizedEventName {
+        case "UserPromptSubmit":
+            return [.newTurn]
+        case "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied":
+            break
+        default:
+            return []
+        }
+        guard let tool = AgentTaskTool(toolName: event.toolName) else { return [] }
+        let opId = event.toolUseId
+        let input = event.toolInput
+            ?? AgentTaskParsing.jsonObject(event.rawJSON["tool_input"] ?? event.rawJSON["arguments"])
+            ?? [:]
+        switch normalizedEventName {
+        case "PreToolUse":
+            return tool.callEvents(opId: opId, input: input)
+        case "PostToolUse":
+            return tool.resultEvents(
+                opId: opId,
+                input: input,
+                response: event.rawJSON["tool_response"] ?? event.rawJSON["toolResponse"]
+            )
+        default:
+            // Failed or denied: whatever the PreToolUse applied never happened.
+            return opId.map { [.opFailed(opId: $0)] } ?? []
+        }
+    }
+}
+
+// MARK: - Transcripts
+
+/// Checklist events carried by transcript rows: Claude Code JSONL (and the
+/// Claude-format forks) plus Codex rollouts.
+public enum AgentTaskTranscript {
+    /// Events carried by one decoded transcript row.
+    public static func events(fromLine json: [String: Any]) -> [AgentTaskEvent] {
+        // Older Claude builds interleave subagent rows into the parent
+        // transcript; a child's checklist never belongs on the parent card.
+        if json["isSidechain"] as? Bool == true { return [] }
+        switch json["type"] as? String {
+        case "assistant": return claudeAssistantEvents(json)
+        case "user": return claudeUserEvents(json)
+        case "response_item": return codexResponseItemEvents(json)
+        case "event_msg": return codexEventMsgEvents(json)
+        default: return []
+        }
+    }
+
+    private static func claudeAssistantEvents(_ json: [String: Any]) -> [AgentTaskEvent] {
+        let message = (json["message"] as? [String: Any]) ?? json
+        guard let blocks = message["content"] as? [[String: Any]] else { return [] }
+        var events: [AgentTaskEvent] = []
+        for block in blocks where block["type"] as? String == "tool_use" {
+            guard let tool = AgentTaskTool(toolName: block["name"] as? String) else { continue }
+            let input = AgentTaskParsing.jsonObject(block["input"]) ?? [:]
+            events.append(contentsOf: tool.callEvents(opId: block["id"] as? String, input: input))
+        }
+        return events
+    }
+
+    private static func claudeUserEvents(_ json: [String: Any]) -> [AgentTaskEvent] {
+        if json["isMeta"] as? Bool == true { return [] }
+        // The compaction summary is written as a user row but starts no turn.
+        let startsTurn = json["isCompactSummary"] as? Bool != true
+        let message = (json["message"] as? [String: Any]) ?? json
+        let content = message["content"]
+
+        if let text = content as? String {
+            let isPrompt = startsTurn && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return isPrompt ? [.newTurn] : []
+        }
+        guard let blocks = content as? [[String: Any]] else { return [] }
+
+        var events: [AgentTaskEvent] = []
+        if startsTurn, blocks.contains(where: {
+            $0["type"] as? String == "text"
+                && !(($0["text"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) {
+            events.append(.newTurn)
+        }
+        let results = blocks.filter { $0["type"] as? String == "tool_result" }
+        // `toolUseResult` is the structured result of the row's tool call; it
+        // is only unambiguous when the row answers exactly one call.
+        let structured = results.count == 1 ? json["toolUseResult"] as? [String: Any] : nil
+        for block in results {
+            guard let opId = block["tool_use_id"] as? String else { continue }
+            if block["is_error"] as? Bool == true {
+                events.append(.opFailed(opId: opId))
+                continue
+            }
+            events.append(contentsOf: claudeResultEvents(opId: opId, structured: structured, content: block["content"]))
+        }
+        return events
+    }
+
+    /// The result row does not name its tool, so recognise it by shape.
+    private static func claudeResultEvents(opId: String, structured: [String: Any]?, content: Any?) -> [AgentTaskEvent] {
+        if let structured {
+            // TaskCreate → {task: {id, subject}}. TaskGet returns the same key
+            // *with* a status; a read changes nothing, so skip it.
+            if let task = structured["task"] as? [String: Any], task["status"] == nil,
+               let taskId = AgentTaskParsing.idString(task["id"]) {
+                return [.created(opId: opId, taskId: taskId, title: task["subject"] as? String, activeForm: nil)]
+            }
+            // TaskUpdate → {success, taskId, updatedFields, statusChange?}.
+            if let success = structured["success"] as? Bool,
+               let taskId = AgentTaskParsing.idString(structured["taskId"]),
+               structured["updatedFields"] != nil {
+                guard success else { return [.opFailed(opId: opId)] }
+                guard let statusChange = structured["statusChange"] as? [String: Any] else { return [] }
+                var change = AgentTaskChange()
+                switch AgentTaskStatus.parse(statusChange["to"]) {
+                case .status(let status): change.status = status
+                case .removed: change.isDeletion = true
+                case .unknown: return []
+                }
+                var expectedFrom: AgentTaskStatus?
+                if case .status(let from) = AgentTaskStatus.parse(statusChange["from"]) {
+                    expectedFrom = from
+                }
+                return [.update(opId: opId, taskId: taskId, change: change, expectedFrom: expectedFrom)]
+            }
+            return []
+        }
+        // Rows answering several calls at once carry no usable toolUseResult;
+        // TaskCreate's text result still names the new id.
+        guard let text = AgentTaskParsing.resultText(content),
+              let taskId = AgentTaskParsing.createdTaskId(fromResultText: text) else { return [] }
+        let title = text.range(of: "created successfully:").map {
+            text[$0.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return [.created(opId: opId, taskId: taskId, title: title, activeForm: nil)]
+    }
+
+    private static func codexResponseItemEvents(_ json: [String: Any]) -> [AgentTaskEvent] {
+        guard let payload = json["payload"] as? [String: Any],
+              payload["type"] as? String == "function_call",
+              let tool = AgentTaskTool(toolName: payload["name"] as? String) else { return [] }
+        let input = AgentTaskParsing.jsonObject(payload["arguments"]) ?? [:]
+        return tool.callEvents(opId: payload["call_id"] as? String, input: input)
+    }
+
+    private static func codexEventMsgEvents(_ json: [String: Any]) -> [AgentTaskEvent] {
+        guard let payload = json["payload"] as? [String: Any] else { return [] }
+        switch payload["type"] as? String {
+        case "task_started", "user_message": return [.newTurn]
+        default: return []
+        }
+    }
+
+    // MARK: Attach-time backfill
+
+    /// Result of scanning a transcript for checklist history.
+    public struct Backfill: Equatable, Sendable {
+        public let events: [AgentTaskEvent]
+        /// False when only the tail window was read (older rows unseen).
+        public let coversWholeFile: Bool
+    }
+
+    /// Read checklist events from the transcript bytes before `endOffset`
+    /// (the size captured when the live tailer attached, so the two never
+    /// overlap). Only the last `maxBytes` are read, and rows larger than
+    /// `maxLineBytes` — giant tool results, never checklist calls — are
+    /// skipped unparsed. Blocking file I/O: call off the main actor.
+    public static func scanFile(
+        atPath path: String,
+        endOffset: UInt64,
+        maxBytes: UInt64 = 8 * 1024 * 1024,
+        maxLineBytes: Int = 256 * 1024
+    ) -> Backfill? {
+        guard endOffset > 0, let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        let start = endOffset > maxBytes ? endOffset - maxBytes : 0
+        guard (try? handle.seek(toOffset: start)) != nil,
+              let data = try? handle.read(upToCount: Int(endOffset - start)) else { return nil }
+        return Backfill(
+            events: scan(data, startsAtLineBoundary: start == 0, maxLineBytes: maxLineBytes),
+            coversWholeFile: start == 0
+        )
+    }
+
+    /// Checklist events in a JSONL blob, in order. A leading partial row
+    /// (window cut mid-line) and a trailing unterminated row are ignored.
+    public static func scan(_ data: Data, startsAtLineBoundary: Bool, maxLineBytes: Int = 256 * 1024) -> [AgentTaskEvent] {
+        var events: [AgentTaskEvent] = []
+        data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+            let total = raw.count
+            var lineStart = 0
+            var skipFirst = !startsAtLineBoundary
+            while lineStart < total {
+                guard let newline = memchr(base + lineStart, 0x0A, total - lineStart) else { break }
+                let lineEnd = UnsafeRawPointer(base).distance(to: UnsafeRawPointer(newline))
+                defer { lineStart = lineEnd + 1 }
+                if skipFirst {
+                    skipFirst = false
+                    continue
+                }
+                let length = lineEnd - lineStart
+                guard length > 0, length <= maxLineBytes,
+                      mayCarryTaskEvent(base + lineStart, length: length) else { continue }
+                let lineData = Data(bytes: base + lineStart, count: length)
+                guard let json = (try? JSONSerialization.jsonObject(with: lineData)) as? [String: Any] else { continue }
+                events.append(contentsOf: self.events(fromLine: json))
+            }
+        }
+        return events
+    }
+
+    /// Byte prefilter so the backfill decodes only rows that can matter.
+    static func mayCarryTaskEvent(_ ptr: UnsafePointer<UInt8>, length: Int) -> Bool {
+        for marker in operationMarkers where contains(ptr, length: length, marker: marker) {
+            return true
+        }
+        // A Claude prompt row: a user row that answers no tool call.
+        return contains(ptr, length: length, marker: claudeUserTypeMarker)
+            && !contains(ptr, length: length, marker: toolUseIdMarker)
+    }
+
+    /// Key-order independent: TaskCreate results say "created successfully" in
+    /// their text, TaskUpdate results always carry `updatedFields`.
+    private static let operationMarkers: [[UInt8]] = [
+        #""name":"TaskCreate""#,
+        #""name":"TaskUpdate""#,
+        #""name":"TodoWrite""#,
+        #""name":"update_plan""#,
+        #" created successfully"#,
+        #""updatedFields":"#,
+        #""is_error":true"#,
+        #""type":"task_started""#,
+        #""type":"user_message""#,
+    ].map { Array($0.utf8) }
+    private static let claudeUserTypeMarker = Array(#""type":"user""#.utf8)
+    private static let toolUseIdMarker = Array(#""tool_use_id""#.utf8)
+
+    private static func contains(_ ptr: UnsafePointer<UInt8>, length: Int, marker: [UInt8]) -> Bool {
+        marker.withUnsafeBytes { needle in
+            memmem(ptr, length, needle.baseAddress, needle.count) != nil
+        }
+    }
+}
