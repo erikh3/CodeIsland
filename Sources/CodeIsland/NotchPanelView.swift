@@ -3570,25 +3570,6 @@ struct MiniAgentIcon: View {
 
 // MARK: - Shared Helpers
 
-/// Inline markdown rendering (bold, italic, code, links)
-private var markdownCache: [String: AttributedString] = [:]
-private let markdownCacheLimit = 128
-
-private func inlineMarkdown(_ text: String) -> AttributedString {
-    if let cached = markdownCache[text] { return cached }
-    let result: AttributedString
-    if let attr = try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
-        result = attr
-    } else {
-        result = AttributedString(text)
-    }
-    if markdownCache.count >= markdownCacheLimit {
-        markdownCache.removeAll(keepingCapacity: true)
-    }
-    markdownCache[text] = result
-    return result
-}
-
 /// Generate a short session ID with better disambiguation.
 private func shortSessionId(_ id: String) -> String {
     let clean = id.replacingOccurrences(of: "-", with: "")
