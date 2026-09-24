@@ -36,20 +36,18 @@ final class AppStateQuestionAutoExpandTests: XCTestCase {
     func testAskUserQuestionStillOpensItsCardWhenOn() async throws {
         UserDefaults.standard.set(true, forKey: SettingsKey.autoExpandOnQuestion)
         let appState = AppState()
-        let task = try startAskUserQuestion(on: appState, sessionId: "s-on")
-        await Task.yield()
+        let task = try await startAskUserQuestion(on: appState, sessionId: "s-on")
 
         XCTAssertEqual(appState.surface, .questionCard(sessionId: "s-on"))
         XCTAssertNil(appState.hiddenPendingQuestionSessionId, "nothing hidden while the card is up")
         appState.skipQuestion(expectedSessionId: "s-on")
-        _ = await task.value
+        _ = try await awaitValue(of: task)
     }
 
     func testOffKeepsTheIslandCollapsedAndAdvertisesTheQuestion() async throws {
         UserDefaults.standard.set(false, forKey: SettingsKey.autoExpandOnQuestion)
         let appState = AppState()
-        let task = try startAskUserQuestion(on: appState, sessionId: "s-off")
-        await Task.yield()
+        let task = try await startAskUserQuestion(on: appState, sessionId: "s-off")
 
         XCTAssertEqual(appState.surface, .collapsed, "the card must not open by itself")
         XCTAssertEqual(appState.questionQueue.count, 1, "the question still waits for an answer")
@@ -62,7 +60,7 @@ final class AppStateQuestionAutoExpandTests: XCTestCase {
         XCTAssertNil(appState.hiddenPendingQuestionSessionId)
 
         appState.skipQuestion(expectedSessionId: "s-off")
-        _ = await task.value
+        _ = try await awaitValue(of: task)
     }
 
     func testOffAlsoCoversNotificationStyleQuestions() async throws {
@@ -74,15 +72,12 @@ final class AppStateQuestionAutoExpandTests: XCTestCase {
             "question": "Continue?",
             "options": ["Yes", "No"],
         ] as [String: Any])))
-        let task = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleQuestion(event, continuation: $0) }
-        }
-        await Task.yield()
+        let task = await startHookRequest { appState.handleQuestion(event, continuation: $0) }
 
         XCTAssertEqual(appState.surface, .collapsed)
         XCTAssertEqual(appState.hiddenPendingQuestionSessionId, "s-notify")
         appState.skipQuestion(expectedSessionId: "s-notify")
-        _ = await task.value
+        _ = try await awaitValue(of: task)
     }
 
     /// A card the user opened with a click must survive the queue being
@@ -91,15 +86,14 @@ final class AppStateQuestionAutoExpandTests: XCTestCase {
     func testCardOpenedByClickSurvivesShowNextPending() async throws {
         UserDefaults.standard.set(false, forKey: SettingsKey.autoExpandOnQuestion)
         let appState = AppState()
-        let task = try startAskUserQuestion(on: appState, sessionId: "s-click")
-        await Task.yield()
+        let task = try await startAskUserQuestion(on: appState, sessionId: "s-click")
 
         appState.openPendingQuestionCard(sessionId: "s-click")
         XCTAssertTrue(appState.showNextPending())
         XCTAssertEqual(appState.surface, .questionCard(sessionId: "s-click"))
 
         appState.skipQuestion(expectedSessionId: "s-click")
-        _ = await task.value
+        _ = try await awaitValue(of: task)
     }
 
     func testOpeningWithoutAPendingQuestionIsANoOp() {
@@ -112,7 +106,7 @@ final class AppStateQuestionAutoExpandTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func startAskUserQuestion(on appState: AppState, sessionId: String) throws -> Task<Data, Never> {
+    private func startAskUserQuestion(on appState: AppState, sessionId: String) async throws -> Task<Data, Never> {
         let payload: [String: Any] = [
             "hook_event_name": "PermissionRequest",
             "session_id": sessionId,
@@ -129,11 +123,7 @@ final class AppStateQuestionAutoExpandTests: XCTestCase {
             ],
         ]
         let event = try XCTUnwrap(HookEvent(from: try JSONSerialization.data(withJSONObject: payload)))
-        return Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
+        return await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
     }
 
     private func restore(_ value: Any?, forKey key: String) {

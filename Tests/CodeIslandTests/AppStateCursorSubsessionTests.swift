@@ -703,9 +703,7 @@ final class AppStateCursorSubsessionTests: XCTestCase {
         ] as [String: Any])
         let event = try XCTUnwrap(HookEvent(from: data))
 
-        let response = await withCheckedContinuation { continuation in
-            appState.handlePermissionRequest(event, continuation: continuation)
-        }
+        let response = try await awaitValue(of: await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) })
 
         XCTAssertTrue(appState.permissionQueue.isEmpty)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: response) as? [String: Any])
@@ -735,9 +733,7 @@ final class AppStateCursorSubsessionTests: XCTestCase {
         ] as [String: Any])
         let event = try XCTUnwrap(HookEvent(from: data))
 
-        let response = await withCheckedContinuation { continuation in
-            appState.handleQuestion(event, continuation: continuation)
-        }
+        let response = try await awaitValue(of: await startHookRequest { appState.handleQuestion(event, continuation: $0) })
 
         XCTAssertTrue(appState.questionQueue.isEmpty)
         XCTAssertEqual(response, Data("{}".utf8))
@@ -768,9 +764,7 @@ final class AppStateCursorSubsessionTests: XCTestCase {
         ] as [String: Any])
         let event = try XCTUnwrap(HookEvent(from: data))
 
-        let response = await withCheckedContinuation { continuation in
-            appState.handleAskUserQuestion(event, continuation: continuation)
-        }
+        let response = try await awaitValue(of: await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) })
 
         XCTAssertTrue(appState.questionQueue.isEmpty)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: response) as? [String: Any])
@@ -798,19 +792,13 @@ final class AppStateCursorSubsessionTests: XCTestCase {
         ] as [String: Any])
         let event = try XCTUnwrap(HookEvent(from: data))
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
         XCTAssertEqual(appState.permissionQueue.count, 1)
         XCTAssertEqual(appState.sessions[parentId]?.status, .waitingApproval)
         XCTAssertEqual(appState.sessions[parentId]?.subagents[childId]?.status, .waitingApproval)
 
         appState.handleBuddyControlCommand(.denyCurrentPermission)
-        let response = await responseTask.value
+        let response = try await awaitValue(of: responseTask)
 
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: response) as? [String: Any])
         let hook = try XCTUnwrap(json["hookSpecificOutput"] as? [String: Any])
@@ -880,12 +868,7 @@ final class AppStateCursorSubsessionTests: XCTestCase {
         ] as [String: Any])
         let event = try XCTUnwrap(HookEvent(from: data))
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event, continuation: continuation)
-            }
-        }
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
         XCTAssertEqual(appState.permissionQueue.count, 1)
 
         // Simulate Stop removing the Task between enqueue and deny.
@@ -893,7 +876,7 @@ final class AppStateCursorSubsessionTests: XCTestCase {
         appState.sessions[parentId]?.recordClosedSubagentId(childId)
 
         appState.handleBuddyControlCommand(.denyCurrentPermission)
-        _ = await responseTask.value
+        _ = try await awaitValue(of: responseTask)
 
         XCTAssertTrue(appState.permissionQueue.isEmpty)
         XCTAssertNotEqual(appState.sessions[parentId]?.status, .idle)
@@ -919,16 +902,11 @@ final class AppStateCursorSubsessionTests: XCTestCase {
         ] as [String: Any])
         let event = try XCTUnwrap(HookEvent(from: data))
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleQuestion(event, continuation: continuation)
-            }
-        }
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleQuestion(event, continuation: $0) }
         XCTAssertEqual(appState.sessions[parentId]?.subagents[childId]?.status, .waitingQuestion)
 
         appState.answerQuestion("Yes")
-        _ = await responseTask.value
+        _ = try await awaitValue(of: responseTask)
 
         XCTAssertTrue(appState.questionQueue.isEmpty)
         XCTAssertEqual(appState.sessions[parentId]?.subagents[childId]?.status, .running)
@@ -953,9 +931,7 @@ final class AppStateCursorSubsessionTests: XCTestCase {
         ] as [String: Any])
         let event = try XCTUnwrap(HookEvent(from: data))
 
-        let response = await withCheckedContinuation { continuation in
-            appState.handlePermissionRequest(event, continuation: continuation)
-        }
+        let response = try await awaitValue(of: await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) })
 
         XCTAssertTrue(appState.permissionQueue.isEmpty)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: response) as? [String: Any])

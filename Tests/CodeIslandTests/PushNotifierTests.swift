@@ -106,10 +106,7 @@ final class PushNotifierTests: XCTestCase {
             "tool_name": "Bash",
             "tool_input": ["command": "git push origin main"],
         ])
-        let response = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(event, continuation: $0) }
-        }
-        await Task.yield()
+        let response = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
 
         XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark]))
         await waitForRequests(1)
@@ -122,7 +119,7 @@ final class PushNotifierTests: XCTestCase {
         XCTAssertEqual(PushNotifier.shared.lastDelivery[.bark]?.result.ok, true)
 
         appState.approvePermission(expectedSessionId: "push-perm")
-        _ = await response.value
+        _ = try await awaitValue(of: response)
     }
 
     func testNothingIsPushedWhileThePersonIsAtTheMac() async throws {
@@ -134,14 +131,11 @@ final class PushNotifierTests: XCTestCase {
             "tool_name": "Bash",
             "tool_input": ["command": "ls"],
         ])
-        let response = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(event, continuation: $0) }
-        }
-        await Task.yield()
+        let response = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
 
         XCTAssertEqual(PushNotifier.shared.lastDecision, .skipped(.userPresent))
         appState.denyPermission(expectedSessionId: "push-present")
-        _ = await response.value
+        _ = try await awaitValue(of: response)
         XCTAssertTrue(transport.requests.isEmpty)
     }
 
@@ -154,13 +148,10 @@ final class PushNotifierTests: XCTestCase {
             "tool_name": "Bash",
             "tool_input": ["command": "ls"],
         ])
-        let response = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(event, continuation: $0) }
-        }
-        await Task.yield()
+        let response = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
         XCTAssertNil(PushNotifier.shared.lastDecision)
         appState.denyPermission(expectedSessionId: "push-off")
-        _ = await response.value
+        _ = try await awaitValue(of: response)
         XCTAssertTrue(transport.requests.isEmpty)
     }
 
@@ -175,10 +166,7 @@ final class PushNotifierTests: XCTestCase {
                 "tool_use_id": "tool-\(index)",
                 "tool_input": ["command": command],
             ])
-            responses.append(Task<Data, Never> {
-                await withCheckedContinuation { appState.handlePermissionRequest(event, continuation: $0) }
-            })
-            await Task.yield()
+            responses.append(await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) })
         }
         XCTAssertEqual(PushNotifier.shared.lastDecision, .skipped(.duplicate))
         await waitForRequests(1)
@@ -186,7 +174,7 @@ final class PushNotifierTests: XCTestCase {
 
         appState.denyPermission(expectedSessionId: "push-burst")
         appState.denyPermission(expectedSessionId: "push-burst")
-        for response in responses { _ = await response.value }
+        for response in responses { _ = try await awaitValue(of: response) }
     }
 
     func testChannelEventFilterIsHonoured() async throws {
@@ -198,13 +186,10 @@ final class PushNotifierTests: XCTestCase {
             "tool_name": "Bash",
             "tool_input": ["command": "ls"],
         ])
-        let response = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(event, continuation: $0) }
-        }
-        await Task.yield()
+        let response = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
         XCTAssertEqual(PushNotifier.shared.lastDecision, .skipped(.noChannel))
         appState.denyPermission(expectedSessionId: "push-filtered")
-        _ = await response.value
+        _ = try await awaitValue(of: response)
     }
 
     // MARK: Questions
@@ -227,10 +212,7 @@ final class PushNotifierTests: XCTestCase {
                 ]],
             ],
         ])
-        let response = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(event, continuation: $0) }
-        }
-        await Task.yield()
+        let response = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         await waitForRequests(1)
 
         let body = try XCTUnwrap(sentBodies().first)
@@ -238,7 +220,7 @@ final class PushNotifierTests: XCTestCase {
         XCTAssertEqual(body["body"] as? String, "Which database?\n1. Postgres\n2. SQLite")
 
         appState.skipQuestion(expectedSessionId: "push-ask")
-        _ = await response.value
+        _ = try await awaitValue(of: response)
     }
 
     // MARK: Completion and errors
@@ -353,10 +335,7 @@ final class PushNotifierTests: XCTestCase {
             "tool_name": "Bash",
             "tool_input": ["command": "make deploy"],
         ])
-        let response = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(event, continuation: $0) }
-        }
-        await Task.yield()
+        let response = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
         await waitForRequests(1)
 
         followUpNow = followUpNow.addingTimeInterval(61)
@@ -370,7 +349,7 @@ final class PushNotifierTests: XCTestCase {
         XCTAssertEqual(reminder["level"] as? String, "timeSensitive")
 
         appState.denyPermission(expectedSessionId: "push-remind")
-        _ = await response.value
+        _ = try await awaitValue(of: response)
     }
 
     func testCatchUpAndAnsweredRemindersAreNotPushed() {

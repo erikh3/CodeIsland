@@ -42,12 +42,7 @@ final class AppStatePermissionFlowTests: XCTestCase {
         let appState = AppState()
         let event = try makePermissionRequestEvent(sessionId: "s-no-expand", toolName: "Bash")
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event, continuation: continuation)
-            }
-        }
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
 
         XCTAssertEqual(appState.surface, .collapsed, "auto-expand off must not steal focus")
         XCTAssertEqual(appState.permissionQueue.count, 1, "the request still waits for a decision")
@@ -56,7 +51,7 @@ final class AppStatePermissionFlowTests: XCTestCase {
 
         // Still resolvable — the card is one click away in the session list.
         appState.approvePermission(expectedSessionId: "s-no-expand")
-        let response = await responseTask.value
+        let response = try await awaitValue(of: responseTask)
         XCTAssertEqual(try extractPermissionBehavior(from: response), "allow")
     }
 
@@ -66,16 +61,11 @@ final class AppStatePermissionFlowTests: XCTestCase {
         let appState = AppState()
         let event = try makePermissionRequestEvent(sessionId: "s-expand", toolName: "Bash")
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event, continuation: continuation)
-            }
-        }
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
 
         XCTAssertEqual(appState.surface, .approvalCard(sessionId: "s-expand"))
         appState.approvePermission(expectedSessionId: "s-expand")
-        _ = await responseTask.value
+        _ = try await awaitValue(of: responseTask)
     }
 
     func testSmartSuppressKeepsPendingSurfaceCollapsedWhenTerminalIsFrontmost() {
@@ -105,18 +95,8 @@ final class AppStatePermissionFlowTests: XCTestCase {
         let eventA = try makePermissionRequestEvent(sessionId: "s1", toolName: "Bash")
         let eventB = try makePermissionRequestEvent(sessionId: "s2", toolName: "Read")
 
-        let responseTaskA = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(eventA, continuation: continuation)
-            }
-        }
-        let responseTaskB = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(eventB, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTaskA = await startHookRequest { appState.handlePermissionRequest(eventA, continuation: $0) }
+        let responseTaskB = await startHookRequest { appState.handlePermissionRequest(eventB, continuation: $0) }
 
         XCTAssertEqual(appState.permissionQueue.count, 2)
         XCTAssertEqual(appState.surface, .approvalCard(sessionId: "s1"))
@@ -129,14 +109,14 @@ final class AppStatePermissionFlowTests: XCTestCase {
         XCTAssertEqual(appState.surface, .collapsed)
         XCTAssertEqual(appState.permissionQueue.count, 2)
 
-        await assertTaskNotResolved(responseTaskA)
-        await assertTaskNotResolved(responseTaskB)
+        await assertStillPending(responseTaskA)
+        await assertStillPending(responseTaskB)
 
         appState.handlePeerDisconnect(sessionId: "s1")
         appState.handlePeerDisconnect(sessionId: "s2")
 
-        let responseA = await responseTaskA.value
-        let responseB = await responseTaskB.value
+        let responseA = try await awaitValue(of: responseTaskA)
+        let responseB = try await awaitValue(of: responseTaskB)
 
         XCTAssertEqual(try extractPermissionBehavior(from: responseA), "deny")
         XCTAssertEqual(try extractPermissionBehavior(from: responseB), "deny")
@@ -148,13 +128,7 @@ final class AppStatePermissionFlowTests: XCTestCase {
         let sessionId = "s-single"
         let event = try makePermissionRequestEvent(sessionId: sessionId, toolName: "Bash")
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
 
         XCTAssertEqual(appState.surface, .approvalCard(sessionId: sessionId))
         XCTAssertEqual(appState.permissionQueue.count, 1)
@@ -166,10 +140,10 @@ final class AppStatePermissionFlowTests: XCTestCase {
         XCTAssertEqual(appState.permissionQueue.count, 1)
         XCTAssertEqual(appState.sessions[sessionId]?.status, .waitingApproval)
 
-        await assertTaskNotResolved(responseTask)
+        await assertStillPending(responseTask)
 
         appState.handlePeerDisconnect(sessionId: sessionId)
-        let response = await responseTask.value
+        let response = try await awaitValue(of: responseTask)
         XCTAssertEqual(try extractPermissionBehavior(from: response), "deny")
     }
 
@@ -178,37 +152,25 @@ final class AppStatePermissionFlowTests: XCTestCase {
         let sessionId = "s-reappear"
 
         let firstEvent = try makePermissionRequestEvent(sessionId: sessionId, toolName: "Edit")
-        let firstResponseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(firstEvent, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let firstResponseTask = await startHookRequest { appState.handlePermissionRequest(firstEvent, continuation: $0) }
         appState.dismissPermissionPrompt()
         XCTAssertEqual(appState.surface, .collapsed)
         XCTAssertEqual(appState.permissionQueue.count, 1)
 
         appState.handlePeerDisconnect(sessionId: sessionId)
-        let firstResponse = await firstResponseTask.value
+        let firstResponse = try await awaitValue(of: firstResponseTask)
         XCTAssertEqual(try extractPermissionBehavior(from: firstResponse), "deny")
         XCTAssertEqual(appState.permissionQueue.count, 0)
 
         let secondEvent = try makePermissionRequestEvent(sessionId: sessionId, toolName: "Write")
-        let secondResponseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(secondEvent, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let secondResponseTask = await startHookRequest { appState.handlePermissionRequest(secondEvent, continuation: $0) }
 
         XCTAssertEqual(appState.surface, .approvalCard(sessionId: sessionId))
         XCTAssertEqual(appState.permissionQueue.count, 1)
 
         appState.approvePermission()
 
-        let secondResponse = await secondResponseTask.value
+        let secondResponse = try await awaitValue(of: secondResponseTask)
         XCTAssertEqual(try extractPermissionBehavior(from: secondResponse), "allow")
         XCTAssertEqual(appState.permissionQueue.count, 0)
     }
@@ -217,18 +179,12 @@ final class AppStatePermissionFlowTests: XCTestCase {
         let appState = AppState()
         let event = try makePermissionRequestEvent(sessionId: "s-buddy-approve", toolName: "Bash")
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
         XCTAssertEqual(appState.permissionQueue.count, 1)
 
         appState.handleBuddyControlCommand(.approveCurrentPermission)
 
-        let response = await responseTask.value
+        let response = try await awaitValue(of: responseTask)
         XCTAssertEqual(try extractPermissionBehavior(from: response), "allow")
         XCTAssertEqual(appState.permissionQueue.count, 0)
     }
@@ -237,18 +193,12 @@ final class AppStatePermissionFlowTests: XCTestCase {
         let appState = AppState()
         let event = try makePermissionRequestEvent(sessionId: "s-buddy-deny", toolName: "Bash")
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
         XCTAssertEqual(appState.permissionQueue.count, 1)
 
         appState.handleBuddyControlCommand(.denyCurrentPermission)
 
-        let response = await responseTask.value
+        let response = try await awaitValue(of: responseTask)
         XCTAssertEqual(try extractPermissionBehavior(from: response), "deny")
         XCTAssertEqual(appState.permissionQueue.count, 0)
     }
@@ -268,13 +218,7 @@ final class AppStatePermissionFlowTests: XCTestCase {
             ]
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
 
         let previews = appState.esp32MessagePreviewPayloads()
         XCTAssertGreaterThan(previews.count, 1)
@@ -283,7 +227,7 @@ final class AppStatePermissionFlowTests: XCTestCase {
         XCTAssertEqual(previews.compactMap(\.text).joined(), expectedDetail)
 
         appState.handlePeerDisconnect(sessionId: sessionId)
-        _ = await responseTask.value
+        _ = try await awaitValue(of: responseTask)
     }
 
     func testInteractiveDeliveryKeyChangesWhenApprovalDescriptionChanges() {
@@ -308,16 +252,10 @@ final class AppStatePermissionFlowTests: XCTestCase {
             source: "codex"
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
         appState.approvePermission(always: true)
 
-        let decision = try extractPermissionDecision(from: await responseTask.value)
+        let decision = try extractPermissionDecision(from: await awaitValue(of: responseTask))
         XCTAssertEqual(decision["behavior"] as? String, "allow")
         XCTAssertNil(decision["updatedPermissions"])
 
@@ -367,16 +305,10 @@ final class AppStatePermissionFlowTests: XCTestCase {
             source: "codex"
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
         appState.approvePermission(always: true)
 
-        let decision = try extractPermissionDecision(from: await responseTask.value)
+        let decision = try extractPermissionDecision(from: await awaitValue(of: responseTask))
         XCTAssertEqual(decision["behavior"] as? String, "allow")
         XCTAssertNil(decision["updatedPermissions"])
 
@@ -398,16 +330,10 @@ final class AppStatePermissionFlowTests: XCTestCase {
             toolInput: ["page_id": "432458668"]
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
         appState.approvePermission(always: true)
 
-        let rule = try firstAlwaysAllowRule(from: await responseTask.value)
+        let rule = try firstAlwaysAllowRule(from: await awaitValue(of: responseTask))
         XCTAssertEqual(rule["toolName"] as? String, "mcp__sh_wiki__fetch_page")
         XCTAssertNil(rule["ruleContent"], "MCP tool rules must not carry a specifier (#224)")
     }
@@ -421,16 +347,10 @@ final class AppStatePermissionFlowTests: XCTestCase {
             toolName: "Bash"
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
         appState.approvePermission(always: true)
 
-        let rule = try firstAlwaysAllowRule(from: await responseTask.value)
+        let rule = try firstAlwaysAllowRule(from: await awaitValue(of: responseTask))
         XCTAssertEqual(rule["toolName"] as? String, "Bash")
         XCTAssertEqual(rule["ruleContent"] as? String, "*")
     }
@@ -448,16 +368,10 @@ final class AppStatePermissionFlowTests: XCTestCase {
             source: "zcode"
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
         appState.approvePermission(always: true)
 
-        let decision = try extractPermissionDecision(from: await responseTask.value)
+        let decision = try extractPermissionDecision(from: await awaitValue(of: responseTask))
         XCTAssertEqual(decision["behavior"] as? String, "allow")
         XCTAssertNil(decision["updatedPermissions"])
 
@@ -482,16 +396,10 @@ final class AppStatePermissionFlowTests: XCTestCase {
             source: "zcode"
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
         appState.approvePermission()
 
-        let decision = try extractPermissionDecision(from: await responseTask.value)
+        let decision = try extractPermissionDecision(from: await awaitValue(of: responseTask))
         XCTAssertEqual(decision["behavior"] as? String, "allow")
         XCTAssertNil(decision["permissionUpdates"])
         XCTAssertNil(decision["updatedPermissions"])
@@ -804,24 +712,14 @@ final class AppStatePermissionFlowTests: XCTestCase {
         let dismissed = try makePermissionRequestEvent(sessionId: "s-dismissed", toolName: "Bash")
         let later = try makePermissionRequestEvent(sessionId: "s-later", toolName: "Edit")
 
-        let dismissedTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(dismissed, continuation: continuation)
-            }
-        }
-        await Task.yield()
+        let dismissedTask = await startHookRequest { appState.handlePermissionRequest(dismissed, continuation: $0) }
         XCTAssertEqual(appState.surface, .approvalCard(sessionId: "s-dismissed"))
 
         appState.dismissPermissionPrompt()
         XCTAssertEqual(appState.surface, .collapsed)
         XCTAssertEqual(appState.permissionQueue.count, 1, "dismiss must keep the request queued")
 
-        let laterTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(later, continuation: continuation)
-            }
-        }
-        await Task.yield()
+        let laterTask = await startHookRequest { appState.handlePermissionRequest(later, continuation: $0) }
 
         XCTAssertEqual(
             appState.surface,
@@ -829,12 +727,12 @@ final class AppStatePermissionFlowTests: XCTestCase {
             "a different session's approval must still raise a card while a dismissed one sits in the queue"
         )
         // Stop here on failure: under the bug, approvePermission() below resolves
-        // the dismissed request instead, so `await laterTask.value` would hang
-        // and the test would report as a timeout rather than by name. The head
-        // check matters as much as the surface one — an implementation that
+        // the dismissed request instead, so the await on `laterTask` never
+        // completes and the test would report a timeout rather than by name. The
+        // head check matters as much as the surface one — an implementation that
         // points the card at this session by hand shows "s-later" while the
         // dismissed request still leads the queue, so the surface assertion
-        // alone passes and the await still hangs.
+        // alone passes and the await still times out.
         XCTAssertEqual(
             appState.permissionQueue.first?.event.sessionId,
             "s-later",
@@ -844,18 +742,18 @@ final class AppStatePermissionFlowTests: XCTestCase {
               appState.permissionQueue.first?.event.sessionId == "s-later" else {
             appState.handlePeerDisconnect(sessionId: "s-dismissed")
             appState.handlePeerDisconnect(sessionId: "s-later")
-            _ = await dismissedTask.value
-            _ = await laterTask.value
+            _ = try await awaitValue(of: dismissedTask)
+            _ = try await awaitValue(of: laterTask)
             return
         }
 
         appState.approvePermission()
-        let laterResponse = await laterTask.value
+        let laterResponse = try await awaitValue(of: laterTask)
         XCTAssertEqual(try extractPermissionBehavior(from: laterResponse), "allow")
 
-        await assertTaskNotResolved(dismissedTask)
+        await assertStillPending(dismissedTask)
         appState.handlePeerDisconnect(sessionId: "s-dismissed")
-        _ = await dismissedTask.value
+        _ = try await awaitValue(of: dismissedTask)
     }
 
     /// A dismissal is cleared by that session's NEXT request arriving
@@ -871,21 +769,11 @@ final class AppStatePermissionFlowTests: XCTestCase {
         let first = try makePermissionRequestEvent(sessionId: "s-same", toolName: "Bash")
         let second = try makePermissionRequestEvent(sessionId: "s-same", toolName: "Edit")
 
-        let firstTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(first, continuation: continuation)
-            }
-        }
-        await Task.yield()
+        let firstTask = await startHookRequest { appState.handlePermissionRequest(first, continuation: $0) }
         appState.dismissPermissionPrompt()
         XCTAssertEqual(appState.surface, .collapsed)
 
-        let secondTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(second, continuation: continuation)
-            }
-        }
-        await Task.yield()
+        let secondTask = await startHookRequest { appState.handlePermissionRequest(second, continuation: $0) }
 
         XCTAssertEqual(
             appState.surface,
@@ -906,8 +794,8 @@ final class AppStatePermissionFlowTests: XCTestCase {
         )
 
         appState.handlePeerDisconnect(sessionId: "s-same")
-        _ = await firstTask.value
-        _ = await secondTask.value
+        _ = try await awaitValue(of: firstTask)
+        _ = try await awaitValue(of: secondTask)
     }
 
     /// `drainPermissions` (process exit, or a question arriving for the session)
@@ -925,10 +813,7 @@ final class AppStatePermissionFlowTests: XCTestCase {
         XCTAssertTrue(appState.permissionQueue.isEmpty)
 
         let next = try makePermissionRequestEvent(sessionId: "s-next", toolName: "Read")
-        let nextTask = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(next, continuation: $0) }
-        }
-        await Task.yield()
+        let nextTask = await startHookRequest { appState.handlePermissionRequest(next, continuation: $0) }
 
         XCTAssertEqual(
             appState.surface,
@@ -937,7 +822,7 @@ final class AppStatePermissionFlowTests: XCTestCase {
         )
 
         appState.approvePermission()
-        let response = await nextTask.value
+        let response = try await awaitValue(of: nextTask)
         XCTAssertEqual(try extractPermissionBehavior(from: response), "allow")
     }
 
@@ -949,21 +834,12 @@ final class AppStatePermissionFlowTests: XCTestCase {
         let secondA = try makePermissionRequestEvent(sessionId: "s-a", toolName: "Edit")
         let fromB = try makePermissionRequestEvent(sessionId: "s-b", toolName: "Read")
 
-        let firstATask = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(firstA, continuation: $0) }
-        }
-        await Task.yield()
+        let firstATask = await startHookRequest { appState.handlePermissionRequest(firstA, continuation: $0) }
         appState.dismissPermissionPrompt()
 
-        let secondATask = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(secondA, continuation: $0) }
-        }
-        await Task.yield()
+        let secondATask = await startHookRequest { appState.handlePermissionRequest(secondA, continuation: $0) }
 
-        let fromBTask = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(fromB, continuation: $0) }
-        }
-        await Task.yield()
+        let fromBTask = await startHookRequest { appState.handlePermissionRequest(fromB, continuation: $0) }
 
         // The panel must be showing *something* — under the incomplete gate the
         // un-dismiss left A's card unopened and B arrived to a silent, collapsed
@@ -980,8 +856,8 @@ final class AppStatePermissionFlowTests: XCTestCase {
         XCTAssertEqual(appState.permissionQueue.count, 3)
         appState.approvePermission()
         appState.approvePermission()
-        _ = await firstATask.value
-        _ = await secondATask.value
+        _ = try await awaitValue(of: firstATask)
+        _ = try await awaitValue(of: secondATask)
 
         XCTAssertEqual(
             appState.surface,
@@ -989,7 +865,7 @@ final class AppStatePermissionFlowTests: XCTestCase {
             "B's request must surface once A's are resolved, not sit silently forever"
         )
         appState.approvePermission()
-        let bResponse = await fromBTask.value
+        let bResponse = try await awaitValue(of: fromBTask)
         XCTAssertEqual(try extractPermissionBehavior(from: bResponse), "allow")
     }
 
@@ -1033,17 +909,5 @@ final class AppStatePermissionFlowTests: XCTestCase {
         let first = try XCTUnwrap(updated.first)
         let rules = try XCTUnwrap(first["rules"] as? [[String: Any]])
         return try XCTUnwrap(rules.first)
-    }
-
-    private func assertTaskNotResolved(_ task: Task<Data, Never>, timeout: TimeInterval = 0.05) async {
-        let exp = expectation(description: "task should stay pending")
-        exp.isInverted = true
-
-        Task {
-            _ = await task.value
-            exp.fulfill()
-        }
-
-        await fulfillment(of: [exp], timeout: timeout)
     }
 }

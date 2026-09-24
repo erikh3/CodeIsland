@@ -34,13 +34,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
             questions: questions
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         XCTAssertEqual(appState.questionQueue.count, 1)
 
         appState.answerQuestionMulti([
@@ -48,7 +42,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
             (question: "你更喜欢我用哪种回答风格？", answer: "平衡"),
         ])
 
-        let responseData = await responseTask.value
+        let responseData = try await awaitValue(of: responseTask)
         let updatedInput = try extractUpdatedInput(from: responseData)
         let returnedQuestions = try XCTUnwrap(updatedInput["questions"] as? [[String: Any]])
         XCTAssertEqual(returnedQuestions.count, questions.count)
@@ -74,13 +68,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
             piToolCallId: "omp-structured"
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         appState.answerQuestionMulti([
             AskUserQuestionAnswer(
                 question: "请选择多个选项，也可以补充自定义内容",
@@ -90,7 +78,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
             ),
         ])
 
-        let responseData = await responseTask.value
+        let responseData = try await awaitValue(of: responseTask)
         let updatedInput = try extractUpdatedInput(from: responseData)
         let answers = try XCTUnwrap(updatedInput["answers"] as? [String: Any])
         XCTAssertEqual(answers["请选择多个选项，也可以补充自定义内容"] as? String, "Alpha, Beta, Gamma, custom, value")
@@ -115,13 +103,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
             piToolCallId: "omp-free-text-multi"
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         appState.answerQuestionMulti([
             AskUserQuestionAnswer(
                 question: "请填写补充内容",
@@ -131,7 +113,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
             ),
         ])
 
-        let responseData = await responseTask.value
+        let responseData = try await awaitValue(of: responseTask)
         let updatedInput = try extractUpdatedInput(from: responseData)
         let details = try XCTUnwrap(updatedInput["_codeislandAnswerDetails"] as? [String: Any])
         let answerDetails = try XCTUnwrap(details["请填写补充内容"] as? [String: Any])
@@ -152,13 +134,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
             source: "opencode"
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         appState.answerQuestionMulti([
             AskUserQuestionAnswer(
                 question: "Which targets?",
@@ -168,7 +144,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
             ),
         ])
 
-        let updatedInput = try extractUpdatedInput(from: await responseTask.value)
+        let updatedInput = try extractUpdatedInput(from: await awaitValue(of: responseTask))
         let details = try XCTUnwrap(updatedInput["_codeislandAnswerDetails"] as? [String: Any])
         let picks = try XCTUnwrap(details["Which targets?"] as? [String: Any])
         XCTAssertEqual(picks["selectedOptions"] as? [String], ["macOS, arm64", "iOS"])
@@ -197,13 +173,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
             ]
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         appState.answerQuestionMulti([
             AskUserQuestionAnswer(
                 question: "你希望我主要使用哪种语言回复？",
@@ -213,7 +183,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
             ),
         ])
 
-        let responseData = await responseTask.value
+        let responseData = try await awaitValue(of: responseTask)
         let answers = try extractAnswers(from: responseData)
         XCTAssertEqual(answers["你希望我主要使用哪种语言回复？"] as? String, "中文")
         let updatedInput = try extractUpdatedInput(from: responseData)
@@ -238,18 +208,12 @@ final class AppStateQuestionFlowTests: XCTestCase {
             ]
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         XCTAssertEqual(appState.questionQueue.count, 1)
         let surfaceAfterRequest = appState.surface
 
         appState.skipQuestion()
-        _ = await responseTask.value
+        _ = try await awaitValue(of: responseTask)
 
         XCTAssertEqual(
             surfaceAfterRequest,
@@ -289,28 +253,17 @@ final class AppStateQuestionFlowTests: XCTestCase {
             ]
         )
 
-        let firstResponseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(firstEvent, continuation: continuation)
-            }
-        }
-        await Task.yield()
-        let secondResponseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(secondEvent, continuation: continuation)
-            }
-        }
-        await Task.yield()
+        let firstResponseTask = await startHookRequest { appState.handleAskUserQuestion(firstEvent, continuation: $0) }
+        let secondResponseTask = await startHookRequest { appState.handleAskUserQuestion(secondEvent, continuation: $0) }
         let queueCountAfterEnqueue = appState.questionQueue.count
 
         appState.skipQuestion()
-        _ = await firstResponseTask.value
-        await Task.yield()
+        _ = try await awaitValue(of: firstResponseTask)
         let queueCountAfterPromotingSecond = appState.questionQueue.count
         let surfaceAfterPromotingSecond = appState.surface
 
         appState.skipQuestion()
-        _ = await secondResponseTask.value
+        _ = try await awaitValue(of: secondResponseTask)
 
         XCTAssertEqual(queueCountAfterEnqueue, 2)
         XCTAssertEqual(queueCountAfterPromotingSecond, 1)
@@ -341,18 +294,12 @@ final class AppStateQuestionFlowTests: XCTestCase {
             nativeAskRacing: true
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         XCTAssertEqual(appState.questionQueue.count, 1)
         let surfaceAfterRequest = appState.surface
 
         appState.skipQuestion()
-        _ = await responseTask.value
+        _ = try await awaitValue(of: responseTask)
 
         XCTAssertEqual(
             surfaceAfterRequest,
@@ -379,16 +326,10 @@ final class AppStateQuestionFlowTests: XCTestCase {
             piToolCallId: "legacy-pi-blocking-ask"
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         let surfaceAfterRequest = appState.surface
         appState.skipQuestion()
-        _ = await responseTask.value
+        _ = try await awaitValue(of: responseTask)
 
         XCTAssertEqual(
             surfaceAfterRequest,
@@ -432,27 +373,16 @@ final class AppStateQuestionFlowTests: XCTestCase {
             nativeAskRacing: true
         )
 
-        let firstResponseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(firstEvent, continuation: continuation)
-            }
-        }
-        await Task.yield()
-        let secondResponseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(secondEvent, continuation: continuation)
-            }
-        }
-        await Task.yield()
+        let firstResponseTask = await startHookRequest { appState.handleAskUserQuestion(firstEvent, continuation: $0) }
+        let secondResponseTask = await startHookRequest { appState.handleAskUserQuestion(secondEvent, continuation: $0) }
 
         appState.skipQuestion()
-        _ = await firstResponseTask.value
-        await Task.yield()
+        _ = try await awaitValue(of: firstResponseTask)
         let queueCountAfterPromotingSecond = appState.questionQueue.count
         let surfaceAfterPromotingSecond = appState.surface
 
         appState.skipQuestion()
-        _ = await secondResponseTask.value
+        _ = try await awaitValue(of: secondResponseTask)
 
         XCTAssertEqual(queueCountAfterPromotingSecond, 1)
         XCTAssertEqual(
@@ -495,30 +425,19 @@ final class AppStateQuestionFlowTests: XCTestCase {
             nativeAskRacing: true
         )
 
-        let legacyResponseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(legacyEvent, continuation: continuation)
-            }
-        }
-        await Task.yield()
+        let legacyResponseTask = await startHookRequest { appState.handleAskUserQuestion(legacyEvent, continuation: $0) }
         // Legacy question must have forced the card open.
         XCTAssertEqual(appState.surface, .questionCard(sessionId: legacySessionId))
 
-        let ompResponseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(ompEvent, continuation: continuation)
-            }
-        }
-        await Task.yield()
+        let ompResponseTask = await startHookRequest { appState.handleAskUserQuestion(ompEvent, continuation: $0) }
 
         // Skip the legacy question — the OMP question should be promoted.
         appState.skipQuestion()
-        _ = await legacyResponseTask.value
-        await Task.yield()
+        _ = try await awaitValue(of: legacyResponseTask)
         let surfaceAfterPromotion = appState.surface
 
         appState.skipQuestion()
-        _ = await ompResponseTask.value
+        _ = try await awaitValue(of: ompResponseTask)
 
         XCTAssertEqual(
             surfaceAfterPromotion,
@@ -538,16 +457,10 @@ final class AppStateQuestionFlowTests: XCTestCase {
             ]
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         appState.skipQuestion()
 
-        let responseData = await responseTask.value
+        let responseData = try await awaitValue(of: responseTask)
         let behavior = try extractPermissionBehavior(from: responseData)
         XCTAssertEqual(behavior, "deny")
         XCTAssertEqual(appState.questionQueue.count, 0)
@@ -565,16 +478,10 @@ final class AppStateQuestionFlowTests: XCTestCase {
             ]
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         appState.handlePeerDisconnect(sessionId: sessionId)
 
-        let responseData = await responseTask.value
+        let responseData = try await awaitValue(of: responseTask)
         let behavior = try extractPermissionBehavior(from: responseData)
         XCTAssertEqual(behavior, "deny")
         XCTAssertEqual(appState.questionQueue.count, 0)
@@ -597,34 +504,23 @@ final class AppStateQuestionFlowTests: XCTestCase {
             command: "echo 2"
         )
 
-        let r1 = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event1, continuation: continuation)
-            }
-        }
-        await Task.yield()
+        let r1 = await startHookRequest { appState.handlePermissionRequest(event1, continuation: $0) }
 
-        let r2 = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event2, continuation: continuation)
-            }
-        }
-        await Task.yield()
+        let r2 = await startHookRequest { appState.handlePermissionRequest(event2, continuation: $0) }
 
         XCTAssertEqual(appState.permissionQueue.count, 2)
         XCTAssertEqual(appState.currentTool, "Bash")
         XCTAssertEqual(appState.toolDescription, "first approval\nCommand:\necho 1")
 
         appState.approvePermission()
-        let response1 = await r1.value
+        let response1 = try await awaitValue(of: r1)
         XCTAssertEqual(try extractPermissionBehavior(from: response1), "allow")
 
-        await Task.yield()
         XCTAssertEqual(appState.permissionQueue.count, 1)
         XCTAssertEqual(appState.toolDescription, "second approval\nCommand:\necho 2")
 
         appState.denyPermission()
-        let response2 = await r2.value
+        let response2 = try await awaitValue(of: r2)
         XCTAssertEqual(try extractPermissionBehavior(from: response2), "deny")
         XCTAssertEqual(appState.permissionQueue.count, 0)
     }
@@ -639,18 +535,12 @@ final class AppStateQuestionFlowTests: XCTestCase {
             command: "echo 1"
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
         XCTAssertEqual(appState.surface, .sessionList)
         XCTAssertEqual(appState.permissionQueue.count, 1)
 
         appState.approvePermission()
-        let response = await responseTask.value
+        let response = try await awaitValue(of: responseTask)
         XCTAssertEqual(try extractPermissionBehavior(from: response), "allow")
         XCTAssertEqual(appState.surface, .sessionList)
     }
@@ -689,18 +579,12 @@ final class AppStateQuestionFlowTests: XCTestCase {
             source: "qoder"
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         appState.answerQuestionMulti([
             (question: "继续执行吗？", answer: "继续"),
         ])
 
-        let responseData = await responseTask.value
+        let responseData = try await awaitValue(of: responseTask)
         let updatedInput = try extractUpdatedInput(from: responseData)
         XCTAssertNil(updatedInput["answer"], "qoder updatedInput must not carry the extra scalar `answer` key")
         let answers = try XCTUnwrap(updatedInput["answers"] as? [String: Any])
@@ -717,18 +601,12 @@ final class AppStateQuestionFlowTests: XCTestCase {
             source: "claude"
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         appState.answerQuestionMulti([
             (question: "继续执行吗？", answer: "继续"),
         ])
 
-        let responseData = await responseTask.value
+        let responseData = try await awaitValue(of: responseTask)
         let updatedInput = try extractUpdatedInput(from: responseData)
         XCTAssertEqual(updatedInput["answer"] as? String, "继续")
     }
@@ -748,19 +626,13 @@ final class AppStateQuestionFlowTests: XCTestCase {
             ]
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         appState.answerQuestionMulti([
             (question: "重复的问题", answer: "A"),
             (question: "重复的问题", answer: "D"),
         ])
 
-        let responseData = await responseTask.value
+        let responseData = try await awaitValue(of: responseTask)
         let answers = try extractAnswers(from: responseData)
         XCTAssertEqual(answers["重复的问题"] as? String, "A")
         XCTAssertEqual(answers["重复的问题_2"] as? String, "D")
@@ -781,19 +653,13 @@ final class AppStateQuestionFlowTests: XCTestCase {
             ]
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         appState.answerQuestionMulti([
             (question: "没有 header", answer: "B"),
             (question: "空 header", answer: "C"),
         ])
 
-        let responseData = await responseTask.value
+        let responseData = try await awaitValue(of: responseTask)
         let answers = try extractAnswers(from: responseData)
         XCTAssertEqual(answers["没有 header"] as? String, "B")
         XCTAssertEqual(answers["空 header"] as? String, "C")
@@ -810,13 +676,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
             ]
         )
 
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        _ = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         appState.answerQuestion("A")
         XCTAssertEqual(appState.questionQueue.count, 1, "Queue should not be drained by direct answerQuestion")
     }
@@ -838,13 +698,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
             ]
         )
 
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        _ = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
 
         let payload = appState.appleCompanionStatePayload(sequence: 42)
         XCTAssertEqual(payload.sequence, 42)
@@ -873,13 +727,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
             ]
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
 
         appState.answerCompanionQuestion("直接执行")
         let secondPayload = appState.appleCompanionStatePayload(sequence: 43)
@@ -890,7 +738,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
         XCTAssertEqual(appState.questionQueue.count, 1)
 
         appState.answerCompanionQuestion("平衡")
-        let responseData = await responseTask.value
+        let responseData = try await awaitValue(of: responseTask)
         let answers = try extractAnswers(from: responseData)
         XCTAssertEqual(answers["你希望我接下来以哪种方式协作？"] as? String, "直接执行")
         XCTAssertEqual(answers["你更喜欢我用哪种回答风格？"] as? String, "平衡")
@@ -914,13 +762,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
             questions: [question(header: "Mode", text: "Pick one", options: ["A", "B"])]
         )
 
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handleAskUserQuestion(event, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         XCTAssertEqual(appState.questionQueue.count, 1)
         XCTAssertEqual(appState.surface, .questionCard(sessionId: "s-jump"))
 
@@ -934,7 +776,7 @@ final class AppStateQuestionFlowTests: XCTestCase {
             (question: "Pick one", answer: "A"),
         ])
 
-        let answers = try extractAnswers(from: await responseTask.value)
+        let answers = try extractAnswers(from: await awaitValue(of: responseTask))
         XCTAssertEqual(answers["Pick one"] as? String, "A")
     }
 

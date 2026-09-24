@@ -313,7 +313,7 @@ private enum ReadmeDemo {
                 state.permissionQueue.append(PermissionRequest(event: event, continuation: continuation))
             }
         }
-        while state.permissionQueue.isEmpty { await Task.yield() }
+        await waitUntil { !state.permissionQueue.isEmpty }
         state.surface = .approvalCard(sessionId: ID.claude)
         return DemoState(state: state) {
             for request in state.permissionQueue { request.continuation.resume(returning: Data()) }
@@ -377,7 +377,7 @@ private enum ReadmeDemo {
                 ))
             }
         }
-        while state.questionQueue.isEmpty { await Task.yield() }
+        await waitUntil { !state.questionQueue.isEmpty }
         state.surface = .questionCard(sessionId: ID.claude)
         return DemoState(state: state) {
             for request in state.questionQueue { request.resolution.resumeHook(returning: Data()) }

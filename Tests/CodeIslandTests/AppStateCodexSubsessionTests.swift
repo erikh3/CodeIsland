@@ -787,18 +787,12 @@ final class AppStateCodexSubsessionTests: XCTestCase {
             "tool_name": "exec_command",
             "tool_input": ["command": "rm -rf build"],
         ])
-        let responseTask = Task<Data, Never> {
-            await withCheckedContinuation { continuation in
-                appState.handlePermissionRequest(request, continuation: continuation)
-            }
-        }
-
-        await Task.yield()
+        let responseTask = await startHookRequest { appState.handlePermissionRequest(request, continuation: $0) }
         XCTAssertEqual(appState.permissionQueue.count, 1, "second-turn approval was auto-denied")
         XCTAssertEqual(appState.sessions[parentId]?.status, .waitingApproval)
 
         appState.handleBuddyControlCommand(.denyCurrentPermission)
-        _ = await responseTask.value
+        _ = try await awaitValue(of: responseTask)
         XCTAssertTrue(appState.permissionQueue.isEmpty)
     }
 }

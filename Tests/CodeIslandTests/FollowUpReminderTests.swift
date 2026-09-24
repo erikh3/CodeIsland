@@ -64,7 +64,9 @@ final class FollowUpReminderTests: XCTestCase {
             + appState.questionQueue.map { $0.event.sessionId ?? "default" }) {
             appState.handlePeerDisconnect(sessionId: sid)
         }
-        for task in pending { _ = await task.value }
+        // `try?`: a stuck request is already recorded as a failure; the rest of
+        // the teardown must still run so the defaults are restored.
+        for task in pending { _ = try? await awaitValue(of: task) }
         followUps = nil
         appState = nil
         for key in watchedKeys {
@@ -303,10 +305,7 @@ final class FollowUpReminderTests: XCTestCase {
             "tool_name": "AskUserQuestion",
             "tool_input": ["questions": [["question": "Which?", "options": [["label": "A"], ["label": "B"]]]]],
         ])
-        pending.append(Task<Data, Never> { [appState] in
-            await withCheckedContinuation { appState!.handleAskUserQuestion(event, continuation: $0) }
-        })
-        await Task.yield()
+        pending.append(await startHookRequest { [appState] in appState!.handleAskUserQuestion(event, continuation: $0) })
         XCTAssertEqual(appState.questionQueue.count, 1)
         appState.surface = .collapsed
 
@@ -327,10 +326,7 @@ final class FollowUpReminderTests: XCTestCase {
             "tool_name": "AskUserQuestion",
             "tool_input": ["questions": [["question": "Which?", "options": [["label": "A"], ["label": "B"]]]]],
         ])
-        pending.append(Task<Data, Never> { [appState] in
-            await withCheckedContinuation { appState!.handleAskUserQuestion(event, continuation: $0) }
-        })
-        await Task.yield()
+        pending.append(await startHookRequest { [appState] in appState!.handleAskUserQuestion(event, continuation: $0) })
         XCTAssertEqual(appState.surface, .collapsed)
 
         await advance(60)
@@ -422,10 +418,7 @@ final class FollowUpReminderTests: XCTestCase {
         ]
         if let termApp { payload["_term_app"] = termApp }
         let request = try event(payload)
-        pending.append(Task<Data, Never> { [appState] in
-            await withCheckedContinuation { appState!.handlePermissionRequest(request, continuation: $0) }
-        })
-        await Task.yield()
+        pending.append(await startHookRequest { [appState] in appState!.handlePermissionRequest(request, continuation: $0) })
         XCTAssertTrue(appState.permissionQueue.contains { $0.event.sessionId == sessionId })
     }
 

@@ -15,14 +15,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let first = try makeAskUserQuestionEvent(sessionId: "gitops-ansible", text: "Deploy which env?")
         let second = try makeAskUserQuestionEvent(sessionId: "liverpool-cleanup", text: "Delete the branch?")
 
-        let firstResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(first, continuation: $0) }
-        }
-        await Task.yield()
-        let secondResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(second, continuation: $0) }
-        }
-        await Task.yield()
+        let firstResponse = await startHookRequest { appState.handleAskUserQuestion(first, continuation: $0) }
+        let secondResponse = await startHookRequest { appState.handleAskUserQuestion(second, continuation: $0) }
         XCTAssertEqual(appState.questionQueue.count, 2)
 
         // The user is looking at the second session's card.
@@ -33,14 +27,14 @@ final class AppStateAnswerRoutingTests: XCTestCase {
 
         // Assert on the queue BEFORE awaiting, and stop on failure: a routing
         // regression resolves the wrong continuation, so the await below would
-        // hang forever and report as a CI timeout instead of a named failure.
+        // only end in awaitValue's timeout instead of a named failure.
         guard assertQueue(
             appState.questionQueue.map { $0.event.sessionId },
             ["gitops-ansible"],
             "the addressed session must be the one dequeued, and the other must stay queued"
         ) else { return }
 
-        let answers = try extractAnswers(from: await secondResponse.value)
+        let answers = try extractAnswers(from: await awaitValue(of: secondResponse))
         XCTAssertEqual(answers["Delete the branch?"] as? String, "Yes")
 
         firstResponse.cancel()
@@ -51,19 +45,13 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let stale = try makeAskUserQuestionEvent(sessionId: "gitops-ansible", text: "Deploy which env?")
         let other = try makeAskUserQuestionEvent(sessionId: "liverpool-cleanup", text: "Delete the branch?")
 
-        let staleResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(stale, continuation: $0) }
-        }
-        await Task.yield()
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(other, continuation: $0) }
-        }
-        await Task.yield()
+        let staleResponse = await startHookRequest { appState.handleAskUserQuestion(stale, continuation: $0) }
+        _ = await startHookRequest { appState.handleAskUserQuestion(other, continuation: $0) }
 
         // The first session answered in its own terminal and dropped its socket,
         // which drains its queue entry and promotes the other session to head.
         appState.handlePeerDisconnect(sessionId: "gitops-ansible")
-        _ = await staleResponse.value
+        _ = try await awaitValue(of: staleResponse)
         XCTAssertEqual(appState.questionQueue.count, 1)
         XCTAssertEqual(appState.questionQueue[0].event.sessionId, "liverpool-cleanup")
 
@@ -105,18 +93,12 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let stale = try makePermissionRequestEvent(sessionId: "s-stale", command: "echo 1")
         let other = try makePermissionRequestEvent(sessionId: "s-other", command: "echo 2")
 
-        let staleResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(stale, continuation: $0) }
-        }
-        await Task.yield()
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(other, continuation: $0) }
-        }
-        await Task.yield()
+        let staleResponse = await startHookRequest { appState.handlePermissionRequest(stale, continuation: $0) }
+        _ = await startHookRequest { appState.handlePermissionRequest(other, continuation: $0) }
 
         appState.surface = .approvalCard(sessionId: "s-stale")
         appState.handlePeerDisconnect(sessionId: "s-stale")
-        _ = await staleResponse.value
+        _ = try await awaitValue(of: staleResponse)
 
         XCTAssertEqual(appState.permissionQueue.map { $0.event.sessionId }, ["s-other"])
         XCTAssertEqual(
@@ -130,15 +112,12 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let appState = AppState()
         let only = try makeAskUserQuestionEvent(sessionId: "s-only", text: "Proceed?")
 
-        let response = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(only, continuation: $0) }
-        }
-        await Task.yield()
+        let response = await startHookRequest { appState.handleAskUserQuestion(only, continuation: $0) }
         appState.surface = .questionCard(sessionId: "s-only")
 
         // Answered in the terminal instead: the socket drops and the entry drains.
         appState.handlePeerDisconnect(sessionId: "s-only")
-        _ = await response.value
+        _ = try await awaitValue(of: response)
 
         XCTAssertEqual(
             appState.surface,
@@ -152,14 +131,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let first = try makeAskUserQuestionEvent(sessionId: "s-first", text: "First?")
         let second = try makeAskUserQuestionEvent(sessionId: "s-second", text: "Second?")
 
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(first, continuation: $0) }
-        }
-        await Task.yield()
-        let secondResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(second, continuation: $0) }
-        }
-        await Task.yield()
+        _ = await startHookRequest { appState.handleAskUserQuestion(first, continuation: $0) }
+        let secondResponse = await startHookRequest { appState.handleAskUserQuestion(second, continuation: $0) }
 
         appState.skipQuestion(expectedSessionId: "s-second")
 
@@ -168,7 +141,7 @@ final class AppStateAnswerRoutingTests: XCTestCase {
             ["s-first"],
             "skip must dequeue the addressed session"
         ) else { return }
-        let behavior = try extractPermissionBehavior(from: await secondResponse.value)
+        let behavior = try extractPermissionBehavior(from: await awaitValue(of: secondResponse))
         XCTAssertEqual(behavior, "deny")
     }
 
@@ -192,14 +165,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
             options: ["立即触发", "稍后"]
         )
 
-        let firstResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(first, continuation: $0) }
-        }
-        await Task.yield()
-        let secondResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(second, continuation: $0) }
-        }
-        await Task.yield()
+        let firstResponse = await startHookRequest { appState.handleAskUserQuestion(first, continuation: $0) }
+        let secondResponse = await startHookRequest { appState.handleAskUserQuestion(second, continuation: $0) }
         XCTAssertEqual(appState.surface, .questionCard(sessionId: "s-openurl"))
 
         // One wizard for both cards: the worst case, where the view keeps its
@@ -212,7 +179,7 @@ final class AppStateAnswerRoutingTests: XCTestCase {
             ["s-build"],
             "answering the first card must resolve only the first session"
         ) else { return }
-        let firstAnswers = try extractAnswers(from: await firstResponse.value)
+        let firstAnswers = try extractAnswers(from: await awaitValue(of: firstResponse))
         XCTAssertEqual(
             firstAnswers as? [String: String],
             ["How should openURL receive the path?": "openURL 传裸路径"]
@@ -227,7 +194,7 @@ final class AppStateAnswerRoutingTests: XCTestCase {
             [],
             "the second card's answer must resolve the second session"
         ) else { return }
-        let secondAnswers = try extractAnswers(from: await secondResponse.value)
+        let secondAnswers = try extractAnswers(from: await awaitValue(of: secondResponse))
         XCTAssertEqual(
             secondAnswers as? [String: String],
             ["是否立即触发构建（含后续飞书通知）？": "立即触发"],
@@ -243,14 +210,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let first = try makeAskUserQuestionEvent(sessionId: "s-first", text: "First?")
         let second = try makeAskUserQuestionEvent(sessionId: "s-second", text: "Second?")
 
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(first, continuation: $0) }
-        }
-        await Task.yield()
-        let secondResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(second, continuation: $0) }
-        }
-        await Task.yield()
+        _ = await startHookRequest { appState.handleAskUserQuestion(first, continuation: $0) }
+        let secondResponse = await startHookRequest { appState.handleAskUserQuestion(second, continuation: $0) }
 
         // What the card sent before the fix: the first card's answer leading
         // the second card's.
@@ -279,7 +240,7 @@ final class AppStateAnswerRoutingTests: XCTestCase {
             ["s-first"],
             "the request's own answer still goes through"
         ) else { return }
-        let answers = try extractAnswers(from: await secondResponse.value)
+        let answers = try extractAnswers(from: await awaitValue(of: secondResponse))
         XCTAssertEqual(answers as? [String: String], ["Second?": "Yes"])
     }
 
@@ -291,16 +252,10 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let first = try makeAskUserQuestionEvent(sessionId: "s-a", text: "First?")
         let second = try makeAskUserQuestionEvent(sessionId: "s-b", text: "Second?")
 
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(first, continuation: $0) }
-        }
-        await Task.yield()
+        _ = await startHookRequest { appState.handleAskUserQuestion(first, continuation: $0) }
         let firstId = try XCTUnwrap(appState.pendingQuestion(forSession: "s-a")?.id)
 
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(second, continuation: $0) }
-        }
-        await Task.yield()
+        _ = await startHookRequest { appState.handleAskUserQuestion(second, continuation: $0) }
         let secondId = try XCTUnwrap(appState.pendingQuestion(forSession: "s-b")?.id)
         XCTAssertNotEqual(firstId, secondId)
         XCTAssertEqual(
@@ -318,10 +273,7 @@ final class AppStateAnswerRoutingTests: XCTestCase {
 
         // The same session asking again is a different request.
         let again = try makeAskUserQuestionEvent(sessionId: "s-a", text: "First?")
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(again, continuation: $0) }
-        }
-        await Task.yield()
+        _ = await startHookRequest { appState.handleAskUserQuestion(again, continuation: $0) }
         let againId = try XCTUnwrap(appState.pendingQuestion(forSession: "s-a")?.id)
         XCTAssertNotEqual(againId, firstId, "a re-asked question must not inherit the previous card's state")
     }
@@ -333,14 +285,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let first = try makePermissionRequestEvent(sessionId: "s-first", command: "echo 1")
         let second = try makePermissionRequestEvent(sessionId: "s-second", command: "echo 2")
 
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(first, continuation: $0) }
-        }
-        await Task.yield()
-        let secondResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(second, continuation: $0) }
-        }
-        await Task.yield()
+        _ = await startHookRequest { appState.handlePermissionRequest(first, continuation: $0) }
+        let secondResponse = await startHookRequest { appState.handlePermissionRequest(second, continuation: $0) }
         XCTAssertEqual(appState.permissionQueue.count, 2)
 
         appState.approvePermission(expectedSessionId: "s-second")
@@ -351,7 +297,7 @@ final class AppStateAnswerRoutingTests: XCTestCase {
             ["s-first"],
             "approve must dequeue the addressed session"
         ) else { return }
-        let response = await secondResponse.value
+        let response = try await awaitValue(of: secondResponse)
         XCTAssertEqual(try extractPermissionBehavior(from: response), "allow")
     }
 
@@ -360,17 +306,11 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let stale = try makePermissionRequestEvent(sessionId: "s-stale", command: "echo 1")
         let other = try makePermissionRequestEvent(sessionId: "s-other", command: "echo 2")
 
-        let staleResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(stale, continuation: $0) }
-        }
-        await Task.yield()
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(other, continuation: $0) }
-        }
-        await Task.yield()
+        let staleResponse = await startHookRequest { appState.handlePermissionRequest(stale, continuation: $0) }
+        _ = await startHookRequest { appState.handlePermissionRequest(other, continuation: $0) }
 
         appState.handlePeerDisconnect(sessionId: "s-stale")
-        _ = await staleResponse.value
+        _ = try await awaitValue(of: staleResponse)
         XCTAssertEqual(appState.permissionQueue.map { $0.event.sessionId }, ["s-other"])
 
         appState.surface = .approvalCard(sessionId: "s-stale")
@@ -389,14 +329,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let first = try makePermissionRequestEvent(sessionId: "s-first", command: "echo 1")
         let second = try makePermissionRequestEvent(sessionId: "s-second", command: "echo 2")
 
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(first, continuation: $0) }
-        }
-        await Task.yield()
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(second, continuation: $0) }
-        }
-        await Task.yield()
+        _ = await startHookRequest { appState.handlePermissionRequest(first, continuation: $0) }
+        _ = await startHookRequest { appState.handlePermissionRequest(second, continuation: $0) }
 
         appState.surface = .approvalCard(sessionId: "s-second")
         appState.dismissPermissionPrompt(expectedSessionId: "s-second")
@@ -415,14 +349,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let first = try makePermissionRequestEvent(sessionId: "s-first", command: "echo 1")
         let second = try makePermissionRequestEvent(sessionId: "s-second", command: "echo 2")
 
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(first, continuation: $0) }
-        }
-        await Task.yield()
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(second, continuation: $0) }
-        }
-        await Task.yield()
+        _ = await startHookRequest { appState.handlePermissionRequest(first, continuation: $0) }
+        _ = await startHookRequest { appState.handlePermissionRequest(second, continuation: $0) }
 
         XCTAssertEqual(appState.pendingPermission(forSession: "s-second")?.event.sessionId, "s-second")
         XCTAssertNil(appState.pendingPermission(forSession: "s-missing"))
@@ -434,14 +362,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let first = try makeAskUserQuestionEvent(sessionId: "s-first", text: "First?")
         let second = try makeAskUserQuestionEvent(sessionId: "s-second", text: "Second?")
 
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(first, continuation: $0) }
-        }
-        await Task.yield()
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(second, continuation: $0) }
-        }
-        await Task.yield()
+        _ = await startHookRequest { appState.handleAskUserQuestion(first, continuation: $0) }
+        _ = await startHookRequest { appState.handleAskUserQuestion(second, continuation: $0) }
 
         XCTAssertEqual(appState.pendingQuestion(forSession: "s-second")?.question.question, "Second?")
         XCTAssertNil(appState.pendingQuestion(forSession: "s-missing"))
@@ -455,14 +377,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let first = try makePermissionRequestEvent(sessionId: "s-first", command: "echo 1")
         let second = try makePermissionRequestEvent(sessionId: "s-second", command: "echo 2")
 
-        let firstResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(first, continuation: $0) }
-        }
-        await Task.yield()
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(second, continuation: $0) }
-        }
-        await Task.yield()
+        let firstResponse = await startHookRequest { appState.handlePermissionRequest(first, continuation: $0) }
+        _ = await startHookRequest { appState.handlePermissionRequest(second, continuation: $0) }
         XCTAssertEqual(appState.permissionQueue.count, 2, "a one-element queue could not detect a change here")
 
         // Buddy/companion surfaces mirror the head and pass no session.
@@ -473,7 +389,7 @@ final class AppStateAnswerRoutingTests: XCTestCase {
             ["s-second"],
             "with no session passed, the head must be the one resolved"
         ) else { return }
-        let response = await firstResponse.value
+        let response = try await awaitValue(of: firstResponse)
         XCTAssertEqual(try extractPermissionBehavior(from: response), "allow")
     }
 
@@ -484,14 +400,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let first = try makeNotificationQuestionEvent(sessionId: "s-first", text: "First?")
         let second = try makeNotificationQuestionEvent(sessionId: "s-second", text: "Second?")
 
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleQuestion(first, continuation: $0) }
-        }
-        await Task.yield()
-        let secondResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleQuestion(second, continuation: $0) }
-        }
-        await Task.yield()
+        _ = await startHookRequest { appState.handleQuestion(first, continuation: $0) }
+        let secondResponse = await startHookRequest { appState.handleQuestion(second, continuation: $0) }
         XCTAssertEqual(appState.questionQueue.count, 2)
 
         appState.answerQuestion("B", expectedSessionId: "s-second")
@@ -501,7 +411,7 @@ final class AppStateAnswerRoutingTests: XCTestCase {
             ["s-first"],
             "the single-answer path must dequeue the addressed session"
         ) else { return }
-        let responseData = await secondResponse.value
+        let responseData = try await awaitValue(of: secondResponse)
         let json = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: responseData) as? [String: Any]
         )
@@ -526,14 +436,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let dismissed = try makePermissionRequestEvent(sessionId: "s-dismissed", command: "echo 1")
         let other = try makePermissionRequestEvent(sessionId: "s-other", command: "echo 2")
 
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(dismissed, continuation: $0) }
-        }
-        await Task.yield()
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(other, continuation: $0) }
-        }
-        await Task.yield()
+        _ = await startHookRequest { appState.handlePermissionRequest(dismissed, continuation: $0) }
+        _ = await startHookRequest { appState.handlePermissionRequest(other, continuation: $0) }
 
         appState.surface = .approvalCard(sessionId: "s-dismissed")
         appState.dismissPermissionPrompt(expectedSessionId: "s-dismissed")
@@ -551,17 +455,11 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let stale = try makePermissionRequestEvent(sessionId: "s-stale", command: "echo 1")
         let other = try makePermissionRequestEvent(sessionId: "s-other", command: "echo 2")
 
-        let staleResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(stale, continuation: $0) }
-        }
-        await Task.yield()
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(other, continuation: $0) }
-        }
-        await Task.yield()
+        let staleResponse = await startHookRequest { appState.handlePermissionRequest(stale, continuation: $0) }
+        _ = await startHookRequest { appState.handlePermissionRequest(other, continuation: $0) }
 
         appState.handlePeerDisconnect(sessionId: "s-stale")
-        _ = await staleResponse.value
+        _ = try await awaitValue(of: staleResponse)
 
         appState.surface = .approvalCard(sessionId: "s-stale")
         appState.dismissPermissionPrompt(expectedSessionId: "s-stale")
@@ -608,14 +506,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let first = try makePermissionRequestEvent(sessionId: "s-first", command: "rm -rf /")
         let second = try makePermissionRequestEvent(sessionId: "s-second", command: "echo 2")
 
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(first, continuation: $0) }
-        }
-        await Task.yield()
-        let secondResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(second, continuation: $0) }
-        }
-        await Task.yield()
+        _ = await startHookRequest { appState.handlePermissionRequest(first, continuation: $0) }
+        let secondResponse = await startHookRequest { appState.handlePermissionRequest(second, continuation: $0) }
         XCTAssertEqual(appState.permissionQueue.count, 2)
 
         appState.handleBuddyControlCommand(.approveCurrentPermission, expectedSessionId: "s-second")
@@ -625,7 +517,7 @@ final class AppStateAnswerRoutingTests: XCTestCase {
             ["s-first"],
             "the phone's approve must dequeue the session it named, not the queue head"
         ) else { return }
-        let behavior = try extractPermissionBehavior(from: await secondResponse.value)
+        let behavior = try extractPermissionBehavior(from: await awaitValue(of: secondResponse))
         XCTAssertEqual(behavior, "allow")
     }
 
@@ -636,16 +528,13 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let appState = AppState()
         let first = try makePermissionRequestEvent(sessionId: "s-first", command: "echo 1")
 
-        let firstResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(first, continuation: $0) }
-        }
-        await Task.yield()
+        let firstResponse = await startHookRequest { appState.handlePermissionRequest(first, continuation: $0) }
         XCTAssertEqual(appState.permissionQueue.count, 1)
 
         appState.handleBuddyControlCommand(.approveCurrentPermission)
 
         guard assertQueue(appState.permissionQueue.map { $0.event.sessionId }, [], "head of queue") else { return }
-        let headBehavior = try extractPermissionBehavior(from: await firstResponse.value)
+        let headBehavior = try extractPermissionBehavior(from: await awaitValue(of: firstResponse))
         XCTAssertEqual(headBehavior, "allow")
     }
 
@@ -654,14 +543,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let first = try makeNotificationQuestionEvent(sessionId: "s-first", text: "First?")
         let second = try makeNotificationQuestionEvent(sessionId: "s-second", text: "Second?")
 
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleQuestion(first, continuation: $0) }
-        }
-        await Task.yield()
-        let secondResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleQuestion(second, continuation: $0) }
-        }
-        await Task.yield()
+        _ = await startHookRequest { appState.handleQuestion(first, continuation: $0) }
+        let secondResponse = await startHookRequest { appState.handleQuestion(second, continuation: $0) }
         XCTAssertEqual(appState.questionQueue.count, 2)
 
         appState.answerCompanionQuestion("from the phone", expectedSessionId: "s-second")
@@ -671,7 +554,7 @@ final class AppStateAnswerRoutingTests: XCTestCase {
             ["s-first"],
             "the phone's answer must dequeue the session it named"
         ) else { return }
-        _ = await secondResponse.value
+        _ = try await awaitValue(of: secondResponse)
     }
 
     /// Same as above for AskUserQuestion. The non-head branch handed the
@@ -682,14 +565,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let first = try makeAskUserQuestionEvent(sessionId: "s-first", text: "First?")
         let second = try makeAskUserQuestionEvent(sessionId: "s-second", text: "Second?")
 
-        _ = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(first, continuation: $0) }
-        }
-        await Task.yield()
-        let secondResponse = Task<Data, Never> {
-            await withCheckedContinuation { appState.handleAskUserQuestion(second, continuation: $0) }
-        }
-        await Task.yield()
+        _ = await startHookRequest { appState.handleAskUserQuestion(first, continuation: $0) }
+        let secondResponse = await startHookRequest { appState.handleAskUserQuestion(second, continuation: $0) }
         XCTAssertEqual(appState.questionQueue.count, 2)
 
         appState.answerCompanionQuestion("No", expectedSessionId: "s-second")
@@ -703,7 +580,7 @@ final class AppStateAnswerRoutingTests: XCTestCase {
             appState.questionQueue[0].askUserQuestionState?.answers["First?"],
             "the head session's question must not be touched"
         )
-        let answers = try extractAnswers(from: await secondResponse.value)
+        let answers = try extractAnswers(from: await awaitValue(of: secondResponse))
         XCTAssertEqual(answers as? [String: String], ["Second?": "No"])
     }
 
@@ -711,7 +588,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
 
     /// Assert the post-action queue, and report whether it held. Every await in
     /// this suite only completes when the *right* continuation was resolved, so
-    /// a test that keeps going after this fails hangs instead of reporting.
+    /// a test that keeps going after this fails sits out awaitValue's timeout
+    /// instead of reporting what went wrong.
     private func assertQueue(
         _ actual: [String?],
         _ expected: [String],
