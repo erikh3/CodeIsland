@@ -608,8 +608,17 @@ private struct CompactRightWing: View {
                         .shadow(color: Color(red: 0.4, green: 1.0, blue: 0.5).opacity(0.7), radius: 3)
                 }
 
-                // Pending approval/question badge
-                if appState.status == .waitingApproval || appState.status == .waitingQuestion {
+                // Follow-up reminder fired while collapsed (auto-expand off, or
+                // an unseen completion): badge the bell and bounce it on each
+                // reminder, until the island is opened or the item resolves.
+                if appState.followUps.hintActive {
+                    Image(systemName: "bell.badge.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Color(red: 1.0, green: 0.7, blue: 0.28))
+                        .symbolEffect(.bounce, value: appState.followUps.hintPulse)
+                        .help(l10n["follow_up_hint"])
+                } else if appState.status == .waitingApproval || appState.status == .waitingQuestion {
+                    // Pending approval/question badge
                     Image(systemName: "bell.fill")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(Color(red: 1.0, green: 0.7, blue: 0.28))

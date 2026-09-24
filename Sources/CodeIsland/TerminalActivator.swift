@@ -96,6 +96,13 @@ struct TerminalActivator {
         allowHerdr: Bool = true
     ) {
         guard !session.isRemote else { return }
+        // Every caller is a user action (click, shortcut, Buddy button): the
+        // user is now dealing with this session, so its follow-ups stop.
+        if let sessionId {
+            NotificationCenter.default.post(
+                name: .codeIslandDidJumpToSession, object: nil, userInfo: ["sessionId": sessionId]
+            )
+        }
         // A UI harness (T3 Code) owns the conversation: the terminal/multiplexer
         // env the CLI inherited belongs to wherever the harness server was
         // started, so jump to the harness instead — before Herdr/tmux routing,

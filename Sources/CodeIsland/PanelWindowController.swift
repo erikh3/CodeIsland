@@ -242,6 +242,12 @@ class PanelWindowController: NSObject, NSWindowDelegate {
 
         self.panel = panel
         self.lastChosenScreenSignature = ScreenDetector.signature(for: screen)
+        // A follow-up for the card under the pointer would remind someone who
+        // is already reading it.
+        appState.followUps.isPointerOverPanel = { [weak self] in
+            guard let panel = self?.panel, panel.isVisible else { return false }
+            return panel.frame.contains(NSEvent.mouseLocation)
+        }
 
         setupHorizontalDragMonitor()
         updatePosition()

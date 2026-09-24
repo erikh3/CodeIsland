@@ -387,6 +387,7 @@ private struct BehaviorPage: View {
     @AppStorage(SettingsKey.collapseOnMouseLeave) private var collapseOnMouseLeave = SettingsDefaults.collapseOnMouseLeave
     @AppStorage(SettingsKey.autoCollapseAfterSessionJump) private var autoCollapseAfterSessionJump = SettingsDefaults.autoCollapseAfterSessionJump
     @AppStorage(SettingsKey.autoExpandOnPermission) private var autoExpandOnPermission = SettingsDefaults.autoExpandOnPermission
+    @AppStorage(SettingsKey.followUpReminderMinutes) private var followUpReminderMinutes = SettingsDefaults.followUpReminderMinutes
     // Seeded through the migration shim so a legacy autoExpandOnCompletion=false
     // shows up as "off" here; writes go to the new key via onChange.
     @State private var completionStyle: String = AppState.completionStyle().rawValue
@@ -475,6 +476,22 @@ private struct BehaviorPage: View {
                         UserDefaults.standard.set(newValue, forKey: SettingsKey.completionNotificationStyle)
                     }
                     Text(l10n["completion_notification_desc"])
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Picker(l10n["follow_up_reminders"], selection: $followUpReminderMinutes) {
+                        ForEach(FollowUpReminderController.intervalChoices, id: \.self) { minutes in
+                            Text(minutes == 0
+                                 ? l10n["follow_up_off"]
+                                 : String(format: l10n["follow_up_after_minutes"], minutes))
+                                .tag(minutes)
+                        }
+                    }
+                    .onChange(of: followUpReminderMinutes) { _, _ in
+                        appState?.followUps.settingsChanged()
+                    }
+                    Text(l10n["follow_up_reminders_desc"])
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }

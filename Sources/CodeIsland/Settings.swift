@@ -64,6 +64,9 @@ enum SettingsKey {
     static let quietHoursEnabled = "quietHoursEnabled"
     static let quietHoursStart = "quietHoursStart"
     static let quietHoursEnd = "quietHoursEnd"
+    // Follow-up reminders: minutes before re-announcing a waiting approval /
+    // question / unseen completion; 0 = off (see FollowUpReminderController)
+    static let followUpReminderMinutes = "followUpReminderMinutes"
     // Mute event sounds while the screen is locked, the screen saver runs or
     // the displays sleep (see SceneMuteMonitor)
     static let autoMuteWhenAway = "autoMuteWhenAway"
@@ -180,6 +183,7 @@ struct SettingsDefaults {
     static let quietHoursEnabled = false
     static let quietHoursStart = 22 * 60
     static let quietHoursEnd = 8 * 60
+    static let followUpReminderMinutes = 0
     static let autoMuteWhenAway = true
     static let showGitBranch = true
     static let showUsageStats = true
@@ -268,6 +272,7 @@ class SettingsManager {
             SettingsKey.quietHoursEnabled: SettingsDefaults.quietHoursEnabled,
             SettingsKey.quietHoursStart: SettingsDefaults.quietHoursStart,
             SettingsKey.quietHoursEnd: SettingsDefaults.quietHoursEnd,
+            SettingsKey.followUpReminderMinutes: SettingsDefaults.followUpReminderMinutes,
             SettingsKey.autoMuteWhenAway: SettingsDefaults.autoMuteWhenAway,
             SettingsKey.showGitBranch: SettingsDefaults.showGitBranch,
             SettingsKey.showUsageStats: SettingsDefaults.showUsageStats,

@@ -58,6 +58,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         MascotAnimationGate.shared.start()
         // Lock / screen saver / display sleep → event sounds hold off.
         SceneMuteMonitor.shared.start()
+        // Back at the screen: follow-ups held back meanwhile go out now.
+        SceneMuteMonitor.shared.onQuietChanged = { [weak appState] isQuiet in
+            if !isQuiet { appState?.followUps.wake() }
+        }
 
         panelController = PanelWindowController(appState: appState)
         panelController?.showPanel()

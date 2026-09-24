@@ -1,0 +1,393 @@
+import AppKit
+import SwiftUI
+import Observation
+import CodeIslandCore
+
+extension Notification.Name {
+    /// Posted by `TerminalActivator` when the user jumps to a session's
+    /// terminal. `userInfo["sessionId"]` carries the island session id.
+    static let codeIslandDidJumpToSession = Notification.Name("CodeIslandDidJumpToSession")
+}
+
+/// Follow-up reminders: approvals and questions still waiting, and finished
+/// turns nobody looked at, get another nudge after the configured interval.
+///
+/// Timing lives in the pure `FollowUpReminderScheduler`; this controller feeds
+/// it from `AppState` (queues, completions, surface, jumps), arms at most one
+/// wake-up, and turns due reminders into the island's own reactions — the
+/// matching sound, the card re-opened when the island is folded away, or a
+/// collapsed-state hint when auto-expand is off. With the setting off it holds
+/// no entries and arms nothing.
+///
+/// Other channels (push to a phone) subscribe with `addReminderHandler`; they
+/// receive every reminder, including `.deferred` ones that came due while the
+/// Mac itself was held back (locked, asleep, quiet hours) — exactly when a
+/// remote nudge is most useful.
+@MainActor
+@Observable
+final class FollowUpReminderController {
+    typealias Key = FollowUpReminderScheduler.Key
+
+    /// Settings values offered in the picker, in minutes; 0 = off.
+    static let intervalChoices = [0, 1, 2, 3, 5]
+
+    @ObservationIgnored weak var appState: AppState?
+    @ObservationIgnored private(set) var scheduler = FollowUpReminderScheduler()
+
+    /// Reminders delivered while the island was collapsed and could not (or
+    /// may not) open their card. Drives the collapsed-state hint.
+    private(set) var hintedKeys: Set<Key> = []
+    /// Bumped on every hinted delivery so the hint re-animates.
+    private(set) var hintPulse = 0
+
+    // MARK: Injection points (tests replace these)
+
+    @ObservationIgnored var clock: () -> Date = Date.init
+    @ObservationIgnored var intervalProvider: () -> TimeInterval? = FollowUpReminderController.storedInterval
+    /// Quiet hours or nobody at the screen: reminders wait and catch up later.
+    @ObservationIgnored var isHeldBack: () -> Bool = { SoundManager.shared.isEventSoundDeferred }
+    /// Set by `PanelWindowController`: is the pointer over the island?
+    @ObservationIgnored var isPointerOverPanel: () -> Bool = { false }
+    @ObservationIgnored var terminalFrontmost: (SessionSnapshot) -> Bool =
+        TerminalVisibilityDetector.isTerminalFrontmostForSession
+    /// Tab-level check; may block on AppleScript, so it always runs detached.
+    @ObservationIgnored var tabVisible: @Sendable (SessionSnapshot) -> Bool = { session in
+        TerminalVisibilityDetector.isSessionTabVisible(session)
+    }
+    @ObservationIgnored var playSound: (String) -> Void = { SoundManager.shared.handleEvent($0) }
+    /// Tests drive `tick(now:)` by hand and turn the real timer off.
+    @ObservationIgnored var armsTimer = true
+
+    /// When the single wake-up is due, nil when nothing is scheduled.
+    @ObservationIgnored private(set) var armedWakeDate: Date?
+    @ObservationIgnored nonisolated(unsafe) private var wakeTask: Task<Void, Never>?
+    @ObservationIgnored nonisolated(unsafe) private var jumpObserver: NSObjectProtocol?
+    @ObservationIgnored private var handlers: [(FollowUpReminder) -> Void] = []
+    @ObservationIgnored private var tickInFlight = false
+    @ObservationIgnored private var tickRequested = false
+
+    init(appState: AppState) {
+        self.appState = appState
+        jumpObserver = NotificationCenter.default.addObserver(
+            forName: .codeIslandDidJumpToSession, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let sessionId = note.userInfo?["sessionId"] as? String else { return }
+            MainActor.assumeIsolated { self?.userJumped(to: sessionId) }
+        }
+    }
+
+    deinit {
+        wakeTask?.cancel()
+        if let jumpObserver { NotificationCenter.default.removeObserver(jumpObserver) }
+    }
+
+    /// The stored setting as an interval; nil when off.
+    nonisolated static func storedInterval() -> TimeInterval? {
+        interval(forMinutes: UserDefaults.standard.integer(forKey: SettingsKey.followUpReminderMinutes))
+    }
+
+    nonisolated static func interval(forMinutes minutes: Int) -> TimeInterval? {
+        minutes > 0 ? TimeInterval(minutes) * 60 : nil
+    }
+
+    // MARK: - Subscribers
+
+    /// Every reminder is handed to every handler, on the main actor, before
+    /// the island reacts to it. Shape: see `FollowUpReminder`.
+    func addReminderHandler(_ handler: @escaping (FollowUpReminder) -> Void) {
+        handlers.append(handler)
+    }
+
+    // MARK: - Inputs from AppState
+
+    /// The reminder interval changed in Settings.
+    func settingsChanged() {
+        waitingChanged()
+        if !scheduler.isEnabled { disarm() }
+    }
+
+    /// Permission / question queues or dismissals changed.
+    func waitingChanged() {
+        guard applyInterval() else { return }
+        let now = clock()
+        syncWaiting(now: now)
+        reschedule(now: now)
+    }
+
+    /// A turn finished and was announced. Interrupted turns (the user pressed
+    /// Esc) are not news to anyone and are not followed up.
+    func trackCompletion(sessionId: String) {
+        guard applyInterval() else { return }
+        if appState?.sessions[sessionId]?.interrupted == true { return }
+        let now = clock()
+        scheduler.track(kind: .completion, sessionId: sessionId, now: now)
+        reschedule(now: now)
+    }
+
+    /// The island's surface changed. Opening the session list shows every
+    /// session — pending cards inline, finished turns included — so it counts
+    /// as having seen all of it; an approval / question card counts for its
+    /// own item.
+    func surfaceChanged(_ surface: IslandSurface) {
+        guard !scheduler.isEmpty || !hintedKeys.isEmpty else { return }
+        switch surface {
+        case .sessionList:
+            hintedKeys.removeAll()
+            scheduler.silenceAll(kind: .completion)
+            reschedule(now: clock())
+        case .approvalCard(let sid):
+            hintedKeys.remove(Key(.approval, sid))
+        case .questionCard(let sid):
+            hintedKeys.remove(Key(.question, sid))
+        case .completionCard, .collapsed:
+            break
+        }
+    }
+
+    /// The pointer entered the completion card: that turn has been seen.
+    func completionSeen(sessionId: String) {
+        let key = Key(.completion, sessionId)
+        hintedKeys.remove(key)
+        guard scheduler.trackedKeys.contains(key) else { return }
+        scheduler.silence(key)
+        reschedule(now: clock())
+    }
+
+    /// The user jumped to this session's terminal: they are dealing with it.
+    func userJumped(to sessionId: String) {
+        hintedKeys = hintedKeys.filter { $0.sessionId != sessionId }
+        guard scheduler.trackedKeys.contains(where: { $0.sessionId == sessionId }) else { return }
+        scheduler.silenceAll(sessionId: sessionId)
+        reschedule(now: clock())
+    }
+
+    /// A hold (lock screen, screen saver, display sleep) just ended: deliver
+    /// whatever came due in the meantime right away.
+    func wake() {
+        guard !scheduler.isEmpty else { return }
+        Task { @MainActor [weak self] in await self?.tick() }
+    }
+
+    // MARK: - Collapsed-state hint
+
+    /// Lit while a hinted item is still waiting and the user has not opened
+    /// the island since. Evaluated on read, so an item answered in the
+    /// terminal turns the hint off without any bookkeeping.
+    var hintActive: Bool {
+        guard !hintedKeys.isEmpty else { return false }
+        return hintedKeys.contains { isStillPending($0) }
+    }
+
+    // MARK: - Tick
+
+    /// Deliver whatever is due at `now`. The wake-up timer calls this; tests
+    /// call it directly with an injected clock.
+    func tick(now explicitNow: Date? = nil) async {
+        guard applyInterval(), appState != nil else { return }
+        if tickInFlight {
+            tickRequested = true
+            return
+        }
+        tickInFlight = true
+        defer { tickInFlight = false }
+
+        let now = explicitNow ?? clock()
+        // Refresh the synced kinds first so a request resolved a moment ago
+        // can never fire.
+        syncWaiting(now: now)
+        let due = scheduler.collectDue(now: now, heldBack: isHeldBack())
+
+        var delivered: [FollowUpReminder] = []
+        for reminder in due {
+            let key = Key(reminder.kind, reminder.sessionId)
+            guard isStillPending(key) else {
+                scheduler.silence(key)
+                continue
+            }
+            if reminder.delivery == .deferred {
+                notify(reminder)
+                continue
+            }
+            // A catch-up skips the "is the user looking" checks: the hold it
+            // waited out proves nobody was, whatever app is still in front.
+            if reminder.delivery == .onTime {
+                if isBeingLookedAt(key) {
+                    scheduler.silence(key)
+                    continue
+                }
+                if await isSessionInFront(sessionId: reminder.sessionId) {
+                    scheduler.silence(key)
+                    continue
+                }
+                // State may have moved while the tab check was off-actor.
+                guard isStillPending(key) else {
+                    scheduler.silence(key)
+                    continue
+                }
+            }
+            delivered.append(reminder)
+        }
+        perform(delivered)
+        reschedule(now: explicitNow ?? clock())
+
+        if tickRequested {
+            tickRequested = false
+            Task { @MainActor [weak self] in await self?.tick() }
+        }
+    }
+
+    // MARK: - Private
+
+    /// Re-reads the setting; returns whether reminders are on. Turning them
+    /// off drops every entry, hint and wake-up.
+    @discardableResult
+    private func applyInterval() -> Bool {
+        let interval = intervalProvider()
+        if scheduler.interval != interval {
+            scheduler.setInterval(interval)
+            if interval == nil {
+                hintedKeys.removeAll()
+                disarm()
+            }
+        }
+        return scheduler.isEnabled
+    }
+
+    private func syncWaiting(now: Date) {
+        guard let appState else { return }
+        scheduler.sync(kind: .approval, waiting: appState.visiblePermissionSessionIds, now: now)
+        scheduler.sync(
+            kind: .question,
+            waiting: Set(appState.questionQueue.map { $0.event.sessionId ?? "default" }),
+            now: now
+        )
+    }
+
+    private func isStillPending(_ key: Key) -> Bool {
+        guard let appState else { return false }
+        switch key.kind {
+        case .approval:
+            return appState.visiblePermissionSessionIds.contains(key.sessionId)
+        case .question:
+            return appState.pendingQuestion(forSession: key.sessionId) != nil
+        case .completion:
+            // Any new activity takes the session out of idle; a new finished
+            // turn re-tracks it from scratch.
+            return appState.sessions[key.sessionId]?.status == .idle
+        }
+    }
+
+    /// The panel is open on this very item and the pointer is on it. An
+    /// auto-opened card nobody is in front of does not count — that is the
+    /// user who most needs the reminder.
+    private func isBeingLookedAt(_ key: Key) -> Bool {
+        guard let appState, isPointerOverPanel() else { return false }
+        switch appState.surface {
+        case .sessionList:
+            return true
+        case .approvalCard(let sid):
+            return key.kind == .approval && sid == key.sessionId
+        case .questionCard(let sid):
+            return key.kind == .question && sid == key.sessionId
+        case .completionCard(let sid):
+            return key.kind == .completion && sid == key.sessionId
+        case .collapsed:
+            return false
+        }
+    }
+
+    /// Smart Suppress's question: is this session's own terminal tab in
+    /// front? Same setting, same detectors — app level first, tab level only
+    /// when the app is frontmost.
+    private func isSessionInFront(sessionId: String) async -> Bool {
+        guard let appState, let session = appState.sessions[sessionId] else { return false }
+        if appState.shouldAutoOpenPendingSurface(for: sessionId, isTerminalFrontmost: terminalFrontmost) {
+            return false
+        }
+        let probe = tabVisible
+        return await Task.detached(priority: .userInitiated) { probe(session) }.value
+    }
+
+    private func perform(_ reminders: [FollowUpReminder]) {
+        guard !reminders.isEmpty, let appState else { return }
+        for reminder in reminders { notify(reminder) }
+
+        // One card at a time: the most urgent item gets its card back when the
+        // island is folded away; the rest light the hint.
+        var reopened: Key?
+        if appState.surface == .collapsed,
+           let head = reminders.first(where: { $0.kind != .completion }),
+           reopenCard(for: head) {
+            reopened = Key(head.kind, head.sessionId)
+        }
+        var hinted = false
+        for reminder in reminders {
+            let key = Key(reminder.kind, reminder.sessionId)
+            guard key != reopened else { continue }
+            hintedKeys.insert(key)
+            hinted = true
+        }
+        if hinted { hintPulse += 1 }
+
+        // Same sound as the original event, once per kind per tick. The
+        // regular gates (master switch, per-event toggle) still apply.
+        var sounds: [String] = []
+        for reminder in reminders {
+            let sound = reminder.kind == .completion ? "Stop" : "PermissionRequest"
+            if !sounds.contains(sound) { sounds.append(sound) }
+        }
+        sounds.forEach(playSound)
+    }
+
+    /// Re-open the item's card, honouring the same switch the first card did:
+    /// with "auto-expand on approval" off an approval only chimes and hints.
+    private func reopenCard(for reminder: FollowUpReminder) -> Bool {
+        guard let appState else { return false }
+        let sid = reminder.sessionId
+        switch reminder.kind {
+        case .approval:
+            guard AppState.autoExpandOnPermission() else { return false }
+            appState.activeSessionId = sid
+            withAnimation(NotchAnimation.open) { appState.surface = .approvalCard(sessionId: sid) }
+            return true
+        case .question:
+            appState.activeSessionId = sid
+            withAnimation(NotchAnimation.open) { appState.surface = .questionCard(sessionId: sid) }
+            return true
+        case .completion:
+            return false
+        }
+    }
+
+    private func notify(_ reminder: FollowUpReminder) {
+        for handler in handlers { handler(reminder) }
+    }
+
+    private func reschedule(now: Date) {
+        var wake = scheduler.nextWakeDate()
+        if scheduler.hasOwed {
+            // Quiet hours end — and an unlock notification can go missing —
+            // without an event to hear, so look again in a minute while
+            // something is owed.
+            let recheck = now.addingTimeInterval(60)
+            wake = wake.map { min($0, recheck) } ?? recheck
+        }
+        guard wake != armedWakeDate else { return }
+        disarm()
+        armedWakeDate = wake
+        guard let wake, armsTimer else { return }
+        let delay = max(0, wake.timeIntervalSince(now))
+        wakeTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            self.armedWakeDate = nil
+            await self.tick()
+        }
+    }
+
+    private func disarm() {
+        wakeTask?.cancel()
+        wakeTask = nil
+        armedWakeDate = nil
+    }
+}

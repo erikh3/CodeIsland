@@ -117,8 +117,16 @@ final class AppState {
 
     var sessions: [String: SessionSnapshot] = [:]
     var activeSessionId: String?
-    var permissionQueue: [PermissionRequest] = []
-    var questionQueue: [QuestionRequest] = []
+    var permissionQueue: [PermissionRequest] = [] {
+        didSet { followUps.waitingChanged() }
+    }
+    var questionQueue: [QuestionRequest] = [] {
+        didSet { followUps.waitingChanged() }
+    }
+    /// Follow-up reminders for waiting approvals / questions and unseen
+    /// completions. Holds no entries and arms no timer while the setting is off.
+    @ObservationIgnored
+    private(set) lazy var followUps = FollowUpReminderController(appState: self)
 
     @ObservationIgnored
     private(set) var recentHookEvents: [DiagnosticHookEvent] = []
@@ -258,6 +266,9 @@ final class AppState {
             } else {
                 claudeQuota.noteCollapsed()
             }
+            if surface != oldValue {
+                followUps.surfaceChanged(surface)
+            }
         }
     }
 
@@ -296,7 +307,14 @@ final class AppState {
     private var autoCollapseTask: Task<Void, Never>?
     private var completionQueue: [String] = []
     /// Mouse must enter the panel before auto-collapse is allowed (prevents instant dismiss)
-    var completionHasBeenEntered = false
+    var completionHasBeenEntered = false {
+        // The pointer on the completion card is the one proof the turn was seen.
+        didSet {
+            if completionHasBeenEntered, let sid = justCompletedSessionId {
+                followUps.completionSeen(sessionId: sid)
+            }
+        }
+    }
     /// Auto-collapse timer fired but mouse is inside panel — defer collapse until mouse leaves
     var deferCollapseOnMouseLeave = false
     /// `attachParentPid` is the monitored process's ppid captured when the monitor was
@@ -333,12 +351,22 @@ final class AppState {
     }
     private var modelReadRetryAt: [String: Date] = [:]
 
-    private var dismissedPermissionSessionIds: Set<String> = []
+    private var dismissedPermissionSessionIds: Set<String> = [] {
+        didSet { followUps.waitingChanged() }
+    }
     private func nextVisiblePermissionIndex() -> Int? {
         permissionQueue.firstIndex { request in
             let sid = request.event.sessionId ?? "default"
             return !dismissedPermissionSessionIds.contains(sid)
         }
+    }
+
+    /// Sessions whose approval is still waiting on the user: queued and not
+    /// dismissed. Dismissing hides a request without dequeuing it (#309), so
+    /// the queue alone would keep reminding about a prompt the user hid.
+    var visiblePermissionSessionIds: Set<String> {
+        Set(permissionQueue.map { $0.event.sessionId ?? "default" })
+            .subtracting(dismissedPermissionSessionIds)
     }
 
     var rotatingSessionId: String?
@@ -1098,7 +1126,12 @@ final class AppState {
     }
 
     func enqueueCompletion(_ sessionId: String) {
-        switch Self.completionStyle() {
+        let style = Self.completionStyle()
+        // Follow-ups only chase completions the user asked to hear about.
+        if style != .off {
+            followUps.trackCompletion(sessionId: sessionId)
+        }
+        switch style {
         case .off:
             // Panel stays compact — status indicators still update, but no
             // completion card pops down (#146).
