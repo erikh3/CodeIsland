@@ -240,6 +240,8 @@ final class AgentTaskListTests: XCTestCase {
         let started = #"{"type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}"#
         let result = JSONLTailer.scanLines(Data((started + "\n").utf8))
         XCTAssertEqual(result.delta.taskEvents, [.newTurn])
+        let complete = #"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"t2"}}"#
+        XCTAssertEqual(JSONLTailer.scanLines(Data((complete + "\n").utf8)).delta.taskEvents, [.turnEnded])
     }
 
     // MARK: - Turn boundaries
@@ -253,6 +255,120 @@ final class AgentTaskListTests: XCTestCase {
         reduce(&sessions, todoWrite("toolu_w2", [("A", "completed"), ("B", "completed")]))
         XCTAssertTrue(sessions["s1"]!.agentTasks.isAllCompleted)
         reduce(&sessions, ["hook_event_name": "UserPromptSubmit", "prompt": "next thing"])
+        XCTAssertTrue(sessions["s1"]!.agentTasks.isEmpty)
+    }
+
+    // MARK: - Abandoned snapshot plans
+
+    private func unfinishedPlan(_ opId: String) -> AgentTaskEvent {
+        .replace(opId: opId, items: [
+            AgentTaskDraft(title: "Read", status: .completed),
+            AgentTaskDraft(title: "Patch", status: .inProgress),
+            AgentTaskDraft(title: "Test", status: .pending),
+        ])
+    }
+
+    func testSnapshotPlanRetiresAfterAWholeTurnWithoutUpdates() {
+        var list = AgentTaskList()
+        list.apply([.newTurn, unfinishedPlan("p1")], now: t0)
+        list.apply(.turnEnded, now: t0.addingTimeInterval(60))
+
+        // Next turn: the plan is still the agent's until a turn ignores it.
+        list.apply(.newTurn, now: t0.addingTimeInterval(100))
+        XCTAssertEqual(list.items.count, 3)
+        list.apply(.turnEnded, now: t0.addingTimeInterval(160))
+
+        list.apply(.newTurn, now: t0.addingTimeInterval(200))
+        XCTAssertTrue(list.isEmpty, "a plan a whole turn went by without is abandoned")
+    }
+
+    func testAPlanUpdatedDuringTheTurnSurvives() {
+        var list = AgentTaskList()
+        list.apply([.newTurn, unfinishedPlan("p1")], now: t0)
+        list.apply(.turnEnded, now: t0.addingTimeInterval(60))
+        list.apply(.newTurn, now: t0.addingTimeInterval(100))
+        list.apply(unfinishedPlan("p2"), now: t0.addingTimeInterval(120))
+        list.apply(.turnEnded, now: t0.addingTimeInterval(160))
+        list.apply(.newTurn, now: t0.addingTimeInterval(200))
+        XCTAssertEqual(list.items.count, 3)
+
+        // An unrelated failing tool is not an update of the plan.
+        list.apply(.opFailed(opId: "toolu_bash"), now: t0.addingTimeInterval(210))
+        list.apply(.turnEnded, now: t0.addingTimeInterval(260))
+        list.apply(.newTurn, now: t0.addingTimeInterval(300))
+        XCTAssertTrue(list.isEmpty)
+    }
+
+    func testBoundariesFromBothChannelsDoNotRetireAPlanInUse() {
+        // A queued Codex prompt runs right after the previous turn: the hooks
+        // (Stop, UserPromptSubmit) and the rollout (task_complete,
+        // task_started, user_message) report the same two boundaries, the
+        // rollout's late.
+        var list = AgentTaskList()
+        list.apply([.newTurn, unfinishedPlan("p1")], now: t0)
+        let end = t0.addingTimeInterval(60)
+        list.apply(.turnEnded, now: end)                               // hook Stop
+        list.apply(.newTurn, now: end.addingTimeInterval(0.1))         // hook UserPromptSubmit
+        list.apply(.turnEnded, now: end.addingTimeInterval(0.2))       // rollout task_complete (previous turn)
+        list.apply(.newTurn, now: end.addingTimeInterval(0.3))         // rollout task_started
+        list.apply(.newTurn, now: end.addingTimeInterval(0.3))         // rollout user_message
+        XCTAssertEqual(list.items.count, 3)
+        list.apply(.newTurn, now: end.addingTimeInterval(1))
+        XCTAssertEqual(list.items.count, 3, "repeated starts of one turn change nothing")
+    }
+
+    func testTaskCreateListsAreNotRetiredForAnUntouchedTurn() {
+        // Claude's tasks live on in the CLI's own task store.
+        var list = AgentTaskList()
+        list.apply([.newTurn, .created(opId: "c1", taskId: "1", title: "A", activeForm: nil)], now: t0)
+        for turn in 1...3 {
+            list.apply(.turnEnded, now: t0.addingTimeInterval(Double(turn) * 100 - 50))
+            list.apply(.newTurn, now: t0.addingTimeInterval(Double(turn) * 100))
+        }
+        XCTAssertEqual(list.items.map(\.title), ["A"])
+    }
+
+    func testRestoredPlanNeedsAWholeObservedTurnBeforeRetiring() {
+        var list = AgentTaskList(items: [
+            AgentTaskItem(id: "step:0", title: "Patch", status: .inProgress),
+        ])
+        list.apply(.turnEnded, now: t0)   // end of a turn we never saw start
+        list.apply(.newTurn, now: t0.addingTimeInterval(10))
+        XCTAssertEqual(list.items.count, 1)
+        list.apply(.turnEnded, now: t0.addingTimeInterval(70))
+        list.apply(.newTurn, now: t0.addingTimeInterval(100))
+        XCTAssertTrue(list.isEmpty)
+    }
+
+    func testReplayedRolloutRetiresAPlanLaterTurnsAbandoned() {
+        let lines = [
+            #"{"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}"#,
+            #"{"type":"event_msg","payload":{"type":"user_message","message":"fix it"}}"#,
+            codexPlanLine(callId: "call_p1", steps: [("Read", "completed"), ("Patch", "in_progress")]),
+            #"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}"#,
+            #"{"type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}"#,
+            #"{"type":"event_msg","payload":{"type":"user_message","message":"what does X do?"}}"#,
+            #"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"t2"}}"#,
+        ]
+        let blob = Data((lines.joined(separator: "\n") + "\n").utf8)
+        let events = AgentTaskTranscript.scan(blob, startsAtLineBoundary: true)
+        XCTAssertEqual(events.filter { $0 == .turnEnded }.count, 2)
+        var rebuilt = AgentTaskList.rebuilt(fromTranscript: events, coversWholeTranscript: true, live: AgentTaskList())
+        XCTAssertEqual(rebuilt.items.count, 2, "still shown until the next turn starts")
+        rebuilt.apply(.newTurn, now: Date())
+        XCTAssertTrue(rebuilt.isEmpty)
+    }
+
+    func testStopHookEndsTheTurn() {
+        var sessions: [String: SessionSnapshot] = [:]
+        reduce(&sessions, ["hook_event_name": "UserPromptSubmit", "prompt": "go"])
+        reduce(&sessions, todoWrite("toolu_w1", [("A", "completed"), ("B", "in_progress")]))
+        reduce(&sessions, ["hook_event_name": "Stop"])
+        reduce(&sessions, ["hook_event_name": "UserPromptSubmit", "prompt": "unrelated question"])
+        XCTAssertEqual(sessions["s1"]!.agentTasks.items.count, 2)
+        // The hooks run in real time here; age the turn past the minimum.
+        sessions["s1"]!.agentTasks.apply(.turnEnded, now: Date().addingTimeInterval(60))
+        reduce(&sessions, ["hook_event_name": "UserPromptSubmit", "prompt": "another"])
         XCTAssertTrue(sessions["s1"]!.agentTasks.isEmpty)
     }
 

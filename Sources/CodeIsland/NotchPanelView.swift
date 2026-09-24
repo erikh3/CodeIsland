@@ -2880,7 +2880,7 @@ private struct SessionCard: View {
 
                 // Agent checklist progress (TaskCreate / TodoWrite / update_plan).
                 if showTaskProgress && !session.agentTasks.isEmpty {
-                    AgentTaskProgressView(tasks: session.agentTasks, fontSize: fontSize)
+                    AgentTaskProgressView(tasks: session.agentTasks, fontSize: fontSize, agentIsIdle: session.status == .idle)
                 }
 
                 // A question waiting on this session that is not on screen

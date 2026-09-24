@@ -155,6 +155,10 @@ public struct AgentTaskChange: Equatable, Sendable {
 public enum AgentTaskEvent: Equatable, Sendable {
     /// A new user prompt began a turn.
     case newTurn
+    /// The agent's turn ended (Stop hook; Codex `task_complete` /
+    /// `turn_aborted`). Lets the list notice a whole turn that never touched
+    /// a snapshot plan.
+    case turnEnded
     /// TaskCreate was called; its provider id is not known yet.
     case create(opId: String, title: String, activeForm: String?)
     /// TaskCreate returned the provider id for the call `opId`.
@@ -185,14 +189,21 @@ public enum AgentTaskEvent: Equatable, Sendable {
     public var buildsList: Bool {
         switch self {
         case .create, .created, .update, .replace, .merge: return true
-        case .newTurn, .createdPerText, .opFailed: return false
+        case .newTurn, .turnEnded, .createdPerText, .opFailed: return false
+        }
+    }
+
+    var isTurnBoundary: Bool {
+        switch self {
+        case .newTurn, .turnEnded: return true
+        default: return false
         }
     }
 
     /// Dedupe key for this operation, or nil when it is naturally idempotent.
     var dedupeKey: String? {
         switch self {
-        case .newTurn: return nil
+        case .newTurn, .turnEnded: return nil
         case .create(let opId, _, _): return "c|\(opId)"
         case .created(let opId, _, _, _): return opId.map { "r|\($0)" }
         case .createdPerText(let opId, _, _): return "r|\(opId)"
@@ -231,6 +242,22 @@ public struct AgentTaskList: Sendable {
     private var undoJournal: [String: UndoEntry] = [:]
     private var undoJournalOrder: [String] = []
 
+    // Turn tracking, for retiring a snapshot plan the agent stopped updating.
+    // Hooks and the transcript both report turn boundaries, in no guaranteed
+    // order relative to each other, so repeats of an open/close are ignored.
+    /// Between a `.newTurn` and the matching `.turnEnded`.
+    private var turnOpen = false
+    private var turnStartedAt: Date?
+    /// Whether the list was touched since the current turn began. Starts true
+    /// so a restored list isn't retired before a whole turn has been seen.
+    private var touchedThisTurn = true
+    /// A whole turn went by without touching the list.
+    private var sawUntouchedTurn = false
+    /// Set while ``rebuilt(fromTranscript:coversWholeTranscript:live:)``
+    /// replays one transcript: a single, ordered channel stamped
+    /// `.distantPast`, where durations mean nothing.
+    private var isReplaying = false
+
     private struct ParkedChange: Sendable {
         var opId: String?
         var change: AgentTaskChange
@@ -252,6 +279,10 @@ public struct AgentTaskList: Sendable {
 
     /// How long a fully completed list stays on the card before it fades.
     public static let completedLinger: TimeInterval = 8
+    /// A turn shorter than this can't count as "a turn without the plan": the
+    /// other channel's late end of the *previous* turn lands right after the
+    /// next one starts (Codex runs a queued prompt back to back).
+    static let minUntouchedTurnDuration: TimeInterval = 3
 
     public init() {}
 
@@ -268,6 +299,9 @@ public struct AgentTaskList: Sendable {
     public var isAllCompleted: Bool { !items.isEmpty && items.allSatisfy { $0.status == .completed } }
     /// The row being worked on right now (first in-progress one).
     public var current: AgentTaskItem? { items.first { $0.status == .inProgress } }
+    /// A whole-list snapshot (TodoWrite, update_plan, write_todos) rather than
+    /// Claude's TaskCreate tasks, which live on in the CLI's own task store.
+    var isSnapshotList: Bool { !items.isEmpty && items.allSatisfy { $0.id.hasPrefix("step:") } }
 
     /// When a fully completed list should leave the card; nil while open.
     public func hideDeadline(linger: TimeInterval = AgentTaskList.completedLinger) -> Date? {
@@ -312,12 +346,30 @@ public struct AgentTaskList: Sendable {
         let before = items
         switch event {
         case .newTurn:
-            // A new prompt retires a finished checklist; an unfinished one is
-            // still the agent's plan and stays.
-            guard isAllCompleted else { return false }
-            items.removeAll()
-            parkedChanges.removeAll()
-            clearUndoJournal()
+            // A new prompt retires a finished checklist. An unfinished one is
+            // normally still the agent's plan and stays — unless it is a
+            // snapshot plan that a whole turn went by without updating: Codex
+            // leaves plans it abandoned half-done, and nothing else clears them.
+            if isAllCompleted || (sawUntouchedTurn && isSnapshotList) {
+                items.removeAll()
+                parkedChanges.removeAll()
+                clearUndoJournal()
+            }
+            if !turnOpen {
+                turnOpen = true
+                turnStartedAt = now
+                touchedThisTurn = false
+                sawUntouchedTurn = false
+            }
+
+        case .turnEnded:
+            guard turnOpen else { return false }
+            turnOpen = false
+            let lasted = isReplaying ? .infinity : turnStartedAt.map { now.timeIntervalSince($0) } ?? 0
+            if !touchedThisTurn, lasted >= Self.minUntouchedTurnDuration {
+                sawUntouchedTurn = true
+            }
+            return false
 
         case let .create(opId, title, activeForm):
             applyCreate(opId: opId, title: title, activeForm: activeForm)
@@ -352,6 +404,12 @@ public struct AgentTaskList: Sendable {
         }
 
         let changed = items != before
+        // A failing unrelated tool also yields .opFailed; only count what
+        // actually concerns the list.
+        if !event.isTurnBoundary, event.buildsList || changed {
+            touchedThisTurn = true
+            sawUntouchedTurn = false
+        }
         if isAllCompleted {
             if completedAt == nil { completedAt = now }
         } else {
@@ -405,7 +463,9 @@ public struct AgentTaskList: Sendable {
         var board = coversWholeTranscript
             ? AgentTaskList()
             : AgentTaskList(items: live.items, completedAt: live.completedAt)
+        board.isReplaying = true
         board.apply(events, now: .distantPast)
+        board.isReplaying = false
         return board
     }
 

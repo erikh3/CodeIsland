@@ -11,14 +11,18 @@ import CodeIslandCore
 struct AgentTaskProgressView: View, Equatable {
     let tasks: AgentTaskList
     let fontSize: CGFloat
+    /// The session's turn is over. An unfinished plan still shows its
+    /// progress, but not "▶ Running tests" — nothing is running.
+    let agentIsIdle: Bool
 
     @State private var showAll: Bool
     /// `completedAt` of a finished list that has already faded out.
     @State private var fadedCompletion: Date?
 
-    init(tasks: AgentTaskList, fontSize: CGFloat, initiallyExpanded: Bool = false) {
+    init(tasks: AgentTaskList, fontSize: CGFloat, agentIsIdle: Bool = false, initiallyExpanded: Bool = false) {
         self.tasks = tasks
         self.fontSize = fontSize
+        self.agentIsIdle = agentIsIdle
         _showAll = State(initialValue: initiallyExpanded)
     }
 
@@ -29,10 +33,29 @@ struct AgentTaskProgressView: View, Equatable {
     static let maxListedItems = 12
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.tasks == rhs.tasks && lhs.fontSize == rhs.fontSize
+        lhs.tasks == rhs.tasks && lhs.fontSize == rhs.fontSize && lhs.agentIsIdle == rhs.agentIsIdle
     }
 
     private var smallSize: CGFloat { max(9, fontSize - 1) }
+
+    /// Text beside the bar in the compact row.
+    enum Caption: Equatable {
+        case allDone
+        /// The in-progress item's "Running tests".
+        case working(String)
+        /// Nothing claimed yet: the next pending item, dimmed.
+        case next(String)
+    }
+
+    /// An idle session gets no "doing X" / "next: Y": its turn ended mid-plan,
+    /// and the bar and count already say where it stopped.
+    static func caption(tasks: AgentTaskList, agentIsIdle: Bool) -> Caption? {
+        if tasks.isAllCompleted { return .allDone }
+        guard !agentIsIdle else { return nil }
+        if let current = tasks.current { return .working(current.progressLabel) }
+        if let next = tasks.items.first(where: { $0.status == .pending }) { return .next(next.title) }
+        return nil
+    }
 
     var body: some View {
         if isShown {
@@ -92,24 +115,27 @@ struct AgentTaskProgressView: View, Equatable {
                 .foregroundStyle(tasks.isAllCompleted ? Self.doneColor : .white.opacity(0.6))
                 .fixedSize()
 
-            if tasks.isAllCompleted {
+            switch Self.caption(tasks: tasks, agentIsIdle: agentIsIdle) {
+            case .allDone:
                 Text(L10n.shared["task_progress_all_done"])
                     .font(.system(size: smallSize, design: .monospaced))
                     .foregroundStyle(Self.doneColor.opacity(0.85))
                     .lineLimit(1)
-            } else if let current = tasks.current {
-                Text(current.progressLabel)
+            case .working(let label):
+                Text(label)
                     .font(.system(size: smallSize, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.75))
                     .lineLimit(1)
                     .truncationMode(.tail)
-            } else if let next = tasks.items.first(where: { $0.status == .pending }) {
+            case .next(let title):
                 // Nothing claimed yet — show what is next, dimmed.
-                Text(next.title)
+                Text(title)
                     .font(.system(size: smallSize, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.4))
                     .lineLimit(1)
                     .truncationMode(.tail)
+            case nil:
+                EmptyView()
             }
 
             Spacer(minLength: 4)

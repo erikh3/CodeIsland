@@ -251,6 +251,8 @@ public enum AgentTaskHookParser {
         switch normalizedEventName {
         case "UserPromptSubmit":
             return [.newTurn]
+        case "Stop", "Interrupt", "TaskRoundComplete":
+            return [.turnEnded]
         case "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied":
             break
         default:
@@ -396,6 +398,7 @@ public enum AgentTaskTranscript {
         guard let payload = json["payload"] as? [String: Any] else { return [] }
         switch payload["type"] as? String {
         case "task_started", "user_message": return [.newTurn]
+        case "task_complete", "turn_aborted", "turn_failed": return [.turnEnded]
         default: return []
         }
     }
@@ -514,6 +517,9 @@ public enum AgentTaskTranscript {
         #""is_error":true"#,
         #""type":"task_started""#,
         #""type":"user_message""#,
+        #""type":"task_complete""#,
+        #""type":"turn_aborted""#,
+        #""type":"turn_failed""#,
     ].map { Array($0.utf8) }
     private static let claudeUserTypeMarker = Array(#""type":"user""#.utf8)
     private static let toolUseIdMarker = Array(#""tool_use_id""#.utf8)

@@ -118,6 +118,26 @@ final class AppStateAgentTasksTests: XCTestCase {
         XCTAssertEqual(result, live)
     }
 
+    func testIdleCardShowsProgressButNoWorkingCaption() {
+        var tasks = AgentTaskList()
+        tasks.apply(.replace(opId: "w1", items: [
+            AgentTaskDraft(title: "Read", status: .completed),
+            AgentTaskDraft(title: "Patch", activeForm: "Patching", status: .inProgress),
+            AgentTaskDraft(title: "Test", status: .pending),
+        ]), now: Date())
+        XCTAssertEqual(AgentTaskProgressView.caption(tasks: tasks, agentIsIdle: false), .working("Patching"))
+        XCTAssertNil(AgentTaskProgressView.caption(tasks: tasks, agentIsIdle: true))
+
+        var unclaimed = AgentTaskList()
+        unclaimed.apply(.replace(opId: "w2", items: [AgentTaskDraft(title: "Test", status: .pending)]), now: Date())
+        XCTAssertEqual(AgentTaskProgressView.caption(tasks: unclaimed, agentIsIdle: false), .next("Test"))
+        XCTAssertNil(AgentTaskProgressView.caption(tasks: unclaimed, agentIsIdle: true))
+
+        var done = AgentTaskList()
+        done.apply(.replace(opId: "w3", items: [AgentTaskDraft(title: "Test", status: .completed)]), now: Date())
+        XCTAssertEqual(AgentTaskProgressView.caption(tasks: done, agentIsIdle: true), .allDone)
+    }
+
     func testPersistedSessionKeepsChecklistAndDecodesOlderFiles() throws {
         let legacy = """
         {"sessionId":"s","source":"claude","startTime":"2026-04-09T10:00:00Z","lastActivity":"2026-04-09T10:01:00Z"}
