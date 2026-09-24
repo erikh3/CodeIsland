@@ -360,6 +360,30 @@ public struct AgentTaskList: Sendable {
         return changed
     }
 
+    /// Apply a subagent's or teammate's checklist events to the parent's list.
+    ///
+    /// They work through the parent's shared Claude task list, so a TaskUpdate
+    /// on a task the parent already shows moves that row (and a failed one is
+    /// undone). Anything else a child does — its own creates, updates to its
+    /// own tasks, snapshot lists — stays off the parent card.
+    @discardableResult
+    public mutating func applySharedUpdates(_ events: [AgentTaskEvent], now: Date) -> Bool {
+        var changed = false
+        for event in events {
+            let targetsOwnRow: Bool
+            switch event {
+            case let .update(_, taskId, _, _):
+                targetsOwnRow = items.contains { $0.taskId == taskId }
+            case let .opFailed(opId):
+                targetsOwnRow = undoJournal[opId] != nil
+            default:
+                targetsOwnRow = false
+            }
+            if targetsOwnRow, apply(event, now: now) { changed = true }
+        }
+        return changed
+    }
+
     /// Rebuild a session's list from its transcript on attach.
     ///
     /// - A transcript without checklist-building operations (see

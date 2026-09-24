@@ -1052,6 +1052,13 @@ public func reduceEvent(
 
     // Route subagent-specific events
     if let agentId = event.agentId {
+        // Subagents and teammates share the parent's task list: their
+        // TaskUpdate calls move the parent's rows too. Their own creates stay
+        // off the parent card (see applySharedUpdates).
+        let sharedTaskEvents = AgentTaskHookParser.events(from: event, normalizedEventName: eventName)
+        if !sharedTaskEvents.isEmpty {
+            sessions[sessionId]?.agentTasks.applySharedUpdates(sharedTaskEvents, now: Date())
+        }
         let handled = handleSubagentEvent(
             sessions: &sessions,
             sessionId: sessionId,
@@ -1084,7 +1091,8 @@ public func reduceEvent(
         || sessions[sessionId]?.status == .waitingQuestion
 
     // Agent checklist progress. Subagent tool events were consumed by
-    // handleSubagentEvent above, so a child's own list never lands here.
+    // handleSubagentEvent above (after their shared-list updates), so a
+    // child's own list never lands here.
     let agentTasksBeforeEvent = sessions[sessionId]?.agentTasks
     let agentTaskEvents = AgentTaskHookParser.events(from: event, normalizedEventName: eventName)
     if !agentTaskEvents.isEmpty {

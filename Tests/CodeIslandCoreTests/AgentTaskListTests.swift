@@ -293,6 +293,44 @@ final class AgentTaskListTests: XCTestCase {
         XCTAssertNotNil(sessions["s1"]!.subagents["agent-1"], "the subagent itself is still tracked")
     }
 
+    func testSubagentUpdatesToTheParentsSharedTasksLandOnTheParentCard() {
+        var sessions: [String: SessionSnapshot] = [:]
+        reduce(&sessions, preCreate("toolu_c1", "Write parser"))
+        reduce(&sessions, postCreate("toolu_c1", "Write parser", id: "1"))
+        reduce(&sessions, preCreate("toolu_c2", "Add tests"))
+        reduce(&sessions, postCreate("toolu_c2", "Add tests", id: "2"))
+
+        func asChild(_ payload: [String: Any]) -> [String: Any] {
+            var payload = payload
+            payload["agent_id"] = "teammate-1"
+            payload["agent_type"] = "worker"
+            return payload
+        }
+        // The teammate picks up task 1 and finishes it.
+        reduce(&sessions, asChild(preUpdate("toolu_s1", taskId: "1", status: "in_progress")))
+        reduce(&sessions, asChild(postUpdate("toolu_s1", taskId: "1", from: "pending", to: "in_progress")))
+        reduce(&sessions, asChild(preUpdate("toolu_s2", taskId: "1", status: "completed")))
+        XCTAssertEqual(sessions["s1"]!.agentTasks.items.map(\.status), [.completed, .pending])
+
+        // Its completion of task 2 is blocked by a TaskCompleted hook: undone.
+        reduce(&sessions, asChild(preUpdate("toolu_s3", taskId: "2", status: "completed")))
+        reduce(&sessions, asChild([
+            "hook_event_name": "PostToolUse",
+            "tool_name": "TaskUpdate",
+            "tool_use_id": "toolu_s3",
+            "tool_input": ["taskId": "2", "status": "completed"],
+            "tool_response": ["success": false, "taskId": "2", "updatedFields": [String](), "error": "blocked"],
+        ]))
+        XCTAssertEqual(sessions["s1"]!.agentTasks.items.map(\.status), [.completed, .pending])
+
+        // Its own task and updates to it stay off the parent card.
+        reduce(&sessions, asChild(preCreate("toolu_s4", "Child-only step")))
+        reduce(&sessions, asChild(postCreate("toolu_s4", "Child-only step", id: "7")))
+        reduce(&sessions, asChild(preUpdate("toolu_s5", taskId: "7", status: "in_progress")))
+        XCTAssertEqual(sessions["s1"]!.agentTasks.items.map(\.title), ["Write parser", "Add tests"])
+        XCTAssertNotNil(sessions["s1"]!.subagents["teammate-1"])
+    }
+
     func testSidechainTranscriptRowsAreIgnored() throws {
         let line = claudeToolUseLine(id: "toolu_c1", name: "TaskCreate", input: #"{"subject":"Child"}"#, sidechain: true)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
