@@ -397,6 +397,7 @@ extension AppState {
 
         if AiWorkStatusMapper.isTerminalEvent(name) {
             enqueueCompletion(sessionId)
+            pushAiWorkTurnEnded(name, sessionId: sessionId)
         }
 
         // Sound: reuse the event names the hook-driven sources emit so the existing

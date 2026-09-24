@@ -344,6 +344,7 @@ extension AppState {
             askUserQuestionState: askState
         )
         questionQueue.append(request)
+        pushQuestionQueued(request, sessionId: sessionId, smartSuppressed: false)
 
         if questionQueue.count == 1 {
             activeSessionId = sessionId

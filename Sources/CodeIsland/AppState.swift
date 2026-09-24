@@ -1632,6 +1632,7 @@ final class AppState {
             sessions[sessionId]?.isYoloMode = Self.detectCursorYoloMode()
         }
 
+        pushAfterReduce(event, sessionId: sessionId, effects: effects)
         for effect in effects {
             executeEffect(effect, sessionId: sessionId)
         }
@@ -1881,6 +1882,7 @@ final class AppState {
         // already in progress.
         let burstAlreadyInProgress = nextVisiblePermissionIndex() != nil
         permissionQueue.append(request)
+        pushPermissionQueued(event, sessionId: sessionId, smartSuppressed: !shouldAutoOpenPendingSurface(for: sessionId))
 
         // Show UI only when no approval card is already up to be stolen from.
         // showNextPending picks the first *visible* request, promotes it to the
@@ -2254,6 +2256,7 @@ final class AppState {
 
         let request = QuestionRequest(event: event, question: question, continuation: continuation)
         questionQueue.append(request)
+        pushQuestionQueued(request, sessionId: sessionId, smartSuppressed: !shouldAutoOpenPendingSurface(for: sessionId))
 
         if questionQueue.count == 1 {
             activeSessionId = sessionId
@@ -2379,6 +2382,7 @@ final class AppState {
             askUserQuestionState: askState
         )
         questionQueue.append(request)
+        pushQuestionQueued(request, sessionId: sessionId, smartSuppressed: !shouldAutoOpenQuestionSurface(for: event))
 
         if questionQueue.count == 1 {
             activeSessionId = sessionId

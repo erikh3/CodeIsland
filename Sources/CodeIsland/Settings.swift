@@ -148,6 +148,12 @@ enum SettingsKey {
     static let webhookEnabled = "webhookEnabled"
     static let webhookURL = "webhookURL"
     static let webhookEventFilter = "webhookEventFilter"  // comma-separated allow-list; empty = forward all
+    // Push notifications to a phone / chat (Bark, ntfy, DingTalk, Feishu, WeCom, Slack, Telegram)
+    static let pushEnabled = "pushEnabled"
+    static let pushOnlyWhenAway = "pushOnlyWhenAway"
+    static let pushAwayIdleMinutes = "pushAwayIdleMinutes"
+    static let pushSummaryLength = "pushSummaryLength"
+    static let pushChannels = "pushChannels"  // JSON [PushChannelConfig]; empty = nothing configured
 }
 
 struct SettingsDefaults {
@@ -234,6 +240,11 @@ struct SettingsDefaults {
     static let webhookEnabled = false
     static let webhookURL = ""
     static let webhookEventFilter = ""
+    static let pushEnabled = false
+    static let pushOnlyWhenAway = true
+    static let pushAwayIdleMinutes = 5
+    static let pushSummaryLength = PushMessageFormatter.defaultSummaryLimit
+    static let pushChannels = ""
 }
 
 @MainActor
@@ -307,6 +318,11 @@ class SettingsManager {
             SettingsKey.webhookEnabled: SettingsDefaults.webhookEnabled,
             SettingsKey.webhookURL: SettingsDefaults.webhookURL,
             SettingsKey.webhookEventFilter: SettingsDefaults.webhookEventFilter,
+            SettingsKey.pushEnabled: SettingsDefaults.pushEnabled,
+            SettingsKey.pushOnlyWhenAway: SettingsDefaults.pushOnlyWhenAway,
+            SettingsKey.pushAwayIdleMinutes: SettingsDefaults.pushAwayIdleMinutes,
+            SettingsKey.pushSummaryLength: SettingsDefaults.pushSummaryLength,
+            SettingsKey.pushChannels: SettingsDefaults.pushChannels,
         ])
     }
 

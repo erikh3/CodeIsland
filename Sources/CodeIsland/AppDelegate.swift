@@ -62,6 +62,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         SceneMuteMonitor.shared.onQuietChanged = { [weak appState] isQuiet in
             if !isQuiet { appState?.followUps.wake() }
         }
+        // Follow-up reminders also reach the phone / chat push channels.
+        appState.connectPushToFollowUps()
 
         panelController = PanelWindowController(appState: appState)
         panelController?.showPanel()
