@@ -236,6 +236,21 @@ final class FollowUpReminderTests: XCTestCase {
         XCTAssertEqual(fired.map(\.sessionId), ["other-tab"])
     }
 
+    /// `showNextPending` moves the next visible request to the head. Done as a
+    /// remove + insert, the queue briefly lacked it and its reminder started
+    /// over (silenced or not).
+    func testPromotingTheNextRequestKeepsItsReminderClock() async throws {
+        try await requestApproval("first")
+        await advance(30)
+        try await requestApproval("second")
+        await advance(15)
+        appState.approvePermission(expectedSessionId: "first")   // "second" moves to the head
+        appState.surface = .collapsed
+
+        await advance(45)
+        XCTAssertEqual(fired.map(\.sessionId), ["second"], "due a minute after it was queued")
+    }
+
     // MARK: - Held back
 
     func testLockedScreenDefersThenCatchesUpRightAfterUnlock() async throws {

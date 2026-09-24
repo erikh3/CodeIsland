@@ -2797,8 +2797,13 @@ final class AppState {
     func showNextPending() -> Bool {
         collapseStaleCardSurface()
         if let idx = nextVisiblePermissionIndex() {
-            let next = permissionQueue.remove(at: idx)
-            permissionQueue.insert(next, at: 0)
+            // One assignment: removing and re-inserting in place would show
+            // the queue's observers (follow-up reminders) a moment where this
+            // request is gone, and its reminder would start over.
+            var queue = permissionQueue
+            let next = queue.remove(at: idx)
+            queue.insert(next, at: 0)
+            permissionQueue = queue
             let sid = next.event.sessionId ?? "default"
             activeSessionId = sid
             // When the session list is open, keep it open; approvals can be handled inline.
