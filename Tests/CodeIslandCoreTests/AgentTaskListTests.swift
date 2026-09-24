@@ -294,9 +294,41 @@ final class AgentTaskListTests: XCTestCase {
         // Several results in one row: toolUseResult is ambiguous, the text is not.
         let multi = #"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_a","type":"tool_result","content":"Task #5 created successfully: Five"},{"tool_use_id":"toolu_b","type":"tool_result","content":"ok","is_error":true}]},"toolUseResult":{"task":{"id":"4","subject":"wrong"}}}"#
         XCTAssertEqual(try events(multi), [
-            .created(opId: "toolu_a", taskId: "5", title: "Five", activeForm: nil),
+            .createdPerText(opId: "toolu_a", taskId: "5", title: "Five"),
             .opFailed(opId: "toolu_b"),
         ])
+    }
+
+    func testTextOnlyCreateResultCompletesADraftButNeverAddsARow() throws {
+        func events(_ line: String) throws -> [AgentTaskEvent] {
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+            return AgentTaskTranscript.events(fromLine: json)
+        }
+        // An MCP tool whose text result happens to read like TaskCreate's.
+        let mcpResult = #"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_mcp","type":"tool_result","content":[{"type":"text","text":"Task #42 created successfully: sync tickets"}]}]}}"#
+        var list = AgentTaskList()
+        list.apply(.replace(opId: "w1", items: [AgentTaskDraft(title: "A", status: .completed)]), now: t0)
+        list.apply(try events(mcpResult), now: t0)
+        XCTAssertEqual(list.items.map(\.title), ["A"], "no ghost row from someone else's text")
+        list.apply(.newTurn, now: t0)
+        XCTAssertTrue(list.isEmpty, "and nothing pending keeps a finished list from retiring")
+
+        // A real TaskCreate answered in a multi-result row: its draft gets the id.
+        let call = claudeToolUseLine(id: "toolu_a", name: "TaskCreate", input: #"{"subject":"Five"}"#)
+        let multi = #"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_a","type":"tool_result","content":"Task #5 created successfully: Five"},{"tool_use_id":"toolu_b","type":"tool_result","content":"ok"}]}}"#
+        list.apply(try events(call) + events(multi), now: t0)
+        list.apply(.update(opId: "u5", taskId: "5", change: AgentTaskChange(status: .inProgress), expectedFrom: nil), now: t0)
+        XCTAssertEqual(list.items.map(\.taskId), ["5"])
+        XCTAssertEqual(list.items.map(\.status), [.inProgress])
+    }
+
+    func testIgnoredTextResultLeavesTheStructuredResultFree() {
+        // The text row came first with no draft to complete; the call's own
+        // structured result (a late hook) must still apply.
+        var list = AgentTaskList()
+        list.apply(.createdPerText(opId: "c1", taskId: "1", title: "A"), now: t0)
+        list.apply(.created(opId: "c1", taskId: "1", title: "A", activeForm: nil), now: t0)
+        XCTAssertEqual(list.items.map(\.title), ["A"])
     }
 
     // MARK: - Completion linger

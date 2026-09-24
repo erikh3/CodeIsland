@@ -330,13 +330,15 @@ public enum AgentTaskTranscript {
             return []
         }
         // Rows answering several calls at once carry no usable toolUseResult;
-        // TaskCreate's text result still names the new id.
+        // TaskCreate's text result still names the new id. Any other tool (an
+        // MCP server's, say) may print the same words, so the list only lets
+        // this complete a TaskCreate draft — never add a row.
         guard let text = AgentTaskParsing.resultText(content),
               let taskId = AgentTaskParsing.createdTaskId(fromResultText: text) else { return [] }
         let title = text.range(of: "created successfully:").map {
             text[$0.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        return [.created(opId: opId, taskId: taskId, title: title, activeForm: nil)]
+        return [.createdPerText(opId: opId, taskId: taskId, title: title)]
     }
 
     private static func codexResponseItemEvents(_ json: [String: Any]) -> [AgentTaskEvent] {

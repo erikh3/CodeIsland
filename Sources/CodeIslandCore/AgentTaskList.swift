@@ -141,6 +141,12 @@ public enum AgentTaskEvent: Equatable, Sendable {
     case create(opId: String, title: String, activeForm: String?)
     /// TaskCreate returned the provider id for the call `opId`.
     case created(opId: String?, taskId: String, title: String?, activeForm: String?)
+    /// A transcript result row that only *reads* like a TaskCreate result
+    /// ("Task #7 created successfully: …") and carries no structured result.
+    /// Result rows do not name their tool and MCP tools can print the same
+    /// words, so this only completes the draft the call `opId` created; it
+    /// never adds a row of its own.
+    case createdPerText(opId: String, taskId: String, title: String?)
     /// TaskUpdate for `taskId`. `expectedFrom` is set when the event comes from
     /// a *result* (`statusChange.from`): an async result that lost the race to
     /// a newer update must not roll the status back.
@@ -162,6 +168,7 @@ public enum AgentTaskEvent: Equatable, Sendable {
         case .newTurn: return nil
         case .create(let opId, _, _): return "c|\(opId)"
         case .created(let opId, _, _, _): return opId.map { "r|\($0)" }
+        case .createdPerText(let opId, _, _): return "r|\(opId)"
         case .update(let opId, _, _, _): return opId.map { "u|\($0)" }
         case .opFailed(let opId): return "f|\(opId)"
         case .replace(let opId, _): return opId.map { "w|\($0)" }
@@ -262,6 +269,12 @@ public struct AgentTaskList: Sendable {
     /// Apply one event. Returns whether the visible list changed.
     @discardableResult
     public mutating func apply(_ event: AgentTaskEvent, now: Date) -> Bool {
+        // Nothing for a text-only result to complete: leave its op key free,
+        // so the call's structured result (a hook) still lands if it follows.
+        if case let .createdPerText(opId, _, _) = event,
+           !items.contains(where: { $0.createOpId == opId }) {
+            return false
+        }
         if let key = event.dedupeKey {
             guard !appliedOpKeySet.contains(key) else { return false }
             recordApplied(key)
@@ -282,6 +295,9 @@ public struct AgentTaskList: Sendable {
 
         case let .created(opId, taskId, title, activeForm):
             applyCreated(opId: opId, taskId: taskId, title: title, activeForm: activeForm)
+
+        case let .createdPerText(opId, taskId, title):
+            applyCreated(opId: opId, taskId: taskId, title: title, activeForm: nil)
 
         case let .update(opId, taskId, change, expectedFrom):
             applyUpdate(opId: opId, taskId: taskId, change: change, expectedFrom: expectedFrom)
