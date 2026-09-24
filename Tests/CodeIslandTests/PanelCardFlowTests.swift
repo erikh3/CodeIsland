@@ -35,7 +35,9 @@ final class PanelCardFlowTests: XCTestCase {
         for event in waiters {
             appState.handlePeerDisconnect(sessionId: event.sessionId ?? "default", agentId: event.agentId)
         }
-        for t in pending { _ = await t.value }
+        // `try?`: a stuck request is already recorded as a failure; the
+        // rest of the teardown must still run so the defaults are restored.
+        for t in pending { _ = try? await awaitValue(of: t) }
         appState = nil
         for k in keys {
             if let v = saved[k] ?? nil { UserDefaults.standard.set(v, forKey: k) } else { UserDefaults.standard.removeObject(forKey: k) }
@@ -172,19 +174,16 @@ final class PanelCardFlowTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func waitForSurface(_ expected: IslandSurface, timeout: TimeInterval = 3) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while appState.surface != expected, Date() < deadline {
-            try? await Task.sleep(nanoseconds: 10_000_000)
+    /// Bounded: records a failure (and returns) if the surface never gets there.
+    private func waitForSurface(_ expected: IslandSurface, file: StaticString = #filePath, line: UInt = #line) async {
+        await waitUntil("surface never became \(expected)", file: file, line: line) {
+            self.appState.surface == expected
         }
     }
 
     private func requestApproval(_ sid: String) async throws {
         let e = try event(["hook_event_name": "PermissionRequest", "session_id": sid, "tool_name": "Bash", "tool_input": ["command": "echo"]])
-        pending.append(Task<Data, Never> { [appState] in
-            await withCheckedContinuation { appState!.handlePermissionRequest(e, continuation: $0) }
-        })
-        await Task.yield()
+        pending.append(await startHookRequest { [appState] in appState!.handlePermissionRequest(e, continuation: $0) })
     }
 
     private func ask(_ sid: String, agentId: String? = nil, extra: [String: Any] = [:]) async throws {
@@ -195,10 +194,7 @@ final class PanelCardFlowTests: XCTestCase {
         if let agentId { payload["agent_id"] = agentId }
         payload.merge(extra) { _, new in new }
         let e = try event(payload)
-        pending.append(Task<Data, Never> { [appState] in
-            await withCheckedContinuation { appState!.handleAskUserQuestion(e, continuation: $0) }
-        })
-        await Task.yield()
+        pending.append(await startHookRequest { [appState] in appState!.handleAskUserQuestion(e, continuation: $0) })
     }
 
     private func event(_ p: [String: Any]) throws -> HookEvent {

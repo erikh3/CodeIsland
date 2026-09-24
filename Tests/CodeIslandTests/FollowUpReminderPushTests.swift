@@ -86,7 +86,9 @@ final class FollowUpReminderPushTests: XCTestCase {
         for event in waiters {
             appState.handlePeerDisconnect(sessionId: event.sessionId ?? "default", agentId: event.agentId)
         }
-        for t in pending { _ = await t.value }
+        // `try?`: a stuck request is already recorded as a failure; the
+        // rest of the teardown must still run so the defaults are restored.
+        for t in pending { _ = try? await awaitValue(of: t) }
         let notifier = PushNotifier.shared
         notifier.transport = URLSessionPushTransport.shared
         notifier.presence = { PushPresence.current() }
@@ -209,10 +211,7 @@ final class FollowUpReminderPushTests: XCTestCase {
             "hook_event_name": "PermissionRequest", "session_id": sid, "tool_name": "Bash",
             "tool_input": ["command": "make deploy"], "_term_app": "iTerm.app",
         ] as [String: Any])))
-        pending.append(Task<Data, Never> { [appState] in
-            await withCheckedContinuation { appState!.handlePermissionRequest(e, continuation: $0) }
-        })
-        await Task.yield()
+        pending.append(await startHookRequest { [appState] in appState!.handlePermissionRequest(e, continuation: $0) })
         XCTAssertNotNil(appState.pendingPermission(forSession: sid))
     }
 
@@ -220,10 +219,11 @@ final class FollowUpReminderPushTests: XCTestCase {
         transport.requests.compactMap(\.jsonBody).filter { ($0["title"] as? String)?.hasPrefix("⏰") == true }
     }
 
-    private func waitForReminderPushes(_ count: Int) async {
-        for _ in 0..<200 where reminderPushes().count < count {
-            try? await Task.sleep(nanoseconds: 5_000_000)
+    /// Delivery runs in a task; wait (bounded) until `count` reminders went out.
+    private func waitForReminderPushes(_ count: Int, file: StaticString = #filePath, line: UInt = #line) async {
+        await waitUntil("expected \(count) reminder push(es)", file: file, line: line) {
+            self.reminderPushes().count >= count
         }
-        XCTAssertEqual(reminderPushes().count, count)
+        XCTAssertEqual(reminderPushes().count, count, file: file, line: line)
     }
 }

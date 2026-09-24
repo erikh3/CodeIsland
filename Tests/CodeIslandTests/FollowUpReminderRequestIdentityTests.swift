@@ -48,7 +48,9 @@ final class FollowUpReminderRequestIdentityTests: XCTestCase {
         for event in waiters {
             appState.handlePeerDisconnect(sessionId: event.sessionId ?? "default", agentId: event.agentId)
         }
-        for t in pending { _ = await t.value }
+        // `try?`: a stuck request is already recorded as a failure; the
+        // rest of the teardown must still run so the defaults are restored.
+        for t in pending { _ = try? await awaitValue(of: t) }
         followUps = nil
         appState = nil
         for k in keys {
@@ -178,10 +180,7 @@ final class FollowUpReminderRequestIdentityTests: XCTestCase {
         ]
         if let toolUseId { payload["tool_use_id"] = toolUseId }
         let e = try event(payload)
-        pending.append(Task<Data, Never> { [appState] in
-            await withCheckedContinuation { appState!.handlePermissionRequest(e, continuation: $0) }
-        })
-        await Task.yield()
+        pending.append(await startHookRequest { [appState] in appState!.handlePermissionRequest(e, continuation: $0) })
     }
 
     private func ask(_ sid: String, agentId: String?) async throws {
@@ -191,10 +190,7 @@ final class FollowUpReminderRequestIdentityTests: XCTestCase {
         ]
         if let agentId { payload["agent_id"] = agentId }
         let e = try event(payload)
-        pending.append(Task<Data, Never> { [appState] in
-            await withCheckedContinuation { appState!.handleAskUserQuestion(e, continuation: $0) }
-        })
-        await Task.yield()
+        pending.append(await startHookRequest { [appState] in appState!.handleAskUserQuestion(e, continuation: $0) })
     }
 
     private func event(_ p: [String: Any]) throws -> HookEvent {

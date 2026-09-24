@@ -35,7 +35,9 @@ final class CardShortcutTests: XCTestCase {
         for event in waiters {
             appState.handlePeerDisconnect(sessionId: event.sessionId ?? "default", agentId: event.agentId)
         }
-        for t in pending { _ = await t.value }
+        // `try?`: a stuck request is already recorded as a failure; the
+        // rest of the teardown must still run so the defaults are restored.
+        for t in pending { _ = try? await awaitValue(of: t) }
         appState = nil
         for k in keys {
             if let v = saved[k] ?? nil { UserDefaults.standard.set(v, forKey: k) } else { UserDefaults.standard.removeObject(forKey: k) }
@@ -88,7 +90,7 @@ final class CardShortcutTests: XCTestCase {
         XCTAssertEqual(appState.performCardShortcut(.approve), .acted(sessionId: "PH"))
         XCTAssertEqual(appState.permissionQueue.count, 0)
         let response = try XCTUnwrap(responses["PH"])
-        let body = String(decoding: await response.value, as: UTF8.self)
+        let body = String(decoding: try await awaitValue(of: response), as: UTF8.self)
         XCTAssertTrue(body.contains("\"allow\""), body)
     }
 
@@ -139,12 +141,9 @@ final class CardShortcutTests: XCTestCase {
 
     private func requestApproval(_ sid: String) async throws {
         let e = try event(["hook_event_name": "PermissionRequest", "session_id": sid, "tool_name": "Bash", "tool_input": ["command": "echo \(sid)"]])
-        let task = Task<Data, Never> { [appState] in
-            await withCheckedContinuation { appState!.handlePermissionRequest(e, continuation: $0) }
-        }
+        let task = await startHookRequest { [appState] in appState!.handlePermissionRequest(e, continuation: $0) }
         pending.append(task)
         responses[sid] = task
-        await Task.yield()
     }
 
     private func ask(_ sid: String) async throws {
@@ -152,10 +151,7 @@ final class CardShortcutTests: XCTestCase {
             "hook_event_name": "PermissionRequest", "session_id": sid, "tool_name": "AskUserQuestion",
             "tool_input": ["questions": [["question": "Which?", "options": [["label": "A"], ["label": "B"]]]]],
         ])
-        pending.append(Task<Data, Never> { [appState] in
-            await withCheckedContinuation { appState!.handleAskUserQuestion(e, continuation: $0) }
-        })
-        await Task.yield()
+        pending.append(await startHookRequest { [appState] in appState!.handleAskUserQuestion(e, continuation: $0) })
     }
 
     private func event(_ p: [String: Any]) throws -> HookEvent {
