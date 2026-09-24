@@ -1978,10 +1978,19 @@ private struct AboutPage: View {
                 HStack(spacing: 12) {
                     aboutLink("GitHub", icon: "chevron.left.forwardslash.chevron.right", url: "https://github.com/wxtsky/CodeIsland")
                     aboutLink("Issues", icon: "ladybug", url: "https://github.com/wxtsky/CodeIsland/issues")
+                    aboutLink(
+                        String(format: l10n["release_notes_for_version"], AppVersion.current),
+                        icon: "doc.text",
+                        url: ReleaseNotesLink.url(forVersion: AppVersion.current).absoluteString
+                    )
                 }
 
                 // In-app update section
                 updateSection
+
+                if let reason = updater.readOnlyInstallReason {
+                    readOnlyLocationNotice(reason)
+                }
 
                 Button {
                     DiagnosticsExporter.export()
@@ -2098,6 +2107,37 @@ private struct AboutPage: View {
                 }
             }
         }
+    }
+
+    /// Sparkle cannot replace a bundle it may not write, and its failure alert
+    /// never says why. Say it up front, with the one fix that works.
+    private func readOnlyLocationNotice(_ reason: AppInstallLocation.ReadOnlyReason) -> some View {
+        let message: String
+        switch reason {
+        case .translocated: message = l10n["readonly_location_translocated"]
+        case .diskImage: message = l10n["readonly_location_disk_image"]
+        case .readOnlyVolume: message = l10n["readonly_location_volume"]
+        }
+        return VStack(spacing: 8) {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .font(.system(size: 13))
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            aboutButton(l10n["open_applications_folder"], icon: "folder") {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications", isDirectory: true))
+            }
+        }
+        .frame(maxWidth: 420)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.orange.opacity(0.08))
+        )
     }
 
     private func aboutButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
