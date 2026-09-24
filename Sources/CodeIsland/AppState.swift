@@ -332,6 +332,9 @@ final class AppState {
     @ObservationIgnored
     nonisolated(unsafe) private var cleanupTimer: Timer?
     private var autoCollapseTask: Task<Void, Never>?
+    /// How long a completion card stays up on its own. Tests shorten it.
+    @ObservationIgnored
+    var completionAutoCollapseDelay: TimeInterval = 5
     private var completionQueue: [String] = []
     /// Mouse must enter the panel before auto-collapse is allowed (prevents instant dismiss)
     var completionHasBeenEntered = false {
@@ -951,12 +954,15 @@ final class AppState {
         drainPermissions(forSession: sessionId, reason: "removeSession")
         drainQuestions(forSession: sessionId, reason: "removeSession")
 
+        completionQueue.removeAll { $0 == sessionId }
         if surface.sessionId == sessionId {
             autoCollapseTask?.cancel()
             if case .completionCard = surface {
-                if !showNextPending() {
-                    showNextCompletionOrCollapse()
-                }
+                // The turn on this card belongs to a session that is going
+                // away: nothing is left on it to read, pointer on it or not.
+                completionHasBeenEntered = false
+                deferCollapseOnMouseLeave = false
+                showNextCompletionOrCollapse()
             } else {
                 _ = showNextPending()
             }
@@ -971,7 +977,6 @@ final class AppState {
         subagentModelReads.removeValue(forKey: sessionId)
         hostHarnessProbes.removeValue(forKey: sessionId)
         hostHarnessProbeRetryAt.removeValue(forKey: sessionId)
-        completionQueue.removeAll { $0 == sessionId }
         if activeSessionId == sessionId {
             activeSessionId = mostActiveSessionId()
         }
@@ -1445,8 +1450,9 @@ final class AppState {
         deferCollapseOnMouseLeave = false
 
         autoCollapseTask?.cancel()
+        let delay = completionAutoCollapseDelay
         autoCollapseTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled else { return }
             showNextCompletionOrCollapse()
         }
@@ -1464,8 +1470,8 @@ final class AppState {
             deferCollapseOnMouseLeave = true
             return
         }
-        // showNextPending handles: interactive items first, then completionQueue, then collapse
-        if showNextPending() { return }
+        // Interactive items first, then the next finished turn, then collapse.
+        if showNextPending() || showNextQueuedCompletion() { return }
         withAnimation(NotchAnimation.close) {
             surface = .collapsed
         }
@@ -2861,11 +2867,21 @@ final class AppState {
         }
     }
 
-    /// After dequeuing, show next pending item or collapse
+    /// After dequeuing, show the next pending item, else the next finished
+    /// turn, else collapse.
+    ///
+    /// Returns whether something the user can act on is on screen afterwards:
+    /// an approval / question card, or the session list (which answers them
+    /// inline), or the next completion card. A request that stays hidden —
+    /// its auto-expand switch is off, Smart Suppress holds it back — is not
+    /// on screen: a completion card whose time is up then moves on to the
+    /// next finished turn or folds, instead of staying up for nobody.
     @discardableResult
     func showNextPending() -> Bool {
         collapseStaleCardSurface()
+        let hasPending: Bool
         if let idx = nextVisiblePermissionIndex() {
+            hasPending = true
             // One assignment: removing and re-inserting in place would show
             // the queue's observers (follow-up reminders) a moment where this
             // request is gone, and its reminder would start over.
@@ -2876,41 +2892,56 @@ final class AppState {
             let sid = next.event.sessionId ?? "default"
             activeSessionId = sid
             // When the session list is open, keep it open; approvals can be handled inline.
-            if surface != .sessionList,
-               Self.autoExpandOnPermission(),
-               shouldAutoOpenPendingSurface(for: sid) {
+            if surface == .sessionList { return true }
+            if Self.autoExpandOnPermission(), shouldAutoOpenPendingSurface(for: sid) {
                 surface = .approvalCard(sessionId: sid)
+                return true
             }
-            return true
+            // The approval stays hidden; a card already up stays with it.
+            if surface.approvalSessionId != nil || surface.questionSessionId != nil { return true }
         } else if let next = questionQueue.first {
+            hasPending = true
             let sid = next.event.sessionId ?? "default"
             activeSessionId = sid
             if !Self.autoExpandOnQuestion() {
                 // Nothing opens by itself — and a card the user opened with a
                 // click stays put. Stale cards were already folded above.
+                if surface.questionSessionId != nil || surface == .sessionList { return true }
             } else if shouldAutoOpenQuestionSurface(for: next.event) {
                 surface = .questionCard(sessionId: sid)
+                return true
             } else if case .questionCard = surface {
                 // Smart Suppress wants this card collapsed (e.g. an OMP ask
                 // whose terminal dialog is racing). Fold an inherited
                 // question-card surface so the promoted card does not render
                 // expanded on top of the previous question's surface.
                 surface = .collapsed
+            } else if surface == .sessionList {
+                return true
             }
+        } else {
+            hasPending = false
+        }
+        // Nothing interactive on screen. A completion card that is up keeps
+        // its own time (`showNextCompletionOrCollapse` moves on when it is
+        // over); a request arriving hidden must not cut it short.
+        if !hasPending || !isShowingCompletion, showNextQueuedCompletion() {
             return true
-        } else if !completionQueue.isEmpty {
-            while let next = completionQueue.first {
-                completionQueue.removeFirst()
-                if sessions[next] != nil {
-                    withAnimation(NotchAnimation.pop) { doShowCompletion(next) }
-                    return true
-                }
+        }
+        if surface.approvalSessionId != nil || surface.questionSessionId != nil {
+            surface = .collapsed
+        }
+        return false
+    }
+
+    /// Show the oldest queued completion whose session still exists.
+    private func showNextQueuedCompletion() -> Bool {
+        while let next = completionQueue.first {
+            completionQueue.removeFirst()
+            if sessions[next] != nil {
+                withAnimation(NotchAnimation.pop) { doShowCompletion(next) }
+                return true
             }
-            return false
-        } else if case .approvalCard = surface {
-            surface = .collapsed
-        } else if case .questionCard = surface {
-            surface = .collapsed
         }
         return false
     }
