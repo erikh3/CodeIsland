@@ -760,9 +760,14 @@ private struct CompactToolStatus: View {
     private var liveDesc: String? { displaySession?.toolDescription }
     private var liveOutput: String? { SessionLiveOutputDisplay.summary(for: displaySession) }
     private var displayStatus: AgentStatus { displaySession?.status ?? .idle }
+    @AppStorage(SettingsKey.showProjectName) private var showProjectName = SettingsDefaults.showProjectName
     private var projectName: String? {
-        guard let cwd = displaySession?.cwd, !cwd.isEmpty else { return nil }
-        return (cwd as NSString).lastPathComponent
+        let folder = displaySession?.cwd.flatMap { $0.isEmpty ? nil : ($0 as NSString).lastPathComponent }
+        return SessionHeadline.contextLabel(
+            projectName: folder,
+            sessionLabel: displaySession?.sessionLabel,
+            showProjectName: showProjectName
+        )
     }
 
     @State private var shownTool: String?
@@ -1328,6 +1333,7 @@ private struct QuestionBar: View {
     let requestId: UUID?
     let sessionSource: String?
     let sessionContext: String?
+    @AppStorage(SettingsKey.showProjectName) private var showProjectName = SettingsDefaults.showProjectName
     /// Owning session, so the card can focus its terminal on click the same way
     /// ApprovalBar does. Optional: the session may be gone while the card is
     /// still on screen.
@@ -1409,13 +1415,18 @@ private struct QuestionBar: View {
                     .resizable()
                     .frame(width: 12, height: 12)
             }
-            if let cwd = sessionContext {
-                Image(systemName: "folder.fill")
+            if let label = SessionHeadline.contextLabel(
+                projectName: sessionContext.map { ($0 as NSString).lastPathComponent },
+                sessionLabel: session?.sessionLabel,
+                showProjectName: showProjectName
+            ) {
+                Image(systemName: showProjectName ? "folder.fill" : "text.bubble.fill")
                     .font(.system(size: 8))
                     .foregroundStyle(.white.opacity(0.5))
-                Text((cwd as NSString).lastPathComponent)
+                Text(label)
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.white.opacity(0.6))
+                    .lineLimit(1)
             }
             if canJumpToTerminal {
                 Image(systemName: "arrow.up.forward.app")
@@ -2326,19 +2337,32 @@ private struct SessionIdentityLine: View {
     let sessionColor: Color
     let dividerColor: Color
     @AppStorage(SettingsKey.showGitBranch) private var showGitBranch = SettingsDefaults.showGitBranch
+    @AppStorage(SettingsKey.showProjectName) private var showProjectName = SettingsDefaults.showProjectName
 
     private var displaySessionId: String { session.displaySessionId(sessionId: sessionId) }
 
     var body: some View {
+        let headline = session.headline(showProjectName: showProjectName)
         HStack(spacing: 4) {
-            ProjectNameLink(
-                name: session.projectDisplayName,
-                cwd: session.cwd,
-                isInteractive: !session.isRemote,
-                fontSize: projectFontSize,
-                color: projectColor
-            )
-            .layoutPriority(2)
+            if headline.kind == .project {
+                ProjectNameLink(
+                    name: headline.text,
+                    cwd: session.cwd,
+                    isInteractive: !session.isRemote,
+                    fontSize: projectFontSize,
+                    color: projectColor
+                )
+                .layoutPriority(2)
+            } else {
+                // Project name hidden: no folder link and no path tooltip either,
+                // or hovering the card would still reveal it.
+                Text(headline.text)
+                    .font(.system(size: projectFontSize, weight: .bold, design: .monospaced))
+                    .foregroundStyle(projectColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(2)
+            }
 
             if showGitBranch, let branch = session.gitBranch {
                 HStack(spacing: 2) {
@@ -2353,7 +2377,7 @@ private struct SessionIdentityLine: View {
                 .layoutPriority(1)
             }
 
-            if let sessionLabel = session.sessionLabel {
+            if let sessionLabel = headline.trailingSessionLabel {
                 Text("#\(sessionLabel)")
                     .font(.system(size: sessionFontSize, weight: .medium, design: .monospaced))
                     .foregroundStyle(sessionColor)

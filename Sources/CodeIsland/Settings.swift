@@ -43,6 +43,7 @@ enum SettingsKey {
     static let hapticOnHover = "hapticOnHover"
     static let hapticIntensity = "hapticIntensity"      // 1=light, 2=medium, 3=strong
     static let hoverExpandDelay = "hoverExpandDelay"    // seconds the pointer rests before the island opens (0.1–1.0)
+    static let showProjectName = "showProjectName"      // false = cards lead with the session title instead of the folder
     static let sessionTimeout = "sessionTimeout"
 
     // Display
@@ -177,6 +178,7 @@ struct SettingsDefaults {
     static let hapticOnHover = false
     static let hapticIntensity = 1          // 1=light
     static let hoverExpandDelay = NotchHoverInteraction.expandDelay
+    static let showProjectName = true
     static let sessionTimeout = 30
 
     static let maxPanelHeight = 560
@@ -278,6 +280,7 @@ class SettingsManager {
             SettingsKey.hapticOnHover: SettingsDefaults.hapticOnHover,
             SettingsKey.hapticIntensity: SettingsDefaults.hapticIntensity,
             SettingsKey.hoverExpandDelay: SettingsDefaults.hoverExpandDelay,
+            SettingsKey.showProjectName: SettingsDefaults.showProjectName,
             SettingsKey.sessionTimeout: SettingsDefaults.sessionTimeout,
             SettingsKey.maxPanelHeight: SettingsDefaults.maxPanelHeight,
             SettingsKey.maxVisibleSessions: SettingsDefaults.maxVisibleSessions,
