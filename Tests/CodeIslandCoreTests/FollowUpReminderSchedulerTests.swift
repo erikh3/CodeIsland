@@ -125,6 +125,58 @@ final class FollowUpReminderSchedulerTests: XCTestCase {
         XCTAssertEqual(scheduler.collectDue(now: at(860), heldBack: false).map(\.attempt), [1])
     }
 
+    // MARK: - Request identity
+
+    func testSameRequestKeepsItsEntryAcrossSyncs() {
+        var scheduler = FollowUpReminderScheduler(interval: 60)
+        scheduler.sync(kind: .approval, requests: ["a": "r1"], now: t0)
+        XCTAssertEqual(scheduler.collectDue(now: at(60), heldBack: false).map(\.attempt), [1])
+        scheduler.sync(kind: .approval, requests: ["a": "r1", "b": "r9"], now: at(90))
+        let next = scheduler.collectDue(now: at(120), heldBack: false)
+        XCTAssertEqual(next.map(\.attempt), [2])
+        XCTAssertEqual(next.first?.requestId, "r1")
+        XCTAssertEqual(next.first?.waitingSince, t0)
+    }
+
+    /// The session never left the queue, but the request its card shows is a
+    /// new one: new wait, fresh clock, nothing spent, not silenced.
+    func testSessionsNextRequestStartsOver() {
+        var scheduler = FollowUpReminderScheduler(interval: 60)
+        scheduler.sync(kind: .approval, requests: ["a": "r1"], now: t0)
+        for minute in 1...3 {
+            _ = scheduler.collectDue(now: at(Double(minute) * 60), heldBack: false)
+        }
+        XCTAssertNil(scheduler.nextWakeDate(), "r1 is exhausted")
+
+        scheduler.sync(kind: .approval, requests: ["a": "r2"], now: at(200))
+        XCTAssertEqual(scheduler.nextWakeDate(), at(260))
+        let fired = scheduler.collectDue(now: at(260), heldBack: false)
+        XCTAssertEqual(fired.map(\.attempt), [1])
+        XCTAssertEqual(fired.first?.requestId, "r2")
+        XCTAssertEqual(fired.first?.waitingSince, at(200))
+    }
+
+    func testSilenceDoesNotCarryOverToTheSessionsNextRequest() {
+        var scheduler = FollowUpReminderScheduler(interval: 60)
+        scheduler.sync(kind: .question, requests: ["q": "r1"], now: t0)
+        scheduler.silence(Key(.question, "q"))
+        scheduler.sync(kind: .question, requests: ["q": "r2"], now: at(30))
+        XCTAssertEqual(scheduler.collectDue(now: at(90), heldBack: false).map(\.requestId), ["r2"])
+    }
+
+    /// A terminal prompt the island then queues is still the same wait: a
+    /// display-only entry has no request of its own, so naming one adopts it.
+    func testNamingTheRequestOfADisplayOnlyWaitAdoptsIt() {
+        var scheduler = FollowUpReminderScheduler(interval: 60)
+        scheduler.sync(kind: .approval, origin: .displayOnly, waiting: ["term"], now: t0)
+        XCTAssertEqual(scheduler.collectDue(now: at(60), heldBack: false).map(\.attempt), [1])
+        scheduler.sync(kind: .approval, requests: ["term": "r1"], now: at(90))
+        let next = scheduler.collectDue(now: at(120), heldBack: false)
+        XCTAssertEqual(next.map(\.attempt), [2])
+        XCTAssertEqual(next.first?.requestId, "r1")
+        XCTAssertEqual(next.first?.origin, .island)
+    }
+
     func testSilenceAllForASession() {
         var scheduler = FollowUpReminderScheduler(interval: 60)
         scheduler.sync(kind: .approval, waiting: ["a", "b"], now: t0)

@@ -225,7 +225,7 @@ final class FollowUpReminderController {
         var delivered: [FollowUpReminder] = []
         for reminder in due {
             let key = Key(reminder.kind, reminder.sessionId)
-            guard isStillPending(key) else {
+            guard isStillPending(reminder) else {
                 scheduler.silence(key)
                 continue
             }
@@ -244,11 +244,10 @@ final class FollowUpReminderController {
                     scheduler.silence(key)
                     continue
                 }
-                // State may have moved while the tab check was off-actor.
-                guard isStillPending(key) else {
-                    scheduler.silence(key)
-                    continue
-                }
+                // State may have moved while the tab check was off-actor. An
+                // entry the sync has since handed to the session's next
+                // request is that request's now: leave it alone.
+                guard isStillPending(reminder) else { continue }
             }
             delivered.append(reminder)
         }
@@ -284,14 +283,13 @@ final class FollowUpReminderController {
         syncDisplayOnly(now: now)
     }
 
+    /// Keyed by the request each card shows, so a session's next request is
+    /// reminded about from scratch rather than inheriting the attempts or the
+    /// silence of the one before it.
     private func syncQueues(now: Date) {
         guard let appState else { return }
-        scheduler.sync(kind: .approval, waiting: appState.visiblePermissionSessionIds, now: now)
-        scheduler.sync(
-            kind: .question,
-            waiting: Set(appState.questionQueue.map { $0.event.sessionId ?? "default" }),
-            now: now
-        )
+        scheduler.sync(kind: .approval, requests: appState.visiblePermissionRequestIds, now: now)
+        scheduler.sync(kind: .question, requests: appState.pendingQuestionRequestIds, now: now)
     }
 
     private func syncDisplayOnly(now: Date) {
@@ -303,6 +301,22 @@ final class FollowUpReminderController {
                 waiting: appState.displayOnlyWaitingSessionIds(kind: kind),
                 now: now
             )
+        }
+    }
+
+    /// Still waiting, and — for a request the island holds — still the
+    /// same request the reminder was about.
+    private func isStillPending(_ reminder: FollowUpReminder) -> Bool {
+        guard let appState, let requestId = reminder.requestId else {
+            return isStillPending(Key(reminder.kind, reminder.sessionId))
+        }
+        switch reminder.kind {
+        case .approval:
+            return appState.visiblePermissionRequestIds[reminder.sessionId] == requestId
+        case .question:
+            return appState.pendingQuestionRequestIds[reminder.sessionId] == requestId
+        case .completion:
+            return isStillPending(Key(reminder.kind, reminder.sessionId))
         }
     }
 

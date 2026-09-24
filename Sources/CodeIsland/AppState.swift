@@ -402,6 +402,28 @@ final class AppState {
             .subtracting(dismissedPermissionSessionIds)
     }
 
+    /// The request each of those sessions' approval card shows — its first
+    /// queued one — by session. Follow-up reminders belong to that request.
+    var visiblePermissionRequestIds: [String: String] {
+        var ids: [String: String] = [:]
+        for request in permissionQueue {
+            let sid = request.event.sessionId ?? "default"
+            guard ids[sid] == nil, !dismissedPermissionSessionIds.contains(sid) else { continue }
+            ids[sid] = request.id.uuidString
+        }
+        return ids
+    }
+
+    /// Question counterpart of `visiblePermissionRequestIds`.
+    var pendingQuestionRequestIds: [String: String] {
+        var ids: [String: String] = [:]
+        for request in questionQueue {
+            let sid = request.event.sessionId ?? "default"
+            if ids[sid] == nil { ids[sid] = request.id.uuidString }
+        }
+        return ids
+    }
+
     var rotatingSessionId: String?
     var rotatingSession: SessionSnapshot? {
         guard let rid = rotatingSessionId else { return nil }

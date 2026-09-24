@@ -165,7 +165,11 @@ extension AppState {
         log.notice("⚠️ permission deny reason=mergeDuplicatePermissionRequest session=\(existing.event.sessionId ?? "nil", privacy: .public) toolUseId=\(toolUseId, privacy: .public) tool=\(existing.event.toolName ?? "nil", privacy: .public)")
         let denyBody = #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}"#
         existing.continuation.resume(returning: Data(denyBody.utf8))
-        permissionQueue[existingIndex] = request
+        // Same request, new waiter: it keeps its identity, so its reminders
+        // and the card showing it carry on rather than starting over.
+        permissionQueue[existingIndex] = PermissionRequest(
+            id: existing.id, event: request.event, continuation: request.continuation
+        )
         return true
     }
 

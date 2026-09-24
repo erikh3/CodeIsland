@@ -2,8 +2,19 @@ import Foundation
 import CodeIslandCore
 
 struct PermissionRequest {
+    /// Identity of this one request. A session asks again and again — and
+    /// its subagents can each have one queued — so follow-up reminders and
+    /// the card on screen tell requests apart by this, not by session. A
+    /// replay of the same request keeps it (`mergeDuplicatePermissionRequest`).
+    let id: UUID
     let event: HookEvent
     let continuation: CheckedContinuation<Data, Never>
+
+    init(id: UUID = UUID(), event: HookEvent, continuation: CheckedContinuation<Data, Never>) {
+        self.id = id
+        self.event = event
+        self.continuation = continuation
+    }
 
     var toolUseId: String? { event.toolUseId }
 }
