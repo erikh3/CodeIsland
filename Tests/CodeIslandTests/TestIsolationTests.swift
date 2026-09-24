@@ -51,6 +51,12 @@ final class TestIsolationTests: XCTestCase {
         XCTAssertEqual(AppState.discoveryScanner().count, 0)
     }
 
+    func testHookInstallsNeverStartTheUsersClaude() {
+        // Installing Claude Code hooks asks for its version, which the app
+        // gets by running `claude --version`.
+        XCTAssertNil(ConfigInstaller.claudeVersionProvider())
+    }
+
     // MARK: - Session persistence location
 
     func testExplicitDirectoryOverrideWins() {

@@ -1439,6 +1439,14 @@ struct ConfigInstaller {
 
     // MARK: - CLI Version Detection
 
+    /// How `compatibleEvents` learns the installed Claude Code's version.
+    /// Detecting it starts the user's real `claude`, so a test process gets
+    /// "unknown" — what a machine without Claude Code gets — unless a test
+    /// installs a version of its own.
+    static var claudeVersionProvider: () -> String? = {
+        RuntimeEnvironment.isRunningTests ? nil : detectClaudeVersion()
+    }
+
     /// Detect installed Claude Code version by running `claude --version`.
     /// Cache is guarded by a lock because `install()` and `verifyAndRepair()`
     /// can both call this from `Task.detached` since #139 (#103 review).
@@ -1494,7 +1502,7 @@ struct ConfigInstaller {
 
         // Only Claude Code needs version checking for now
         guard cli.source == "claude" else { return cli.events }
-        let version = detectClaudeVersion()
+        let version = claudeVersionProvider()
 
         return cli.events.filter { (event, _, _) in
             guard let minVer = cli.versionedEvents[event] else { return true }
