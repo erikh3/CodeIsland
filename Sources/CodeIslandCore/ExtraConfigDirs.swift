@@ -140,6 +140,15 @@ public enum ExtraConfigDirError: Error, Equatable, Sendable {
     case invalidPath
     /// Same directory as the CLI's primary root.
     case isPrimary
+    /// The home folder itself. Without `CLAUDE_CONFIG_DIR`, Claude Code keeps
+    /// `~/.claude.json` there, so it would pass as a Claude root — and then get
+    /// hooks in `~/settings.json`, a recursive watch on `~/projects` (often
+    /// the user's code folder) and a usage scan of it. The folder picker
+    /// opens on it, so one stray click is enough.
+    case isHomeDirectory
+    /// A folder that holds the primary root (e.g. `~/.config` for
+    /// `~/.config/claude`), carried so the message can name it.
+    case containsPrimary(String)
     /// Already registered for this CLI.
     case duplicate
     /// Exists-and-looks-right check failed; carries the reason.
@@ -387,7 +396,10 @@ public enum ExtraConfigDirs {
             return .failure(.invalidPath)
         }
         let id = identity(path)
-        if id == identity(primary) { return .failure(.isPrimary) }
+        if id == identity(homeDir) { return .failure(.isHomeDirectory) }
+        let primaryID = identity(primary)
+        if id == primaryID { return .failure(.isPrimary) }
+        if primaryID.hasPrefix(id + "/") { return .failure(.containsPrimary(primary)) }
         if existing.contains(where: { $0.cli == cli && identity($0.path) == id }) {
             return .failure(.duplicate)
         }

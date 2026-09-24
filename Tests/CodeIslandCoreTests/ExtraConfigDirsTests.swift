@@ -118,6 +118,40 @@ final class ExtraConfigDirsTests: XCTestCase {
         )
     }
 
+    /// Without CLAUDE_CONFIG_DIR, `~/.claude.json` sits in the home folder, so
+    /// it passes the marker check — and the folder picker opens on it.
+    /// Registering it would put hooks in ~/settings.json and watch ~/projects.
+    func testHomeFolderAndFoldersAroundThePrimaryAreRefused() throws {
+        var entries = layout(home, files: [".claude.json"], dirs: ["projects", ".claude", ".config/claude"])
+        entries.merge(layout(home + "/.claude-work", dirs: ["projects"])) { current, _ in current }
+        entries["/Users"] = .directory
+        XCTAssertEqual(ExtraConfigDirs.inspect(path: home, cli: .claude, probe: probe(entries)), .ready,
+                       "the home folder does look like a Claude root")
+
+        func validate(_ raw: String, primary: String? = nil, identity: @escaping (String) -> String = { $0 })
+            -> Result<ExtraConfigDir, ExtraConfigDirError> {
+            ExtraConfigDirs.validateNew(
+                rawPath: raw, cli: .claude, primary: primary ?? home + "/.claude", existing: [],
+                homeDir: home, probe: probe(entries), identity: identity
+            )
+        }
+        XCTAssertEqual(validate("~"), .failure(.isHomeDirectory))
+        XCTAssertEqual(validate("~/"), .failure(.isHomeDirectory))
+        XCTAssertEqual(validate(home), .failure(.isHomeDirectory))
+        XCTAssertEqual(
+            validate("/Users/me-link", identity: { $0 == "/Users/me-link" ? self.home : $0 }),
+            .failure(.isHomeDirectory),
+            "a symlink to the home folder is the home folder"
+        )
+        XCTAssertEqual(validate("/Users"), .failure(.containsPrimary(home + "/.claude")))
+        XCTAssertEqual(
+            validate("~/.config", primary: home + "/.config/claude"),
+            .failure(.containsPrimary(home + "/.config/claude"))
+        )
+        // A sibling that only shares the prefix is a directory of its own.
+        XCTAssertEqual(try validate("~/.claude-work").get().path, home + "/.claude-work")
+    }
+
     /// The same directory registered under another CLI is its own entry (and
     /// then fails inspection on its own merits), not a duplicate.
     func testDuplicateCheckIsPerCLI() {

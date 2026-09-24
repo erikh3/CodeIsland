@@ -1111,6 +1111,13 @@ enum ExtraConfigDirText {
             return l10n["extra_dir_invalid_path"]
         case .isPrimary:
             return String(format: l10n["extra_dir_is_primary"], cli.displayName)
+        case .isHomeDirectory:
+            return String(format: l10n["extra_dir_is_home"], cli.environmentKey)
+        case .containsPrimary(let primary):
+            return String(
+                format: l10n["extra_dir_contains_primary"],
+                cli.displayName, ClaudeConfigPaths.displayPath(primary)
+            )
         case .duplicate:
             return l10n["extra_dir_duplicate"]
         case .unusable(let inspection):

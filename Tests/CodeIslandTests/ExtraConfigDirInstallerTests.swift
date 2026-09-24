@@ -216,8 +216,26 @@ final class ExtraConfigDirInstallerTests: XCTestCase {
             ExtraConfigDirText.inspection(.unrecognized, cli: .codex, l10n: l10n)?.contains("CODEX_HOME") == true,
             "the fix names the variable to set"
         )
-        for error: ExtraConfigDirError in [.invalidPath, .isPrimary, .duplicate, .unusable(.missing)] {
+        for error: ExtraConfigDirError in [
+            .invalidPath, .isPrimary, .duplicate, .unusable(.missing),
+            .isHomeDirectory, .containsPrimary("/Users/t/.grok"),
+        ] {
             XCTAssertFalse(ExtraConfigDirText.error(error, cli: .grok, l10n: l10n).hasPrefix("extra_dir_"))
+        }
+    }
+
+    /// The two refusals added for the home folder name what to pick instead,
+    /// in every language.
+    func testHomeAndParentFolderRefusalsSayWhatToPick() {
+        let l10n = L10n.shared
+        let saved = l10n.language
+        defer { l10n.language = saved }
+        for language in ["en", "de", "zh", "zhHant", "ja", "ko", "tr"] {
+            l10n.language = language
+            let home = ExtraConfigDirText.error(.isHomeDirectory, cli: .claude, l10n: l10n)
+            XCTAssertTrue(home.contains("CLAUDE_CONFIG_DIR"), "\(language): \(home)")
+            let parent = ExtraConfigDirText.error(.containsPrimary("/opt/acct/.codex"), cli: .codex, l10n: l10n)
+            XCTAssertTrue(parent.contains("Codex") && parent.contains("/opt/acct/.codex"), "\(language): \(parent)")
         }
     }
 }
