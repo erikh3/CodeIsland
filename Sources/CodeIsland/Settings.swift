@@ -97,6 +97,8 @@ enum SettingsKey {
 
     // Advanced
     static let maxToolHistory = "maxToolHistory"
+    /// Session cards: agent checklist progress (TaskCreate / TodoWrite / update_plan).
+    static let showTaskProgress = "showTaskProgress"
 
     // Mascot
     static let mascotSpeed = "mascotSpeed"
@@ -192,6 +194,7 @@ struct SettingsDefaults {
     static let rotationInterval = 5
 
     static let maxToolHistory = 20
+    static let showTaskProgress = true
 
     static let mascotSpeed = 100  // percentage: 0–300, 0 = silent
 
@@ -279,6 +282,7 @@ class SettingsManager {
             SettingsKey.showClaudeQuota: SettingsDefaults.showClaudeQuota,
             SettingsKey.rotationInterval: SettingsDefaults.rotationInterval,
             SettingsKey.maxToolHistory: SettingsDefaults.maxToolHistory,
+            SettingsKey.showTaskProgress: SettingsDefaults.showTaskProgress,
             SettingsKey.mascotSpeed: SettingsDefaults.mascotSpeed,
             SettingsKey.sessionGroupingMode: SettingsDefaults.sessionGroupingMode,
             SettingsKey.showToolStatus: SettingsDefaults.showToolStatus,

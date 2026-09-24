@@ -2565,6 +2565,7 @@ private struct SessionCard: View {
     @AppStorage(SettingsKey.aiMessageLines) private var aiMessageLines = SettingsDefaults.aiMessageLines
     @AppStorage(SettingsKey.showAgentDetails) private var showAgentDetails = SettingsDefaults.showAgentDetails
     @AppStorage(SettingsKey.autoCollapseAfterSessionJump) private var autoCollapseAfterSessionJump = SettingsDefaults.autoCollapseAfterSessionJump
+    @AppStorage(SettingsKey.showTaskProgress) private var showTaskProgress = SettingsDefaults.showTaskProgress
     private var fontSize: CGFloat { CGFloat(contentFontSize) }
     private var aiLineLimit: Int? { aiMessageLines > 0 ? aiMessageLines : nil }
     private var approvalQueueIndex: Int? {
@@ -2776,6 +2777,11 @@ private struct SessionCard: View {
                             .font(.system(size: max(10, fontSize - 1), design: .monospaced))
                             .foregroundStyle(Color(red: 1.0, green: 0.6, blue: 0.2).opacity(0.85))
                     }
+                }
+
+                // Agent checklist progress (TaskCreate / TodoWrite / update_plan).
+                if showTaskProgress && !session.agentTasks.isEmpty {
+                    AgentTaskProgressView(tasks: session.agentTasks, fontSize: fontSize)
                 }
 
                 // Session title: first user prompt (hide when detailed mode shows chat history)
