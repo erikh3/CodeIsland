@@ -66,13 +66,21 @@ final class AwayMuteSoundTests: XCTestCase {
         XCTAssertFalse(SoundManager.shared.isEventSoundDeferred)
     }
 
-    func testScreensaverAndDisplaySleepAlsoSilence() {
+    func testScreensaverAlsoSilences() {
         SceneMuteMonitor.shared.apply(.screensaverStarted)
         SoundManager.shared.handleEvent("PermissionRequest")
-        SceneMuteMonitor.shared.apply(.screensaverStopped)
+        XCTAssertEqual(played, [])
+        XCTAssertTrue(SoundManager.shared.isEventSoundDeferred)
+    }
+
+    /// Displays asleep, screen not locked: the person is often right there
+    /// waiting on the agent, so sounds (and follow-up reminders) keep coming.
+    func testDisplaySleepAloneKeepsSounds() {
         SceneMuteMonitor.shared.apply(.displaysSlept)
         SoundManager.shared.handleEvent("PermissionRequest")
-        XCTAssertEqual(played, [])
+        XCTAssertEqual(played, ["8bit_approval"])
+        XCTAssertFalse(SoundManager.shared.isEventSoundDeferred)
+        XCTAssertTrue(SceneMuteMonitor.shared.state.displaysAsleep, "still known to the push away check")
     }
 
     func testTurningTheSettingOffKeepsSoundsWhileLocked() {

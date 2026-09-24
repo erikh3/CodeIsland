@@ -90,7 +90,7 @@ class SoundManager {
 
     /// Whether event sounds are held back right now for a reason that will
     /// pass on its own — quiet hours, or nobody at the screen (locked, screen
-    /// saver, displays asleep). Distinct from the master toggle and the
+    /// saver running). Distinct from the master toggle and the
     /// per-event toggles, which are standing choices: follow-up reminders
     /// wait out a deferral and catch up afterwards, but never a choice.
     /// Settings previews stay audible: only event-driven sounds are gated.

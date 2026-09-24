@@ -40,7 +40,7 @@ public struct FollowUpReminder: Equatable, Sendable {
         /// Delivered locally at its due time.
         case onTime
         /// Came due while local reminders were held back (screen locked,
-        /// screen saver, displays asleep, quiet hours). Nothing played on the
+        /// screen saver, quiet hours). Nothing played on the
         /// Mac; a `.catchUp` follows if the item is still waiting when the hold
         /// ends. Remote channels may still want this one — the user is away.
         case deferred

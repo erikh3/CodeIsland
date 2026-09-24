@@ -72,8 +72,8 @@ enum SettingsKey {
     // Follow-up reminders: minutes before re-announcing a waiting approval /
     // question / unseen completion; 0 = off (see FollowUpReminderController)
     static let followUpReminderMinutes = "followUpReminderMinutes"
-    // Mute event sounds while the screen is locked, the screen saver runs or
-    // the displays sleep (see SceneMuteMonitor)
+    // Mute event sounds while the screen is locked or the screen saver runs;
+    // displays that only went to sleep do not count (see SceneMuteState)
     static let autoMuteWhenAway = "autoMuteWhenAway"
 
     // Session cards

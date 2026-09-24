@@ -207,7 +207,7 @@ final class FollowUpReminderController {
         reschedule(now: clock())
     }
 
-    /// A hold (lock screen, screen saver, display sleep) just ended: deliver
+    /// A hold (lock screen, screen saver) just ended: deliver
     /// whatever came due in the meantime right away.
     func wake() {
         guard !scheduler.isEmpty else { return }

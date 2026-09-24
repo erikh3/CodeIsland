@@ -3,12 +3,15 @@ import Foundation
 /// Moments when nobody is at the screen: event sounds then only reach an empty
 /// room, a meeting the laptop was carried into, or a sleeping household.
 ///
-/// Three independent system states feed it — screen locked, screen saver
-/// running, displays asleep — and the scene is quiet while any one holds. They
-/// are tracked separately because they overlap and end in any order (the
+/// Three independent system states are tracked — screen locked, screen saver
+/// running, displays asleep — because they overlap and end in any order (the
 /// screen saver usually starts first and locks; the displays then sleep; wake
 /// and unlock arrive later), and a single flag would be cleared by whichever
 /// "end" arrived first.
+///
+/// Only a locked screen or a running screen saver makes the scene quiet. A
+/// display that merely went to sleep is kept for the push "away" check, but
+/// does not mute: its owner is often right there, waiting on the agent.
 public struct SceneMuteState: Equatable, Sendable {
     public enum Signal: Equatable, Sendable {
         case screenLocked
@@ -25,7 +28,7 @@ public struct SceneMuteState: Equatable, Sendable {
 
     public init() {}
 
-    public var isQuiet: Bool { screenLocked || screensaverRunning || displaysAsleep }
+    public var isQuiet: Bool { screenLocked || screensaverRunning }
 
     /// Applies one system signal; returns whether `isQuiet` changed.
     @discardableResult

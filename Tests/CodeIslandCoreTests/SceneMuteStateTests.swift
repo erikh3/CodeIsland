@@ -11,17 +11,23 @@ final class SceneMuteStateTests: XCTestCase {
         XCTAssertFalse(state.isQuiet)
     }
 
-    func testScreensaverAndDisplaySleepEachMute() {
+    func testScreensaverMutes() {
         var state = SceneMuteState()
-        state.apply(.screensaverStarted)
+        XCTAssertTrue(state.apply(.screensaverStarted))
         XCTAssertTrue(state.isQuiet)
-        state.apply(.screensaverStopped)
+        XCTAssertTrue(state.apply(.screensaverStopped))
         XCTAssertFalse(state.isQuiet)
+    }
 
-        state.apply(.displaysSlept)
-        XCTAssertTrue(state.isQuiet)
-        state.apply(.displaysWoke)
+    /// A display that only went to sleep is tracked (pushes count it as
+    /// away) but does not mute: its owner is often nearby, waiting.
+    func testDisplaySleepAloneIsTrackedButDoesNotMute() {
+        var state = SceneMuteState()
+        XCTAssertFalse(state.apply(.displaysSlept), "no edge for the quiet scene")
+        XCTAssertTrue(state.displaysAsleep)
         XCTAssertFalse(state.isQuiet)
+        XCTAssertFalse(state.apply(.displaysWoke))
+        XCTAssertFalse(state.displaysAsleep)
     }
 
     /// The usual away sequence: screen saver → it locks → displays sleep. The

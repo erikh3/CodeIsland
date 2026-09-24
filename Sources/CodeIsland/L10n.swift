@@ -389,7 +389,7 @@ final class L10n: ObservableObject {
         "follow_up_after_minutes": "After %d min",
         "follow_up_hint": "Still waiting for you",
         "auto_mute_when_away": "Mute when away",
-        "auto_mute_when_away_desc": "Silence event sounds while the screen is locked, the screen saver is running or the display is asleep. Sound previews in Settings still play.",
+        "auto_mute_when_away_desc": "Silence event sounds while the screen is locked or the screen saver is running. A display that has only gone to sleep still hears them — you are often nearby, waiting on the agent. Sound previews in Settings still play.",
 
         // Hooks
         "cli_status": "CLI Status",
@@ -893,7 +893,7 @@ final class L10n: ObservableObject {
         "follow_up_after_minutes": "Nach %d Min.",
         "follow_up_hint": "Wartet noch auf dich",
         "auto_mute_when_away": "Stumm, wenn abwesend",
-        "auto_mute_when_away_desc": "Ereignistöne stummschalten, solange der Bildschirm gesperrt ist, der Bildschirmschoner läuft oder der Monitor ruht. Hörproben in den Einstellungen spielen weiterhin.",
+        "auto_mute_when_away_desc": "Ereignistöne stummschalten, solange der Bildschirm gesperrt ist oder der Bildschirmschoner läuft. Ruht nur der Monitor, bleiben sie hörbar – oft wartest du ganz in der Nähe auf den Agenten. Hörproben in den Einstellungen spielen weiterhin.",
 
         // Hooks
         "cli_status": "CLI-Status",
@@ -1401,7 +1401,7 @@ final class L10n: ObservableObject {
         "follow_up_after_minutes": "%d 分钟后",
         "follow_up_hint": "仍在等你处理",
         "auto_mute_when_away": "离开时静音",
-        "auto_mute_when_away_desc": "屏幕锁定、屏保运行或显示器休眠期间不播放事件音效。设置里的试听不受影响。",
+        "auto_mute_when_away_desc": "屏幕锁定或屏保运行期间不播放事件音效。只是显示器休眠时照常播放——你往往就在旁边等 agent。设置里的试听不受影响。",
 
         // Hooks
         "cli_status": "CLI 状态",
@@ -1909,7 +1909,7 @@ final class L10n: ObservableObject {
         "follow_up_after_minutes": "%d 分鐘後",
         "follow_up_hint": "仍在等你處理",
         "auto_mute_when_away": "離開時靜音",
-        "auto_mute_when_away_desc": "螢幕鎖定、螢幕保護程式執行或顯示器睡眠期間不播放事件音效。設定裡的試聽不受影響。",
+        "auto_mute_when_away_desc": "螢幕鎖定或螢幕保護程式執行期間不播放事件音效。只是顯示器睡眠時照常播放——你往往就在旁邊等 agent。設定裡的試聽不受影響。",
 
         // Hooks
         "cli_status": "CLI 狀態",
@@ -2417,7 +2417,7 @@ final class L10n: ObservableObject {
         "follow_up_after_minutes": "%d 分後",
         "follow_up_hint": "まだ対応を待っています",
         "auto_mute_when_away": "離席中はミュート",
-        "auto_mute_when_away_desc": "画面ロック中、スクリーンセーバー実行中、ディスプレイのスリープ中はイベント音を鳴らしません。設定画面の試聴は引き続き再生されます。",
+        "auto_mute_when_away_desc": "画面ロック中やスクリーンセーバー実行中はイベント音を鳴らしません。ディスプレイがスリープしただけなら鳴ります（エージェントを待ってすぐそばにいることが多いため）。設定画面の試聴は引き続き再生されます。",
 
         // Hooks
         "cli_status": "CLI 状態",
@@ -2925,7 +2925,7 @@ final class L10n: ObservableObject {
         "follow_up_after_minutes": "%d분 후",
         "follow_up_hint": "아직 확인을 기다리고 있습니다",
         "auto_mute_when_away": "자리 비움 시 음소거",
-        "auto_mute_when_away_desc": "화면이 잠겨 있거나 화면 보호기가 실행 중이거나 디스플레이가 잠자기 상태일 때 이벤트 효과음을 끕니다. 설정의 미리 듣기는 계속 재생됩니다.",
+        "auto_mute_when_away_desc": "화면이 잠겨 있거나 화면 보호기가 실행 중일 때 이벤트 효과음을 끕니다. 디스플레이만 잠자기 상태일 때는 그대로 재생합니다(에이전트를 기다리며 근처에 있는 경우가 많으니까요). 설정의 미리 듣기는 계속 재생됩니다.",
 
         // Hooks
         "cli_status": "CLI 상태",
@@ -3433,7 +3433,7 @@ final class L10n: ObservableObject {
         "follow_up_after_minutes": "%d dk sonra",
         "follow_up_hint": "Hâlâ sizi bekliyor",
         "auto_mute_when_away": "Uzaktayken sessiz",
-        "auto_mute_when_away_desc": "Ekran kilitliyken, ekran koruyucu çalışırken veya ekran uyku modundayken olay seslerini kapatır. Ayarlardaki ses önizlemeleri çalmaya devam eder.",
+        "auto_mute_when_away_desc": "Ekran kilitliyken veya ekran koruyucu çalışırken olay seslerini kapatır. Yalnızca ekran uykuya geçtiyse sesler çalmaya devam eder; çoğu zaman ajanı bekleyerek yakındasınızdır. Ayarlardaki ses önizlemeleri çalmaya devam eder.",
 
         // Hooks
         "cli_status": "CLI Durumu",
