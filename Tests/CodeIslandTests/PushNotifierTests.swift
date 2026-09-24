@@ -428,6 +428,51 @@ final class PushNotifierTests: XCTestCase {
         _ = try await awaitValue(of: response)
     }
 
+    /// With "auto-expand on question" off the card waits behind a badge —
+    /// that is no reason to keep the question off the phone. Only Smart
+    /// Suppress (its terminal in front) is.
+    func testAskUserQuestionPushIgnoresTheAutoExpandSwitch() async throws {
+        let savedAutoExpand = UserDefaults.standard.object(forKey: SettingsKey.autoExpandOnQuestion)
+        defer {
+            if let savedAutoExpand {
+                UserDefaults.standard.set(savedAutoExpand, forKey: SettingsKey.autoExpandOnQuestion)
+            } else {
+                UserDefaults.standard.removeObject(forKey: SettingsKey.autoExpandOnQuestion)
+            }
+        }
+        UserDefaults.standard.set(false, forKey: SettingsKey.autoExpandOnQuestion)
+        defaults.set(false, forKey: SettingsKey.pushOnlyWhenAway)
+        presence = PushPresenceSnapshot(idleSeconds: 3)
+
+        let appState = AppState()
+        appState.questionTerminalFrontmostDetector = { _ in false }
+        func ask(_ session: String) async throws -> Task<Data, Never> {
+            let event = try makeEvent([
+                "hook_event_name": "PermissionRequest",
+                "session_id": session,
+                "_term_app": "iTerm.app",
+                "tool_name": "AskUserQuestion",
+                "tool_input": ["questions": [["question": "Which database?", "header": "DB", "options": [["label": "Postgres"]]]]],
+            ])
+            let response = Task<Data, Never> {
+                await withCheckedContinuation { appState.handleAskUserQuestion(event, continuation: $0) }
+            }
+            await Task.yield()
+            return response
+        }
+        let first = try await ask("push-ask-badge")
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark]))
+        appState.skipQuestion(expectedSessionId: "push-ask-badge")
+        _ = await first.value
+
+        UserDefaults.standard.set(true, forKey: SettingsKey.smartSuppress)
+        appState.questionTerminalFrontmostDetector = { _ in true }
+        let second = try await ask("push-ask-terminal")
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .skipped(.smartSuppressed))
+        appState.skipQuestion(expectedSessionId: "push-ask-terminal")
+        _ = await second.value
+    }
+
     // MARK: Completion and errors
 
     func testStopPushesThisTurnsReply() async throws {

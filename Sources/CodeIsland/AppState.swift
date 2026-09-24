@@ -2456,7 +2456,17 @@ final class AppState {
             askUserQuestionState: askState
         )
         questionQueue.append(request)
-        pushQuestionQueued(request, sessionId: sessionId, smartSuppressed: !shouldAutoOpenQuestionSurface(for: event))
+        // Smart Suppress alone: whether the island opens the card by itself
+        // (the "auto-expand on question" switch) says nothing about whether
+        // the person is looking at the question in their terminal.
+        pushQuestionQueued(
+            request,
+            sessionId: sessionId,
+            smartSuppressed: !shouldAutoOpenPendingSurface(
+                for: sessionId,
+                isTerminalFrontmost: questionTerminalFrontmostDetector
+            )
+        )
 
         if questionQueue.count == 1 {
             activeSessionId = sessionId
