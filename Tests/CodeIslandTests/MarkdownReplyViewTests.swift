@@ -39,6 +39,55 @@ final class MarkdownReplyViewTests: XCTestCase {
     func testLongCodeScrollsInsideACappedHeight() {
         let code = (1...(MarkdownCodeLayout.visibleLines + 1)).map(String.init).joined(separator: "\n")
         XCTAssertTrue(MarkdownCodeLayout(code: code).scrollsVertically)
+        XCTAssertFalse(MarkdownCodeLayout(code: code, capsHeight: false).scrollsVertically,
+                       "inside the completion card's scroll area code shows its full height")
+    }
+
+    // MARK: - Completion card
+
+    func testCompletionCardRendersOnlyTheNewestAssistantReplyInFull() {
+        let prompt = ChatMessage(isUser: true, text: "fix it")
+        let older = ChatMessage(isUser: false, text: "old reply")
+        let reply = ChatMessage(isUser: false, text: "done")
+
+        XCTAssertEqual(CompletionReplyMetrics.fullReplyId(in: [older, prompt, reply], isCompletionCard: true), reply.id)
+        XCTAssertNil(CompletionReplyMetrics.fullReplyId(in: [older, prompt, reply], isCompletionCard: false),
+                     "session-list rows keep following the line cap")
+        XCTAssertNil(CompletionReplyMetrics.fullReplyId(in: [older, prompt], isCompletionCard: true),
+                     "a reply older than the newest prompt is stale")
+        XCTAssertNil(CompletionReplyMetrics.fullReplyId(in: [], isCompletionCard: true))
+    }
+
+    func testCompletionReplyHeightFitsThePanelWindow() {
+        // Default: 5 visible sessions → 510pt window, under the 560pt ceiling.
+        let defaultHeight = CompletionReplyMetrics.maxHeight(
+            maxVisibleSessions: SettingsDefaults.maxVisibleSessions,
+            maxPanelHeight: SettingsDefaults.maxPanelHeight
+        )
+        XCTAssertEqual(defaultHeight, 510 - CompletionReplyMetrics.reservedHeight)
+
+        // "Unlimited" sessions must not let an auto-opening card grow to the
+        // window's 8970pt: maxPanelHeight caps it.
+        XCTAssertEqual(
+            CompletionReplyMetrics.maxHeight(maxVisibleSessions: 99, maxPanelHeight: 560),
+            560 - CompletionReplyMetrics.reservedHeight
+        )
+        // A small window still leaves a readable area.
+        XCTAssertEqual(
+            CompletionReplyMetrics.maxHeight(maxVisibleSessions: 2, maxPanelHeight: 100),
+            CompletionReplyMetrics.minimumHeight
+        )
+        // An unset (0) ceiling falls back to the window alone.
+        XCTAssertEqual(
+            CompletionReplyMetrics.maxHeight(maxVisibleSessions: 8, maxPanelHeight: 0),
+            PanelHeightMetrics.desiredHeight(maxVisibleSessions: 8) - CompletionReplyMetrics.reservedHeight
+        )
+    }
+
+    func testPanelHeightMatchesTheSessionListBudget() {
+        XCTAssertEqual(PanelHeightMetrics.desiredHeight(maxVisibleSessions: 5), 510)
+        XCTAssertEqual(PanelHeightMetrics.desiredHeight(maxVisibleSessions: 3), 330)
+        XCTAssertEqual(PanelHeightMetrics.desiredHeight(maxVisibleSessions: 0), 300, "never below the 300pt floor")
     }
 
     func testHugeCodeIsCutToBoundLayoutCost() {

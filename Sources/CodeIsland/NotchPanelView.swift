@@ -2823,6 +2823,7 @@ private struct SessionCard: View {
                     let visibleMessages = session.status != .idle
                         ? Array(session.recentMessages.suffix(2))
                         : session.recentMessages
+                    let fullReplyId = CompletionReplyMetrics.fullReplyId(in: visibleMessages, isCompletionCard: isCompletion)
                     ForEach(visibleMessages) { msg in
                         // Extracted to separate view so SwiftUI skips re-rendering
                         // when only the parent's hover state changes (#52 perf).
@@ -2830,7 +2831,8 @@ private struct SessionCard: View {
                             text: msg.text,
                             isUser: msg.isUser,
                             fontSize: fontSize,
-                            aiLineLimit: aiLineLimit
+                            aiLineLimit: aiLineLimit,
+                            isCompletionReply: msg.id == fullReplyId
                         )
                     }
 
@@ -3649,10 +3651,14 @@ private struct ChatMessageRow: View, Equatable {
     let isUser: Bool
     let fontSize: CGFloat
     let aiLineLimit: Int?
+    /// The finished reply on the completion card: rendered in full, ignoring
+    /// aiLineLimit.
+    var isCompletionReply = false
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.text == rhs.text && lhs.isUser == rhs.isUser
         && lhs.fontSize == rhs.fontSize && lhs.aiLineLimit == rhs.aiLineLimit
+        && lhs.isCompletionReply == rhs.isCompletionReply
     }
 
     var body: some View {
@@ -3672,9 +3678,15 @@ private struct ChatMessageRow: View, Equatable {
                 Text("$")
                     .font(.system(size: fontSize, weight: .bold, design: .monospaced))
                     .foregroundStyle(Color(red: 0.85, green: 0.47, blue: 0.34))
-                // Block Markdown when uncapped, a marker-free preview under
-                // the reply-line cap (MarkdownReplyView.swift).
-                AssistantReplyText(text: stripDirectives(text), fontSize: fontSize, lineLimit: aiLineLimit)
+                // Block Markdown when uncapped or on the completion card, a
+                // marker-free preview under the reply-line cap
+                // (MarkdownReplyView.swift).
+                AssistantReplyText(
+                    text: stripDirectives(text),
+                    fontSize: fontSize,
+                    lineLimit: aiLineLimit,
+                    isCompletionReply: isCompletionReply
+                )
             }
         }
     }

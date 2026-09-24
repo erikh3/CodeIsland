@@ -110,6 +110,16 @@ struct PanelScreenHopMotion {
     let fadeInDuration: TimeInterval
 }
 
+enum PanelHeightMetrics {
+    /// Window height the panel asks for before clamping to the screen: room
+    /// for `maxVisibleSessions` cards plus the notch bar. Shared with the
+    /// completion card, whose reply area has to fit inside the same window.
+    static func desiredHeight(maxVisibleSessions: Int) -> CGFloat {
+        let sessions = CGFloat(max(2, maxVisibleSessions))
+        return max(300, sessions * 90 + 60)
+    }
+}
+
 @MainActor
 class PanelWindowController: NSObject, NSWindowDelegate {
     private enum ScreenHopMetrics {
@@ -146,8 +156,9 @@ class PanelWindowController: NSObject, NSWindowDelegate {
     }
 
     private func panelSize(for screen: NSScreen) -> NSSize {
-        let maxSessions = CGFloat(max(2, UserDefaults.standard.integer(forKey: SettingsKey.maxVisibleSessions)))
-        let desiredH = max(300, maxSessions * 90 + 60)
+        let desiredH = PanelHeightMetrics.desiredHeight(
+            maxVisibleSessions: UserDefaults.standard.integer(forKey: SettingsKey.maxVisibleSessions)
+        )
         // Clamp to the screen's usable height. A borderless, non-opaque panel with a
         // very tall backing store (e.g. maxVisibleSessions=99 → 8970pt, ~18k px tall on
         // a Retina display) has its compositing dropped by the macOS 26 WindowServer

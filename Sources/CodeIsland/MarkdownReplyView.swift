@@ -10,14 +10,18 @@ import SwiftUI
 /// Under a reply-line cap (Settings › AI Reply Lines) the reply becomes a
 /// clean preview: block syntax is folded into running text, so a capped row
 /// never shows `##`, `| --- |` or a fence marker cut off by the ellipsis.
-/// Uncapped, the reply renders as full block Markdown.
+/// Uncapped, the reply renders as full block Markdown. The reply that just
+/// finished on the completion card ignores the cap — see CompletionReplyView.
 struct AssistantReplyText: View {
     let text: String
     let fontSize: CGFloat
     let lineLimit: Int?
+    var isCompletionReply = false
 
     var body: some View {
-        if let lineLimit {
+        if isCompletionReply {
+            CompletionReplyView(text: text, fontSize: fontSize)
+        } else if let lineLimit {
             Text(IslandMarkdownInline.preview(text, singleLine: lineLimit == 1))
                 .font(IslandMarkdownStyle.font(fontSize))
                 .foregroundStyle(IslandMarkdownStyle.body)
@@ -28,6 +32,85 @@ struct AssistantReplyText: View {
             MarkdownBlocksView(blocks: ChatMessageTextFormatter.markdownBlocks(text), fontSize: fontSize)
                 .tint(IslandMarkdownStyle.link)
         }
+    }
+}
+
+// MARK: - Completion card
+
+/// The finished reply on the completion card: the moment someone actually
+/// wants to read it, so it always renders in full whatever the line cap.
+/// Its height is capped so the card stays inside the panel window; a longer
+/// reply scrolls within that area.
+private struct CompletionReplyView: View {
+    let text: String
+    let fontSize: CGFloat
+    @AppStorage(SettingsKey.maxVisibleSessions) private var maxVisibleSessions = SettingsDefaults.maxVisibleSessions
+    @AppStorage(SettingsKey.maxPanelHeight) private var maxPanelHeight = SettingsDefaults.maxPanelHeight
+
+    var body: some View {
+        let maxHeight = CompletionReplyMetrics.maxHeight(
+            maxVisibleSessions: maxVisibleSessions,
+            maxPanelHeight: maxPanelHeight
+        )
+        ScrollView(.vertical) {
+            MarkdownBlocksView(blocks: ChatMessageTextFormatter.markdownBlocks(text), fontSize: fontSize)
+                // One scroll area for the whole reply: code and tables inside
+                // show their full height instead of nesting a second
+                // vertical scroller.
+                .environment(\.islandMarkdownCapsBlockHeight, false)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        // Order matters: fixedSize proposes no height, so the ScrollView
+        // reports its content's height and the frame clamps that — the area
+        // hugs a short reply and stops growing at maxHeight.
+        .frame(maxHeight: maxHeight)
+        .fixedSize(horizontal: false, vertical: true)
+        .scrollIndicatorsFlash(onAppear: true)
+        .tint(IslandMarkdownStyle.link)
+    }
+}
+
+enum CompletionReplyMetrics {
+    /// Everything else the completion card stacks inside the panel window
+    /// around the reply: notch bar, card header, the prompt row, task
+    /// progress, the "show all sessions" link and paddings.
+    static let reservedHeight: CGFloat = 180
+    /// Never squeeze the reply below a handful of lines.
+    static let minimumHeight: CGFloat = 120
+
+    /// The window is sized for `maxVisibleSessions` cards
+    /// (PanelHeightMetrics) and content past its bottom edge is simply cut,
+    /// so the reply gets that height minus the card's chrome — further
+    /// capped by the maxPanelHeight setting, which keeps an auto-opening
+    /// card from covering half the screen when the session list is set to
+    /// "unlimited".
+    static func maxHeight(maxVisibleSessions: Int, maxPanelHeight: Int) -> CGFloat {
+        var panel = PanelHeightMetrics.desiredHeight(maxVisibleSessions: maxVisibleSessions)
+        if maxPanelHeight > 0 {
+            panel = min(panel, CGFloat(maxPanelHeight))
+        }
+        return max(minimumHeight, panel - reservedHeight)
+    }
+
+    /// The message the completion card renders in full: the newest one, when
+    /// it's the assistant's — the reply that just finished. Older replies in
+    /// the card keep following the line cap.
+    static func fullReplyId(in messages: [ChatMessage], isCompletionCard: Bool) -> UUID? {
+        guard isCompletionCard, let last = messages.last, !last.isUser else { return nil }
+        return last.id
+    }
+}
+
+private struct CapsBlockHeightKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// Whether long code blocks and tables scroll inside their own capped
+    /// height. Off inside a view that already scrolls the whole reply.
+    var islandMarkdownCapsBlockHeight: Bool {
+        get { self[CapsBlockHeightKey.self] }
+        set { self[CapsBlockHeightKey.self] = newValue }
     }
 }
 
@@ -321,7 +404,9 @@ struct MarkdownCodeLayout: Equatable {
     let hiddenLines: Int
     let scrollsVertically: Bool
 
-    init(code: String) {
+    /// - Parameter capsHeight: false inside a view that already scrolls the
+    ///   whole reply (see islandMarkdownCapsBlockHeight).
+    init(code: String, capsHeight: Bool = true) {
         let lines = code.split(separator: "\n", omittingEmptySubsequences: false)
         if lines.count > Self.renderedLines {
             text = lines.prefix(Self.renderedLines).joined(separator: "\n")
@@ -330,13 +415,14 @@ struct MarkdownCodeLayout: Equatable {
             text = code
             hiddenLines = 0
         }
-        scrollsVertically = lines.count > Self.visibleLines
+        scrollsVertically = capsHeight && lines.count > Self.visibleLines
     }
 }
 
 private struct MarkdownCodeBlockView: View {
     let block: MarkdownCodeBlock
     let fontSize: CGFloat
+    @Environment(\.islandMarkdownCapsBlockHeight) private var capsHeight
     @State private var hovering = false
     @State private var copied = false
 
@@ -344,7 +430,7 @@ private struct MarkdownCodeBlockView: View {
     private static let padding: CGFloat = 7
 
     var body: some View {
-        let layout = MarkdownCodeLayout(code: block.code)
+        let layout = MarkdownCodeLayout(code: block.code, capsHeight: capsHeight)
         VStack(alignment: .leading, spacing: 0) {
             ScrollView(layout.scrollsVertically ? [.horizontal, .vertical] : .horizontal) {
                 Text(layout.text)
@@ -483,6 +569,7 @@ private enum TableMetrics {
 private struct MarkdownTableView: View {
     let table: MarkdownTable
     let fontSize: CGFloat
+    @Environment(\.islandMarkdownCapsBlockHeight) private var capsHeight
 
     private var cellSize: CGFloat { IslandMarkdownStyle.denseSize(fontSize) }
     /// About 24 characters: wide enough for a file path or a short phrase,
@@ -491,7 +578,7 @@ private struct MarkdownTableView: View {
 
     var body: some View {
         let model = MarkdownTableModel(table: table, tooltipThreshold: TableMetrics.tooltipThreshold)
-        let scrollsVertically = model.bodyRowCount > MarkdownTableModel.visibleRows
+        let scrollsVertically = capsHeight && model.bodyRowCount > MarkdownTableModel.visibleRows
         VStack(alignment: .leading, spacing: 3) {
             ScrollView(scrollsVertically ? [.horizontal, .vertical] : .horizontal) {
                 MarkdownTableLayout(columnCount: model.columnCount, maxColumnWidth: maxColumnWidth) {
