@@ -38,6 +38,8 @@ enum SettingsKey {
     static let autoExpandOnPermission = "autoExpandOnPermission"
     static let autoExpandOnCompletion = "autoExpandOnCompletion"
     static let pluginSessionMode = "pluginSessionMode"  // "separate" | "merge" | "hide"
+    // Read-only watch of Claude Desktop's Cowork / local Chat session store
+    static let trackClaudeDesktopCowork = "trackClaudeDesktopCowork"
     static let hapticOnHover = "hapticOnHover"
     static let hapticIntensity = "hapticIntensity"      // 1=light, 2=medium, 3=strong
     static let sessionTimeout = "sessionTimeout"
@@ -162,6 +164,7 @@ struct SettingsDefaults {
     static let autoExpandOnPermission = true
     static let autoExpandOnCompletion = true
     static let pluginSessionMode = "separate"
+    static let trackClaudeDesktopCowork = true
     static let hapticOnHover = false
     static let hapticIntensity = 1          // 1=light
     static let sessionTimeout = 30
@@ -254,6 +257,7 @@ class SettingsManager {
             SettingsKey.autoExpandOnPermission: SettingsDefaults.autoExpandOnPermission,
             SettingsKey.autoExpandOnCompletion: SettingsDefaults.autoExpandOnCompletion,
             SettingsKey.pluginSessionMode: SettingsDefaults.pluginSessionMode,
+            SettingsKey.trackClaudeDesktopCowork: SettingsDefaults.trackClaudeDesktopCowork,
             SettingsKey.hapticOnHover: SettingsDefaults.hapticOnHover,
             SettingsKey.hapticIntensity: SettingsDefaults.hapticIntensity,
             SettingsKey.sessionTimeout: SettingsDefaults.sessionTimeout,

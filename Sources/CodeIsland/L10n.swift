@@ -137,6 +137,11 @@ final class L10n: ObservableObject {
         "plugin_session_mode_separate": "Show separately",
         "plugin_session_mode_merge": "Merge into main",
         "plugin_session_mode_hide": "Hide",
+        "cowork_tracking_toggle": "Track Claude Desktop Cowork sessions",
+        "cowork_tracking_desc": "Read-only. Shows Cowork tasks and local Chat sessions from Claude Desktop's session files — hooks don't run inside Cowork's sandbox. Approve or answer in Claude Desktop; clicking a card opens that conversation there.",
+        "cowork_waiting_approval": "Approve %@ in Claude Desktop",
+        "cowork_waiting_question": "Answer in Claude Desktop: %@",
+        "cowork_waiting_question_generic": "Claude is asking a question — answer in Claude Desktop",
 
         // Auto-approve tools
         "auto_approve_sources": "Always-proceed Agents",
@@ -514,6 +519,11 @@ final class L10n: ObservableObject {
         "plugin_session_mode_separate": "Separat anzeigen",
         "plugin_session_mode_merge": "In Hauptsitzung zusammenführen",
         "plugin_session_mode_hide": "Ausblenden",
+        "cowork_tracking_toggle": "Claude-Desktop-Cowork-Sitzungen verfolgen",
+        "cowork_tracking_desc": "Nur lesend. Zeigt Cowork-Aufgaben und lokale Chat-Sitzungen aus den Sitzungsdateien von Claude Desktop – in der Cowork-Sandbox laufen keine Hooks. Freigaben und Antworten erfolgen in Claude Desktop; ein Klick auf eine Karte öffnet dort die Unterhaltung.",
+        "cowork_waiting_approval": "%@ in Claude Desktop freigeben",
+        "cowork_waiting_question": "In Claude Desktop antworten: %@",
+        "cowork_waiting_question_generic": "Claude stellt eine Frage – in Claude Desktop antworten",
 
         // Auto-approve tools
         "auto_approve_sources": "Agenten im Durchlaufmodus",
@@ -887,6 +897,11 @@ final class L10n: ObservableObject {
         "plugin_session_mode_separate": "独立显示",
         "plugin_session_mode_merge": "合并到主会话",
         "plugin_session_mode_hide": "隐藏",
+        "cowork_tracking_toggle": "追踪 Claude Desktop Cowork 会话",
+        "cowork_tracking_desc": "只读。从 Claude Desktop 的会话文件读取 Cowork 任务和本地 Chat 会话（Cowork 沙盒内不会触发 hooks）。审批和回答请在 Claude Desktop 中完成；点击卡片会直接打开对应对话。",
+        "cowork_waiting_approval": "请在 Claude Desktop 中批准 %@",
+        "cowork_waiting_question": "请在 Claude Desktop 中回答：%@",
+        "cowork_waiting_question_generic": "Claude 正在提问，请在 Claude Desktop 中回答",
 
         // Auto-approve tools
         "auto_approve_sources": "免确认的 Agent",
@@ -1264,6 +1279,11 @@ final class L10n: ObservableObject {
         "plugin_session_mode_separate": "獨立顯示",
         "plugin_session_mode_merge": "合併到主會話",
         "plugin_session_mode_hide": "隱藏",
+        "cowork_tracking_toggle": "追蹤 Claude Desktop Cowork 工作階段",
+        "cowork_tracking_desc": "唯讀。從 Claude Desktop 的工作階段檔案讀取 Cowork 任務與本機 Chat 工作階段（Cowork 沙盒內不會觸發 hooks）。核准與回答請在 Claude Desktop 中完成；點擊卡片會直接開啟對應對話。",
+        "cowork_waiting_approval": "請在 Claude Desktop 中核准 %@",
+        "cowork_waiting_question": "請在 Claude Desktop 中回答：%@",
+        "cowork_waiting_question_generic": "Claude 正在提問，請在 Claude Desktop 中回答",
 
         // Auto-approve tools
         "auto_approve_sources": "免確認的 Agent",
@@ -1641,6 +1661,11 @@ final class L10n: ObservableObject {
         "plugin_session_mode_separate": "別々に表示",
         "plugin_session_mode_merge": "メインセッションに統合",
         "plugin_session_mode_hide": "非表示",
+        "cowork_tracking_toggle": "Claude Desktop の Cowork セッションを追跡",
+        "cowork_tracking_desc": "読み取り専用。Claude Desktop のセッションファイルから Cowork タスクとローカル Chat セッションを表示します（Cowork のサンドボックス内では hooks が動作しません）。承認や回答は Claude Desktop で行い、カードをクリックするとその会話が開きます。",
+        "cowork_waiting_approval": "Claude Desktop で %@ を承認してください",
+        "cowork_waiting_question": "Claude Desktop で回答: %@",
+        "cowork_waiting_question_generic": "Claude が質問しています。Claude Desktop で回答してください",
 
         // Auto-approve tools
         "auto_approve_sources": "常時続行エージェント",
@@ -2018,6 +2043,11 @@ final class L10n: ObservableObject {
         "plugin_session_mode_separate": "별도로 표시",
         "plugin_session_mode_merge": "메인 세션으로 병합",
         "plugin_session_mode_hide": "숨김",
+        "cowork_tracking_toggle": "Claude Desktop Cowork 세션 추적",
+        "cowork_tracking_desc": "읽기 전용. Claude Desktop 세션 파일에서 Cowork 작업과 로컬 Chat 세션을 표시합니다(Cowork 샌드박스에서는 hooks가 실행되지 않음). 승인과 답변은 Claude Desktop에서 하며, 카드를 클릭하면 해당 대화가 열립니다.",
+        "cowork_waiting_approval": "Claude Desktop에서 %@ 승인 필요",
+        "cowork_waiting_question": "Claude Desktop에서 답변: %@",
+        "cowork_waiting_question_generic": "Claude가 질문하고 있습니다. Claude Desktop에서 답변하세요",
 
         // Auto-approve tools
         "auto_approve_sources": "항상 진행 에이전트",
@@ -2395,6 +2425,11 @@ final class L10n: ObservableObject {
         "plugin_session_mode_separate": "Ayrı göster",
         "plugin_session_mode_merge": "Ana oturuma birleştir",
         "plugin_session_mode_hide": "Gizle",
+        "cowork_tracking_toggle": "Claude Desktop Cowork oturumlarını izle",
+        "cowork_tracking_desc": "Salt okunur. Claude Desktop oturum dosyalarından Cowork görevlerini ve yerel Chat oturumlarını gösterir (Cowork sanal alanında hook'lar çalışmaz). Onay ve yanıtları Claude Desktop'ta verin; bir karta tıklamak ilgili konuşmayı orada açar.",
+        "cowork_waiting_approval": "%@ için Claude Desktop'ta onay verin",
+        "cowork_waiting_question": "Claude Desktop'ta yanıtlayın: %@",
+        "cowork_waiting_question_generic": "Claude bir soru soruyor — Claude Desktop'ta yanıtlayın",
 
         // Auto-approve tools
         "auto_approve_sources": "Her Zaman Devam Eden Ajanlar",

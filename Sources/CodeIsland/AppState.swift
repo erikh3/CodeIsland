@@ -230,6 +230,11 @@ final class AppState {
     @ObservationIgnored
     var aiworkReconcileInFlight = false
 
+    /// Claude Desktop Cowork/Chat session-store watcher; nil while the setting
+    /// is off. See AppState+CoworkWatch.
+    @ObservationIgnored
+    var coworkWatcher: CoworkSessionWatcher?
+
     /// Computed: first item in permission queue (backward compat for UI reads)
     var pendingPermission: PermissionRequest? { permissionQueue.first }
     /// Computed: first item in question queue
@@ -452,10 +457,14 @@ final class AppState {
         //    events for >180s shouldn't be force-flipped to idle here — it'll then be
         //    swept by Section 4. Remote session lifecycle is driven by remote-end hooks
         //    and SSH connection state in RemoteManager, not by local timeouts. (#121)
+        //    A Claude Desktop Cowork card waiting on a permission card is skipped too:
+        //    that wait is read from Claude Desktop's own session store, which stays
+        //    silent for as long as the card is left open.
         for (key, session) in sessions
             where processMonitors[key] == nil
             && session.status != .idle
-            && !session.isRemote {
+            && !session.isRemote
+            && !Self.isCoworkWaitingOnDesktop(key: key, status: session.status) {
             let elapsed = -session.lastActivity.timeIntervalSinceNow
             let threshold: TimeInterval
             switch session.status {

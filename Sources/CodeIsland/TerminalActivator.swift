@@ -103,6 +103,11 @@ struct TerminalActivator {
                 name: .codeIslandDidJumpToSession, object: nil, userInfo: ["sessionId": sessionId]
             )
         }
+        // Claude Desktop Cowork/Chat cards come from Claude's session store, not
+        // a terminal: open that exact conversation in Claude Desktop.
+        if let sessionId, AppState.openCoworkSession(sessionKey: sessionId) {
+            return
+        }
         // A UI harness (T3 Code) owns the conversation: the terminal/multiplexer
         // env the CLI inherited belongs to wherever the harness server was
         // started, so jump to the harness instead — before Herdr/tmux routing,
