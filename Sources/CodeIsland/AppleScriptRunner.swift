@@ -48,4 +48,26 @@ extension AppleScriptRunner {
             return String(data: data, encoding: .utf8)
         }
     )
+
+    /// Runs nothing and returns nothing. What a test process gets unless the
+    /// test installs a fake, so no test can script the terminal of whoever
+    /// runs the suite.
+    static let inert = AppleScriptRunner(launch: { _ in }, evaluate: { _, _ in nil })
+
+    /// The runner both paths use. Read from any thread; tests swap it.
+    static var current: AppleScriptRunner {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return installed
+        }
+        set {
+            lock.lock()
+            installed = newValue
+            lock.unlock()
+        }
+    }
+
+    private static let lock = NSLock()
+    private static var installed: AppleScriptRunner = RuntimeEnvironment.isRunningTests ? .inert : .osascript
 }

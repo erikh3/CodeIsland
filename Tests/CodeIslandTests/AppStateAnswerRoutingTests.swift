@@ -83,7 +83,9 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let appState = AppState()
         var suppressed = SessionSnapshot()
         suppressed.termApp = "Ghostty"
-        suppressed.termBundleId = try XCTUnwrap(NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+        suppressed.termBundleId = "com.mitchellh.ghostty"
+        // "s-other"'s Ghostty is in front; the card's own session has no terminal.
+        installVisibilityProbe(.terminalInFront { $0.termBundleId == "com.mitchellh.ghostty" })
         appState.sessions["s-other"] = suppressed
         XCTAssertFalse(
             appState.shouldAutoOpenPendingSurface(for: "s-other"),
@@ -429,7 +431,8 @@ final class AppStateAnswerRoutingTests: XCTestCase {
         let appState = AppState()
         var suppressed = SessionSnapshot()
         suppressed.termApp = "Ghostty"
-        suppressed.termBundleId = try XCTUnwrap(NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+        suppressed.termBundleId = "com.mitchellh.ghostty"
+        installVisibilityProbe(.terminalInFront { $0.termBundleId == "com.mitchellh.ghostty" })
         appState.sessions["s-other"] = suppressed
         XCTAssertFalse(appState.shouldAutoOpenPendingSurface(for: "s-other"))
 

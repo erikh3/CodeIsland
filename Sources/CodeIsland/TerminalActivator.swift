@@ -433,6 +433,7 @@ struct TerminalActivator {
         // already off-main — match the rest of the activator and run it on a
         // userInitiated background queue so a stuck `tmux display-message`
         // can't freeze the UI. See #139.
+        let scriptRunner = AppleScriptRunner.current
         DispatchQueue.global(qos: .userInitiated).async {
         // Resolve tmux title prefix (most reliable for tmux sessions in Ghostty).
         // Example Ghostty title often contains: "<session>:<winIdx>:<winName> - ..."
@@ -632,7 +633,7 @@ struct TerminalActivator {
         // Out of process like every other activation script (see AppleScriptRunner).
         // Already on a background queue (see DispatchQueue.global wrap above), so
         // launch directly instead of paying runAppleScript's extra dispatch hop.
-        AppleScriptRunner.osascript.launch(script)
+        scriptRunner.launch(script)
         } // end DispatchQueue.global async
     }
 
@@ -1341,10 +1342,13 @@ struct TerminalActivator {
 
     /// Fire-and-forget, off the caller's queue as before, so a click on the main
     /// thread never waits for osascript to spawn. Out of process rather than
-    /// NSAppleScript, which is main-thread-only — see AppleScriptRunner.
+    /// NSAppleScript, which is main-thread-only — see AppleScriptRunner. The
+    /// runner is read here, not on the queue, so a test that swaps it around a
+    /// call sees that call's script.
     private static func runAppleScript(_ source: String) {
+        let runner = AppleScriptRunner.current
         DispatchQueue.global(qos: .userInitiated).async {
-            AppleScriptRunner.osascript.launch(source)
+            runner.launch(source)
         }
     }
 
