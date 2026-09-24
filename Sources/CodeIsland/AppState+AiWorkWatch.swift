@@ -237,10 +237,12 @@ extension AppState {
             // turn that started inside that window would otherwise be judged on
             // pre-turn activity and flashed back to idle.
             if -snapshot.lastActivity.timeIntervalSinceNow <= grace { continue }
+            let waitBefore = displayOnlyWaitKind(forSession: key)
             snapshot.status = .idle
             snapshot.currentTool = nil
             snapshot.toolDescription = nil
             sessions[key] = snapshot
+            noteDisplayOnlyWait(sessionId: key, was: waitBefore)
             changed = true
         }
         if changed {
@@ -341,6 +343,7 @@ extension AppState {
         let sessionId = AppState.aiworkSessionPrefix + daemonSessionId
         let isNew = sessions[sessionId] == nil
         let previousStatus = sessions[sessionId]?.status
+        let waitBefore = displayOnlyWaitKind(forSession: sessionId)
         // A status-less event for a conversation we are not already tracking is
         // history, not activity. Creating a card from one would surface long-
         // finished conversations (backfill deliberately skips idle entries for the
@@ -394,6 +397,14 @@ extension AppState {
             snapshot.lastActivity = Date()
         }
         sessions[sessionId] = snapshot
+        // Approval, plan confirmation or question in AiWork: reminders, and a
+        // push when one is first raised.
+        noteDisplayOnlyWait(
+            sessionId: sessionId,
+            was: waitBefore,
+            asking: DisplayOnlyWait.content(forAiWorkEvent: name, data: frame.dataObject),
+            announce: true
+        )
 
         if AiWorkStatusMapper.isTerminalEvent(name) {
             enqueueCompletion(sessionId)
@@ -754,7 +765,9 @@ extension AppState {
             refreshDerivedState()
             return
         }
+        let waitBefore = displayOnlyWaitKind(forSession: key)
         sessions[key] = snapshot
+        noteDisplayOnlyWait(sessionId: key, was: waitBefore)
         refreshDerivedState()
     }
 
@@ -875,7 +888,10 @@ extension AppState {
                 preserveLiveStatus: false
             )
             guard ConfigInstaller.isEnabled(source: snapshot.source) else { continue }
+            let waitBefore = displayOnlyWaitKind(forSession: sessionId)
             sessions[sessionId] = snapshot
+            // Already waiting when the daemon was reached: remind, don't push.
+            noteDisplayOnlyWait(sessionId: sessionId, was: waitBefore)
             applied = true
             // The list row already carries title/cwd/client_type: count as hydrated.
             aiworkHydratedSessionIds.insert(sid)

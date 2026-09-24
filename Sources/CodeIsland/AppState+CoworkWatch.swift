@@ -127,10 +127,12 @@ extension AppState {
                lastActivity < launchedAt,
                var snapshot = sessions[key],
                snapshot.status != .idle {
+                let waitBefore = displayOnlyWaitKind(forSession: key)
                 snapshot.status = .idle
                 snapshot.currentTool = nil
                 snapshot.toolDescription = nil
                 sessions[key] = snapshot
+                noteDisplayOnlyWait(sessionId: key, was: waitBefore)
             }
         }
         refreshDerivedState()
@@ -152,6 +154,7 @@ extension AppState {
         }
         let isNew = sessions[key] == nil
         guard !isNew || isLaunch || update.isLive else { return }
+        let waitBefore = displayOnlyWaitKind(forSession: key)
 
         var snapshot = sessions[key] ?? SessionSnapshot(startTime: metadata.createdAt ?? Date())
         Self.applyCoworkMetadata(&snapshot, metadata: metadata, transcriptPath: update.transcriptPath)
@@ -165,6 +168,14 @@ extension AppState {
         }
         sessions[key] = snapshot
         attachTranscriptTailerIfNeeded(sessionId: key)
+        // A permission card or question in Claude Desktop: reminders, and a
+        // push when a live one first appears.
+        noteDisplayOnlyWait(
+            sessionId: key,
+            was: waitBefore,
+            asking: DisplayOnlyWait.content(forCowork: update.audit),
+            announce: update.isLive && !isLaunch
+        )
 
         guard update.isLive else { return }
         if snapshot.status != .idle,

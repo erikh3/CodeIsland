@@ -13,11 +13,13 @@ extension Notification.Name {
 /// turns nobody looked at, get another nudge after the configured interval.
 ///
 /// Timing lives in the pure `FollowUpReminderScheduler`; this controller feeds
-/// it from `AppState` (queues, completions, surface, jumps), arms at most one
-/// wake-up, and turns due reminders into the island's own reactions — the
-/// matching sound, the card re-opened when the island is folded away, or a
-/// collapsed-state hint when auto-expand is off. With the setting off it holds
-/// no entries and arms nothing.
+/// it from `AppState` (queues, display-only waits, completions, surface,
+/// jumps), arms at most one wake-up, and turns due reminders into the island's
+/// own reactions — the matching sound, the card re-opened when the island is
+/// folded away, or a collapsed-state hint when auto-expand is off. A
+/// display-only wait (Claude Desktop Cowork, Cursor's in-IDE question, AiWork…)
+/// has no card to open: it only chimes and hints. With the setting off it
+/// holds no entries and arms nothing.
 ///
 /// Other channels (push to a phone) subscribe with `addReminderHandler`; they
 /// receive every reminder, including `.deferred` ones that came due while the
@@ -102,15 +104,38 @@ final class FollowUpReminderController {
 
     /// The reminder interval changed in Settings.
     func settingsChanged() {
-        waitingChanged()
-        if !scheduler.isEnabled { disarm() }
+        guard applyInterval() else {
+            disarm()
+            return
+        }
+        let now = clock()
+        syncWaiting(now: now)
+        reschedule(now: now)
     }
 
-    /// Permission / question queues or dismissals changed.
+    /// Permission / question queues or dismissals changed. Display-only waits
+    /// are not re-read here: this runs synchronously inside every queue
+    /// mutation, where a session whose request was just answered can still
+    /// show its waiting status for a moment.
     func waitingChanged() {
         guard applyInterval() else { return }
         let now = clock()
-        syncWaiting(now: now)
+        syncQueues(now: now)
+        reschedule(now: now)
+    }
+
+    /// A session's display-only wait began, changed kind or ended (see
+    /// AppState+DisplayOnlyWaits). `began` is a wait that just started: its
+    /// reminders start over even if an earlier wait's entry was never seen to
+    /// end, and a hint left by that earlier wait goes out.
+    func displayOnlyWaitsChanged(began: Key? = nil) {
+        guard applyInterval() else { return }
+        let now = clock()
+        syncDisplayOnly(now: now)
+        if let began {
+            hintedKeys.remove(began)
+            scheduler.restart(kind: began.kind, sessionId: began.sessionId, origin: .displayOnly, now: now)
+        }
         reschedule(now: now)
     }
 
@@ -253,7 +278,13 @@ final class FollowUpReminderController {
         return scheduler.isEnabled
     }
 
+    /// Both origins; only from a settled state (tick, settings).
     private func syncWaiting(now: Date) {
+        syncQueues(now: now)
+        syncDisplayOnly(now: now)
+    }
+
+    private func syncQueues(now: Date) {
         guard let appState else { return }
         scheduler.sync(kind: .approval, waiting: appState.visiblePermissionSessionIds, now: now)
         scheduler.sync(
@@ -263,13 +294,27 @@ final class FollowUpReminderController {
         )
     }
 
+    private func syncDisplayOnly(now: Date) {
+        guard let appState else { return }
+        for kind in [FollowUpReminderKind.approval, .question] {
+            scheduler.sync(
+                kind: kind,
+                origin: .displayOnly,
+                waiting: appState.displayOnlyWaitingSessionIds(kind: kind),
+                now: now
+            )
+        }
+    }
+
     private func isStillPending(_ key: Key) -> Bool {
         guard let appState else { return false }
         switch key.kind {
         case .approval:
             return appState.visiblePermissionSessionIds.contains(key.sessionId)
+                || appState.displayOnlyWaitKind(forSession: key.sessionId) == .approval
         case .question:
             return appState.pendingQuestion(forSession: key.sessionId) != nil
+                || appState.displayOnlyWaitKind(forSession: key.sessionId) == .question
         case .completion:
             // Any new activity takes the session out of idle; a new finished
             // turn re-tracks it from scratch.
@@ -313,10 +358,12 @@ final class FollowUpReminderController {
         for reminder in reminders { notify(reminder) }
 
         // One card at a time: the most urgent item gets its card back when the
-        // island is folded away; the rest light the hint.
+        // island is folded away; the rest light the hint. A display-only wait
+        // has no card on the island — it can only be answered where it was
+        // asked — so it always hints.
         var reopened: Key?
         if appState.surface == .collapsed,
-           let head = reminders.first(where: { $0.kind != .completion }),
+           let head = reminders.first(where: { $0.kind != .completion && $0.origin == .island }),
            reopenCard(for: head) {
             reopened = Key(head.kind, head.sessionId)
         }

@@ -118,13 +118,25 @@ extension AppState {
         if reminder.delivery == .catchUp { return .skipped(.userPresent) }
         let sessionId = reminder.sessionId
         let pending: PushContent
+        // Approvals and questions come from the queue, or — for a display-only
+        // wait — from what the wait asked, with where to answer it.
         switch reminder.kind {
         case .approval:
-            guard let request = pendingPermission(forSession: sessionId) else { return .skipped(.nothingPending) }
-            pending = Self.pushContent(forPermission: request.event, cwd: sessions[sessionId]?.cwd)
+            if let request = pendingPermission(forSession: sessionId) {
+                pending = Self.pushContent(forPermission: request.event, cwd: sessions[sessionId]?.cwd)
+            } else if let waiting = displayOnlyWaitPushContent(forSession: sessionId, kind: .approval) {
+                pending = waiting
+            } else {
+                return .skipped(.nothingPending)
+            }
         case .question:
-            guard let request = pendingQuestion(forSession: sessionId) else { return .skipped(.nothingPending) }
-            pending = Self.pushContent(forQuestion: request)
+            if let request = pendingQuestion(forSession: sessionId) {
+                pending = Self.pushContent(forQuestion: request)
+            } else if let waiting = displayOnlyWaitPushContent(forSession: sessionId, kind: .question) {
+                pending = waiting
+            } else {
+                return .skipped(.nothingPending)
+            }
         case .completion:
             // One nudge for a finished turn nobody looked at. If the turn's own
             // completion push reached the phone, the nudge would only repeat

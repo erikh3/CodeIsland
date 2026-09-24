@@ -208,7 +208,9 @@ final class PushNotifier: ObservableObject {
             secretQuestion: l10n["push_msg_secret_question"],
             moreOptions: l10n["push_msg_more_options"],
             testHeadline: l10n["push_msg_test_headline"],
-            testBody: l10n["push_msg_test_body"]
+            testBody: l10n["push_msg_test_body"],
+            answerIn: l10n["push_msg_answer_in"],
+            answerOnMac: l10n["push_msg_answer_on_mac"]
         )
     }
 

@@ -91,6 +91,7 @@ extension AppState {
                 skipStalePending = false
             }
             if !skipStalePending, var mutable = sessions[sessionId] {
+                let waitBefore = displayOnlyWaitKind(forSession: sessionId)
                 if Self.applyCursorQuestionSignal(
                     signal,
                     to: &mutable,
@@ -98,6 +99,8 @@ extension AppState {
                     transcriptPath: path
                 ) != .ignored {
                     sessions[sessionId] = mutable
+                    // Found on attach, not asked just now: remind, don't push.
+                    noteDisplayOnlyWait(sessionId: sessionId, was: waitBefore)
                 }
             }
         }
@@ -211,6 +214,7 @@ extension AppState {
             }
         }
         guard var session = sessions[delta.sessionId] else { return }
+        let waitBefore = displayOnlyWaitKind(forSession: delta.sessionId)
         var mutated = false
 
         if delta.hasActivity {
@@ -315,6 +319,9 @@ extension AppState {
             sessions[delta.sessionId] = session
             scheduleSave()
         }
+        // Cursor's question (or a transcript turn boundary ending some other
+        // display-only wait): reminders, and a push for a question just asked.
+        noteDisplayOnlyWait(sessionId: delta.sessionId, was: waitBefore, announce: questionStateChanged)
         if questionStateChanged {
             // Hooks stay silent while Cursor waits on its question, so nothing
             // else recomputes the aggregated pill/mascot state for this flip.

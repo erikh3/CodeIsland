@@ -431,21 +431,29 @@ extension AppState {
             snapshot.transcriptPath = path
         }
 
+        let waitBefore = displayOnlyWaitKind(forSession: sessionId)
         applyCodexThreadStatus(&snapshot, status: thread["status"]?.asObject)
         snapshot.lastActivity = Date()
         sessions[sessionId] = snapshot
+        noteDisplayOnlyWait(sessionId: sessionId, was: waitBefore)
         attachTranscriptTailerIfNeeded(sessionId: sessionId)
         refreshDerivedState()
     }
 
+    /// A `waitingOnApproval` / `waitingOnUserInput` flag the island holds no
+    /// request for is a display-only wait. It only reminds: the matching hook
+    /// request or `requestUserInput` may be queued a moment later, and its
+    /// push is the one that carries the command or the questions.
     private func applyCodexThreadStatusNotification(params: [String: AnyCodableLike]) {
         guard let threadId = params["threadId"]?.asString else { return }
         let sessionId = AppState.codexAppSessionPrefix + threadId
         guard var snapshot = sessions[sessionId] else { return }
 
+        let waitBefore = displayOnlyWaitKind(forSession: sessionId)
         applyCodexThreadStatus(&snapshot, status: params["status"]?.asObject)
         snapshot.lastActivity = Date()
         sessions[sessionId] = snapshot
+        noteDisplayOnlyWait(sessionId: sessionId, was: waitBefore)
         refreshDerivedState()
     }
 

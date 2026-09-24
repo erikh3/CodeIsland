@@ -127,6 +127,10 @@ final class AppState {
     /// completions. Holds no entries and arms no timer while the setting is off.
     @ObservationIgnored
     private(set) lazy var followUps = FollowUpReminderController(appState: self)
+    /// What each display-only wait asks, recorded by the source that opened
+    /// it, for its pushes. See AppState+DisplayOnlyWaits.
+    @ObservationIgnored
+    var displayOnlyWaitAsks: [String: PushContent] = [:]
 
     @ObservationIgnored
     private(set) var recentHookEvents: [DiagnosticHookEvent] = []
@@ -905,6 +909,7 @@ final class AppState {
     /// Every removal path (cleanup timer, process exit, reducer effect) goes through here
     /// so leaked continuations / connections are impossible.
     func removeSession(_ sessionId: String) {
+        let displayOnlyWaitBefore = displayOnlyWaitKind(forSession: sessionId)
         // Resume ALL pending continuations for this session
         drainPermissions(forSession: sessionId, reason: "removeSession")
         drainQuestions(forSession: sessionId, reason: "removeSession")
@@ -920,6 +925,7 @@ final class AppState {
             }
         }
         sessions.removeValue(forKey: sessionId)
+        noteDisplayOnlyWait(sessionId: sessionId, was: displayOnlyWaitBefore)
         stopMonitor(sessionId)
         detachTranscriptTailer(sessionId: sessionId)
         exitingSessions.removeValue(forKey: sessionId)
@@ -1586,6 +1592,7 @@ final class AppState {
 
         let prevStatus = sessions[sessionId]?.status
         let wasWaiting = prevStatus == .waitingApproval || prevStatus == .waitingQuestion
+        let displayOnlyWaitBefore = displayOnlyWaitKind(forSession: sessionId)
         let cwdBeforeReduce = sessions[sessionId]?.cwd
 
         // Cache PreToolUse payloads so downstream events sharing tool_use_id can be
@@ -1704,6 +1711,14 @@ final class AppState {
                 activeSessionId = mostActiveSessionId()
             }
         }
+
+        // A terminal permission prompt announced by a Notification waits
+        // display-only until the next activity event clears it.
+        noteDisplayOnlyWait(
+            sessionId: sessionId,
+            was: displayOnlyWaitBefore,
+            asking: Self.displayOnlyWaitAsk(forHookEvent: event, normalizedEventName: normalizedEventName)
+        )
 
         scheduleSave()
         startRotationIfNeeded()
