@@ -781,6 +781,36 @@ enum SessionLiveOutputDisplay {
 
 // MARK: - Compact Tool Status (non-notch center area)
 
+/// What the collapsed bar's centre leads with: the project folder, or the
+/// session title when "Show project name" is off. Capped in width — an
+/// AI-generated title runs to dozens of characters and would otherwise push
+/// the tool and its description out of the bar. A short label still hugs its
+/// text.
+struct CompactContextLabel: View {
+    let text: String
+
+    static let fontSize: CGFloat = 11
+    static let maxWidth: CGFloat = 120
+
+    /// The label's widest extent: its text's width, up to `maxWidth`.
+    static func width(for text: String) -> CGFloat {
+        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .medium)
+        // A point of slack: Text truncates a label measured to the exact width.
+        let ideal = (text as NSString).size(withAttributes: [.font: font]).width.rounded(.up) + 1
+        return min(ideal, maxWidth)
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: Self.fontSize, weight: .medium, design: .monospaced))
+            .foregroundStyle(.white.opacity(0.8))
+            .lineLimit(1)
+            .truncationMode(.tail)
+            // minWidth 0 keeps it shrinkable when the bar is narrower still.
+            .frame(minWidth: 0, maxWidth: Self.width(for: text), alignment: .leading)
+    }
+}
+
 /// Shows the current tool activity in the center of the bar on non-notch screens.
 /// Keeps the last tool visible for a short linger period to avoid flashing.
 private struct CompactToolStatus: View {
@@ -828,8 +858,7 @@ private struct CompactToolStatus: View {
         HStack(spacing: 5) {
             // Project name — shown whenever the session is not idle
             if isWorking, let project = projectName {
-                Text(project)
-                    .foregroundStyle(.white.opacity(0.8))
+                CompactContextLabel(text: project)
                     .id("center-project-\(displaySessionId ?? "")")
                     .transition(.opacity)
             }
