@@ -23,8 +23,9 @@ extension Notification.Name {
 ///
 /// Other channels (push to a phone) subscribe with `addReminderHandler`; they
 /// receive every reminder, including `.deferred` ones that came due while the
-/// Mac itself was held back (locked, asleep, quiet hours) — exactly when a
-/// remote nudge is most useful.
+/// Mac itself was held back (locked, screen saver, quiet hours) — exactly when
+/// a remote nudge is most useful — and `locallySuppressed` ones the island
+/// kept quiet because the user seemed to be in front of the item.
 @MainActor
 @Observable
 final class FollowUpReminderController {
@@ -65,6 +66,8 @@ final class FollowUpReminderController {
     @ObservationIgnored nonisolated(unsafe) private var wakeTask: Task<Void, Never>?
     @ObservationIgnored nonisolated(unsafe) private var jumpObserver: NSObjectProtocol?
     @ObservationIgnored private var handlers: [(FollowUpReminder) -> Void] = []
+    /// Filled by `remoteChannelDelivered` while `offerSuppressed` runs.
+    @ObservationIgnored private var remoteDeliveries: Set<Key> = []
     @ObservationIgnored private var tickInFlight = false
     @ObservationIgnored private var tickRequested = false
 
@@ -95,9 +98,19 @@ final class FollowUpReminderController {
     // MARK: - Subscribers
 
     /// Every reminder is handed to every handler, on the main actor, before
-    /// the island reacts to it. Shape: see `FollowUpReminder`.
+    /// the island reacts to it. Shape: see `FollowUpReminder` — including
+    /// the `locallySuppressed` ones the island itself keeps quiet about.
     func addReminderHandler(_ handler: @escaping (FollowUpReminder) -> Void) {
         handlers.append(handler)
+    }
+
+    /// A handler delivered a `locallySuppressed` reminder somewhere else (a
+    /// push to a phone). It reached the user after all, so it counts as an
+    /// attempt instead of being postponed — the phone gets at most as many
+    /// reminders as the island would have given.
+    func remoteChannelDelivered(_ reminder: FollowUpReminder) {
+        guard reminder.locallySuppressed else { return }
+        remoteDeliveries.insert(Key(reminder.kind, reminder.sessionId))
     }
 
     // MARK: - Inputs from AppState
@@ -245,11 +258,15 @@ final class FollowUpReminderController {
                 // request is that request's now: leave it alone.
                 guard isStillPending(reminder) else { continue }
                 if inFront {
-                    // The user is in front of it right now, so this one
-                    // reached nobody and costs nothing: it comes back an
-                    // interval later. Being in front once is no answer —
-                    // only jumping to the session silences it for good.
-                    scheduler.postpone(reminder, now: now)
+                    // The user is in front of it right now: nothing plays on
+                    // the Mac. A remote channel may still take it (the Mac
+                    // may be unattended with the terminal left in front);
+                    // otherwise it reached nobody and costs nothing, and
+                    // comes back an interval later. Being in front once is
+                    // no answer — only jumping to the session silences it.
+                    if !offerSuppressed(reminder) {
+                        scheduler.postpone(reminder, now: now)
+                    }
                     continue
                 }
             }
@@ -428,6 +445,15 @@ final class FollowUpReminderController {
 
     private func notify(_ reminder: FollowUpReminder) {
         for handler in handlers { handler(reminder) }
+    }
+
+    /// Hand a reminder the island keeps to itself to the handlers, flagged
+    /// `locallySuppressed`; returns whether one of them delivered it.
+    private func offerSuppressed(_ reminder: FollowUpReminder) -> Bool {
+        remoteDeliveries.removeAll()
+        defer { remoteDeliveries.removeAll() }
+        notify(reminder.suppressedLocally())
+        return remoteDeliveries.contains(Key(reminder.kind, reminder.sessionId))
     }
 
     private func reschedule(now: Date) {

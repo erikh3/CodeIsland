@@ -61,6 +61,13 @@ public struct FollowUpReminder: Equatable, Sendable {
     /// (see `FollowUpReminderScheduler.sync(kind:requests:now:)`); nil for
     /// display-only waits and finished turns.
     public let requestId: String?
+    /// An `.onTime` reminder the island kept to itself because the user
+    /// seemed to be in front of the item (its card under the pointer, the
+    /// session's terminal tab in front). Nothing played on the Mac. Remote
+    /// channels still get it: "the terminal is in front" only means someone
+    /// is looking while someone is at the Mac, and a Mac left unlocked keeps
+    /// reporting its last frontmost app.
+    public let locallySuppressed: Bool
 
     public init(
         kind: FollowUpReminderKind,
@@ -70,7 +77,8 @@ public struct FollowUpReminder: Equatable, Sendable {
         waitingSince: Date,
         delivery: Delivery,
         origin: Origin = .island,
-        requestId: String? = nil
+        requestId: String? = nil,
+        locallySuppressed: Bool = false
     ) {
         self.kind = kind
         self.sessionId = sessionId
@@ -80,6 +88,16 @@ public struct FollowUpReminder: Equatable, Sendable {
         self.delivery = delivery
         self.origin = origin
         self.requestId = requestId
+        self.locallySuppressed = locallySuppressed
+    }
+
+    /// The same reminder, marked as kept off the Mac (`locallySuppressed`).
+    public func suppressedLocally() -> FollowUpReminder {
+        FollowUpReminder(
+            kind: kind, sessionId: sessionId, attempt: attempt, maxAttempts: maxAttempts,
+            waitingSince: waitingSince, delivery: delivery, origin: origin, requestId: requestId,
+            locallySuppressed: true
+        )
     }
 
     /// No further reminder will follow for this item.

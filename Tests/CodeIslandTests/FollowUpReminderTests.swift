@@ -16,6 +16,9 @@ final class FollowUpReminderTests: XCTestCase {
     private var pointerOverPanel = false
     private var played: [String] = []
     private var fired: [FollowUpReminder] = []
+    /// Reminders the island kept to itself (`locallySuppressed`), which only
+    /// remote channels hear about.
+    private var keptOffTheMac: [FollowUpReminder] = []
     private var pending: [Task<Data, Never>] = []
     private var savedDefaults: [String: Any?] = [:]
 
@@ -44,6 +47,7 @@ final class FollowUpReminderTests: XCTestCase {
         pointerOverPanel = false
         played = []
         fired = []
+        keptOffTheMac = []
         pending = []
 
         appState = AppState()
@@ -56,7 +60,13 @@ final class FollowUpReminderTests: XCTestCase {
         followUps.terminalFrontmost = { _ in false }
         followUps.tabVisible = { _ in false }
         followUps.playSound = { [unowned self] in self.played.append($0) }
-        followUps.addReminderHandler { [unowned self] in self.fired.append($0) }
+        followUps.addReminderHandler { [unowned self] reminder in
+            if reminder.locallySuppressed {
+                self.keptOffTheMac.append(reminder)
+            } else {
+                self.fired.append(reminder)
+            }
+        }
     }
 
     override func tearDown() async throws {
@@ -206,6 +216,7 @@ final class FollowUpReminderTests: XCTestCase {
         await advance(60)
         XCTAssertEqual(fired, [])
         XCTAssertEqual(played, [])
+        XCTAssertEqual(keptOffTheMac.map(\.sessionId), ["looking"])
         XCTAssertEqual(followUps.armedWakeDate, now.addingTimeInterval(60), "postponed, not silenced")
         pointerOverPanel = false
         await advance(60)
@@ -232,6 +243,7 @@ final class FollowUpReminderTests: XCTestCase {
         await advance(60)
         XCTAssertEqual(fired, [])
         XCTAssertEqual(played, [])
+        XCTAssertEqual(keptOffTheMac.map(\.attempt), [1])
 
         // The terminal happened to be in front at that moment; the user then
         // moved on to something else and the request is still waiting.

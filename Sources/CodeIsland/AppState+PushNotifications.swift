@@ -185,9 +185,13 @@ extension AppState {
     /// plus how long it has been waiting.
     ///
     /// - `.deferred`: the Mac held its own reminder back (locked, screen
-    ///   saver, display asleep, quiet hours) — the moment a phone matters most.
-    /// - `.onTime`: the controller already skipped it when the session's
-    ///   terminal was in front, so Smart Suppress has had its say.
+    ///   saver, quiet hours) — the moment a phone matters most.
+    /// - `.onTime`: played on the Mac as well — unless `locallySuppressed`:
+    ///   the island kept quiet because the user seemed to be in front of it
+    ///   (the session's terminal tab in front, the card under the pointer).
+    ///   That is Smart Suppress's call, and the gate honours it only while
+    ///   someone is at the Mac. Away, the phone gets it; the controller then
+    ///   counts it as an attempt (`remoteChannelDelivered`).
     /// - `.catchUp`: the local replay after the hold ended; the person is
     ///   back and the deferred one already went out.
     @discardableResult
@@ -226,10 +230,15 @@ extension AppState {
             }
             pending = .completion(summary: Self.pushCompletionSummary(sessions[sessionId]))
         }
-        return notifier.notify(
+        let decision = notifier.notify(
             .reminder(pending: pending, waitingSince: reminder.waitingSince),
-            subject: pushSubject(for: sessionId)
+            subject: pushSubject(for: sessionId),
+            smartSuppressed: reminder.locallySuppressed
         )
+        if case .sent = decision {
+            followUps.remoteChannelDelivered(reminder)
+        }
+        return decision
     }
 
     // MARK: Content

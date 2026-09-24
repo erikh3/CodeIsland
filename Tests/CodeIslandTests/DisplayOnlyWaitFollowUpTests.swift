@@ -190,8 +190,9 @@ final class DisplayOnlyWaitFollowUpTests: XCTestCase {
     }
 
     /// Smart Suppress's question, with Claude Desktop as the "terminal": in
-    /// front means the user is looking at the card.
-    func testClaudeDesktopInFrontCancels() async {
+    /// front means the user is looking at the card. Nothing happens on the
+    /// Mac; remote channels still get it, marked as kept off the Mac.
+    func testClaudeDesktopInFrontKeepsTheReminderOffTheMac() async {
         UserDefaults.standard.set(true, forKey: SettingsKey.smartSuppress)
         var probed: [String?] = []
         followUps.terminalFrontmost = { session in
@@ -203,7 +204,9 @@ final class DisplayOnlyWaitFollowUpTests: XCTestCase {
             coworkAudit(.permissionRequested(id: "r", toolName: "Bash", detail: "ls")), permissionsRequested: 1
         ))
         await advance(60)
-        XCTAssertEqual(fired, [])
+        XCTAssertEqual(fired.map(\.locallySuppressed), [true])
+        XCTAssertEqual(played, [])
+        XCTAssertFalse(followUps.hintActive)
         XCTAssertEqual(probed, [AppState.claudeDesktopBundleId])
     }
 
