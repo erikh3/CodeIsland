@@ -65,6 +65,100 @@ struct PushNotificationsSection: View {
     }
 }
 
+/// One text setting of a channel, in display order.
+struct PushFieldSpec: Equatable {
+    enum Prompt: Equatable {
+        case none
+        case literal(String)
+        case optional
+
+        func text(_ l10n: L10n) -> String? {
+            switch self {
+            case .none: return nil
+            case .literal(let text): return text
+            case .optional: return l10n["push_optional"]
+            }
+        }
+    }
+
+    /// L10n key of the label.
+    let key: String
+    let value: WritableKeyPath<PushChannelConfig, String>
+    var prompt: Prompt = .none
+    /// A credential, or a value that works as one: the device key, the ntfy
+    /// topic (anyone who knows it can read and post), a webhook URL (its
+    /// query or path is the token), tokens and secrets. Shown as dots until
+    /// the eye is clicked, so a shared screen or a screenshot doesn't hand
+    /// them out.
+    var masked = false
+
+    static func fields(for kind: PushChannelKind) -> [PushFieldSpec] {
+        switch kind {
+        case .bark:
+            return [
+                PushFieldSpec(key: "push_field_server", value: \.endpoint, prompt: .literal(kind.defaultEndpoint)),
+                PushFieldSpec(key: "push_field_device_key", value: \.target, masked: true),
+                PushFieldSpec(key: "push_field_group", value: \.group, prompt: .literal("CodeIsland")),
+                PushFieldSpec(key: "push_field_icon", value: \.icon, prompt: .optional),
+                PushFieldSpec(key: "push_field_sound", value: \.sound, prompt: .optional),
+            ]
+        case .ntfy:
+            return [
+                PushFieldSpec(key: "push_field_server", value: \.endpoint, prompt: .literal(kind.defaultEndpoint)),
+                PushFieldSpec(key: "push_field_topic", value: \.target, masked: true),
+                PushFieldSpec(key: "push_field_token", value: \.token, prompt: .optional, masked: true),
+            ]
+        case .dingtalk, .feishu:
+            return [
+                PushFieldSpec(key: "push_field_webhook", value: \.endpoint, masked: true),
+                PushFieldSpec(key: "push_field_secret", value: \.secret, prompt: .optional, masked: true),
+            ]
+        case .wecom, .slack:
+            return [PushFieldSpec(key: "push_field_webhook", value: \.endpoint, masked: true)]
+        case .telegram:
+            return [
+                PushFieldSpec(key: "push_field_bot_token", value: \.token, masked: true),
+                PushFieldSpec(key: "push_field_chat_id", value: \.target),
+                PushFieldSpec(key: "push_field_api_base", value: \.endpoint, prompt: .literal(kind.defaultEndpoint)),
+            ]
+        }
+    }
+}
+
+/// A credential field: dots by default, plain text while the eye is on.
+/// Reverts to dots whenever the settings page is rebuilt.
+private struct MaskedPushField: View {
+    @ObservedObject private var l10n = L10n.shared
+    let title: String
+    @Binding var text: String
+    let prompt: String?
+    @State private var revealed = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Group {
+                if revealed {
+                    TextField(title, text: $text, prompt: prompt.map { Text($0) })
+                        .autocorrectionDisabled(true)
+                } else {
+                    SecureField(title, text: $text, prompt: prompt.map { Text($0) })
+                }
+            }
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 12, design: .monospaced))
+            Button {
+                revealed.toggle()
+            } label: {
+                Image(systemName: revealed ? "eye.slash" : "eye")
+                    .frame(width: 16)
+            }
+            .buttonStyle(.borderless)
+            .help(l10n[revealed ? "push_hide_value" : "push_show_value"])
+            .accessibilityLabel(l10n[revealed ? "push_hide_value" : "push_show_value"])
+        }
+    }
+}
+
 private struct PushChannelEditor: View {
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var notifier = PushNotifier.shared
@@ -114,45 +208,25 @@ private struct PushChannelEditor: View {
 
     @ViewBuilder
     private var fields: some View {
-        switch config.kind {
-        case .bark:
-            field("push_field_server", text: $config.endpoint, prompt: PushChannelKind.bark.defaultEndpoint)
-            field("push_field_device_key", text: $config.target)
-            field("push_field_group", text: $config.group, prompt: "CodeIsland")
-            field("push_field_icon", text: $config.icon, prompt: l10n["push_optional"])
-            field("push_field_sound", text: $config.sound, prompt: l10n["push_optional"])
-        case .ntfy:
-            field("push_field_server", text: $config.endpoint, prompt: PushChannelKind.ntfy.defaultEndpoint)
-            field("push_field_topic", text: $config.target)
-            secureField("push_field_token", text: $config.token, prompt: l10n["push_optional"])
+        ForEach(PushFieldSpec.fields(for: config.kind), id: \.key) { spec in
+            let text = $config[dynamicMember: spec.value]
+            let prompt = spec.prompt.text(l10n)
+            if spec.masked {
+                MaskedPushField(title: l10n[spec.key], text: text, prompt: prompt)
+            } else {
+                TextField(l10n[spec.key], text: text, prompt: prompt.map { Text($0) })
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .autocorrectionDisabled(true)
+            }
+        }
+        if config.kind == .ntfy {
             Picker(l10n["push_field_priority"], selection: $config.priority) {
                 Text("3 · default").tag(3)
                 Text("4 · high").tag(4)
                 Text("5 · urgent").tag(5)
             }
-        case .dingtalk, .feishu:
-            field("push_field_webhook", text: $config.endpoint)
-            secureField("push_field_secret", text: $config.secret, prompt: l10n["push_optional"])
-        case .wecom, .slack:
-            field("push_field_webhook", text: $config.endpoint)
-        case .telegram:
-            secureField("push_field_bot_token", text: $config.token)
-            field("push_field_chat_id", text: $config.target)
-            field("push_field_api_base", text: $config.endpoint, prompt: PushChannelKind.telegram.defaultEndpoint)
         }
-    }
-
-    private func field(_ key: String, text: Binding<String>, prompt: String? = nil) -> some View {
-        TextField(l10n[key], text: text, prompt: prompt.map { Text($0) })
-            .textFieldStyle(.roundedBorder)
-            .font(.system(size: 12, design: .monospaced))
-            .autocorrectionDisabled(true)
-    }
-
-    private func secureField(_ key: String, text: Binding<String>, prompt: String? = nil) -> some View {
-        SecureField(l10n[key], text: text, prompt: prompt.map { Text($0) })
-            .textFieldStyle(.roundedBorder)
-            .font(.system(size: 12, design: .monospaced))
     }
 
     /// One row when it fits, a column in a narrow settings window.

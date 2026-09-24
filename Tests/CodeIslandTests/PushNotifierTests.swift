@@ -483,6 +483,29 @@ final class PushNotifierTests: XCTestCase {
         XCTAssertEqual(PushNotifier.shared.idleThreshold, TimeInterval(SettingsDefaults.pushAwayIdleMinutes * 60))
     }
 
+    /// Device key, ntfy topic, webhook URLs, tokens and secrets are dots on
+    /// screen until the eye is clicked; the rest stays readable.
+    func testCredentialFieldsAreMaskedInSettings() {
+        for kind in PushChannelKind.allCases {
+            let fields = PushFieldSpec.fields(for: kind)
+            XCTAssertEqual(Set(fields.map(\.key)).count, fields.count, "\(kind) field keys are unique")
+            for spec in fields {
+                XCTAssertNotNil(L10n.strings["en"]?[spec.key], spec.key)
+                if spec.value == \PushChannelConfig.token || spec.value == \PushChannelConfig.secret {
+                    XCTAssertTrue(spec.masked, "\(kind) \(spec.key)")
+                }
+            }
+            let masked = Set(fields.filter(\.masked).map(\.key))
+            switch kind {
+            case .bark: XCTAssertEqual(masked, ["push_field_device_key"])
+            case .ntfy: XCTAssertEqual(masked, ["push_field_topic", "push_field_token"])
+            case .dingtalk, .feishu: XCTAssertEqual(masked, ["push_field_webhook", "push_field_secret"])
+            case .wecom, .slack: XCTAssertEqual(masked, ["push_field_webhook"])
+            case .telegram: XCTAssertEqual(masked, ["push_field_bot_token"])
+            }
+        }
+    }
+
     func testPushL10nKeysExistInAllLanguages() {
         let english = L10n.strings["en"] ?? [:]
         let pushKeys = english.keys.filter { $0.hasPrefix("push_") }
