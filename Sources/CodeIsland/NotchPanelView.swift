@@ -127,6 +127,7 @@ struct NotchPanelView: View {
     @AppStorage(SettingsKey.hapticIntensity) private var hapticIntensity = SettingsDefaults.hapticIntensity
     @AppStorage(SettingsKey.showSessionRecap) private var showSessionRecap = SettingsDefaults.showSessionRecap
     @AppStorage(SettingsKey.hoverExpandDelay) private var hoverExpandDelay = SettingsDefaults.hoverExpandDelay
+    @AppStorage(SettingsKey.showProjectName) private var showProjectName = SettingsDefaults.showProjectName
 
     /// Delayed hover: prevents accidental expansion when mouse passes through
     @State private var hoverTimer: Timer?
@@ -163,7 +164,10 @@ struct NotchPanelView: View {
     private var collapsedRecapTooltip: String {
         guard showSessionRecap, !shouldShowExpanded else { return "" }
         let sid = appState.rotatingSessionId ?? appState.activeSessionId ?? appState.sessions.keys.sorted().first
-        return SessionMetadataStyle.collapsedRecapTooltip(for: sid.flatMap { appState.sessions[$0] })
+        return SessionMetadataStyle.collapsedRecapTooltip(
+            for: sid.flatMap { appState.sessions[$0] },
+            showProjectName: showProjectName
+        )
     }
 
     /// Mascot size — fits within the menu bar height
@@ -3731,10 +3735,12 @@ enum SessionMetadataStyle {
     /// reply markers so a recap never reads as the agent speaking.
     static let recapAccent = Color(red: 0.6, green: 0.68, blue: 1.0)
 
-    /// Tooltip for the collapsed bar: the displayed idle session's recap.
-    static func collapsedRecapTooltip(for session: SessionSnapshot?) -> String {
+    /// Tooltip for the collapsed bar: the displayed idle session's recap,
+    /// headed like its card — so with "Show project name" off it names the
+    /// session title (or the agent), never the folder.
+    static func collapsedRecapTooltip(for session: SessionSnapshot?, showProjectName: Bool) -> String {
         guard let session, let recap = session.visibleRecap else { return "" }
-        return "↻ \(session.projectDisplayName)\n\(recap.text)"
+        return "↻ \(session.headline(showProjectName: showProjectName).text)\n\(recap.text)"
     }
 }
 
