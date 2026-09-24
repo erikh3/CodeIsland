@@ -197,6 +197,24 @@ final class CoworkSessionWatcherTests: XCTestCase {
         XCTAssertEqual(update.promptsStarted, 1)
     }
 
+    func testBookkeepingLinesAfterATurnAreNotLive() throws {
+        try writeSession(1, auditLines: turn)
+        XCTAssertEqual(startWatcher().count, 1)
+        // Written after the turn ended — possibly after the idle sweep already
+        // collected the card, which the watcher cannot know.
+        try append(1, [
+            #"{"type":"system","subtype":"permission_auto_approved","session_id":"d0a5","tool_name":"Read","source":"session_rule_cache"}"#,
+            #"{"type":"system","subtype":"compact_boundary","session_id":"d0a5"}"#,
+        ])
+        XCTAssertTrue(ingest([auditPath(1)]).updates.isEmpty, "nothing to report, nothing to reopen")
+
+        // A real turn still is.
+        try append(1, [CoworkAuditFixture.userPrompt])
+        let update = try XCTUnwrap(ingest([auditPath(1)]).updates.first)
+        XCTAssertTrue(update.isLive)
+        XCTAssertEqual(update.promptsStarted, 1)
+    }
+
     func testPermissionRequestIsForwarded() throws {
         try writeSession(1, auditLines: [CoworkAuditFixture.userPrompt])
         _ = startWatcher()

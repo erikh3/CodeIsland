@@ -46,7 +46,8 @@ final class CoworkSessionWatcher: @unchecked Sendable {
         let transcriptPath: String?
         /// Newest file-derived activity stamp; what a card rebuilt at launch shows.
         let lastActivity: Date?
-        /// Audit lines were appended since the previous update — a turn is live.
+        /// Audit lines that move a turn were appended since the previous
+        /// update — a turn is live.
         let isLive: Bool
         let promptsStarted: Int
         let turnsCompleted: Int
@@ -391,7 +392,10 @@ final class CoworkSessionWatcher: @unchecked Sendable {
             }
             sessions[id] = tracked
 
-            let isLive = !events.isEmpty
+            // Bookkeeping lines (auto-approved permissions, compact
+            // boundaries, status pings) can land after a turn ended; they are
+            // not a turn, and must not reopen a card the idle sweep collected.
+            let isLive = events.contains { $0 != .ignored }
             let changed = isLive
                 || previousMetadata != metadata
                 || previousTranscript != tracked.transcriptPath
