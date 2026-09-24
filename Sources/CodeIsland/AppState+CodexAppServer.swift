@@ -348,8 +348,10 @@ extension AppState {
 
         if questionQueue.count == 1 {
             activeSessionId = sessionId
-            withAnimation(NotchAnimation.open) {
-                surface = .questionCard(sessionId: sessionId)
+            if Self.autoExpandOnQuestion() {
+                withAnimation(NotchAnimation.open) {
+                    surface = .questionCard(sessionId: sessionId)
+                }
             }
             SoundManager.shared.handleEvent("PermissionRequest")
         }

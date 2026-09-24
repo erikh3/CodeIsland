@@ -21,6 +21,7 @@ final class FollowUpReminderTests: XCTestCase {
 
     private let watchedKeys = [
         SettingsKey.autoExpandOnPermission,
+        SettingsKey.autoExpandOnQuestion,
         SettingsKey.smartSuppress,
         SettingsKey.completionNotificationStyle,
     ]
@@ -31,6 +32,7 @@ final class FollowUpReminderTests: XCTestCase {
             savedDefaults[key] = UserDefaults.standard.object(forKey: key)
         }
         UserDefaults.standard.set(true, forKey: SettingsKey.autoExpandOnPermission)
+        UserDefaults.standard.set(true, forKey: SettingsKey.autoExpandOnQuestion)
         UserDefaults.standard.set(false, forKey: SettingsKey.smartSuppress)
         // Glance keeps completions off the card path, so tests see only what
         // the reminders themselves do to the surface.
@@ -297,6 +299,31 @@ final class FollowUpReminderTests: XCTestCase {
         XCTAssertEqual(fired.map(\.kind), [.question])
         XCTAssertEqual(appState.surface, .questionCard(sessionId: "ask"))
         XCTAssertEqual(played, ["PermissionRequest"])
+    }
+
+    /// "Auto-expand on question" off: the reminder chimes and hints like an
+    /// approval with its switch off, and the question keeps its click-to-open
+    /// badge instead of the card popping open.
+    func testQuestionAutoExpandOffOnlyChimesAndHints() async throws {
+        UserDefaults.standard.set(false, forKey: SettingsKey.autoExpandOnQuestion)
+        let event = try event([
+            "hook_event_name": "PermissionRequest",
+            "session_id": "quiet-ask",
+            "tool_name": "AskUserQuestion",
+            "tool_input": ["questions": [["question": "Which?", "options": [["label": "A"], ["label": "B"]]]]],
+        ])
+        pending.append(Task<Data, Never> { [appState] in
+            await withCheckedContinuation { appState!.handleAskUserQuestion(event, continuation: $0) }
+        })
+        await Task.yield()
+        XCTAssertEqual(appState.surface, .collapsed)
+
+        await advance(60)
+        XCTAssertEqual(fired.map(\.kind), [.question])
+        XCTAssertEqual(played, ["PermissionRequest"])
+        XCTAssertEqual(appState.surface, .collapsed, "the card must not open by itself")
+        XCTAssertTrue(followUps.hintActive)
+        XCTAssertEqual(appState.hiddenPendingQuestionSessionId, "quiet-ask")
     }
 
     // MARK: - Completions

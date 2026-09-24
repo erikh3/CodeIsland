@@ -395,6 +395,7 @@ private struct BehaviorPage: View {
     @AppStorage(SettingsKey.hapticOnHover) private var hapticOnHover = SettingsDefaults.hapticOnHover
     @AppStorage(SettingsKey.hapticIntensity) private var hapticIntensity = SettingsDefaults.hapticIntensity
     @AppStorage(SettingsKey.hoverExpandDelay) private var hoverExpandDelay = SettingsDefaults.hoverExpandDelay
+    @AppStorage(SettingsKey.autoExpandOnQuestion) private var autoExpandOnQuestion = SettingsDefaults.autoExpandOnQuestion
     @AppStorage(SettingsKey.sessionTimeout) private var sessionTimeout = SettingsDefaults.sessionTimeout
     @AppStorage(SettingsKey.rotationInterval) private var rotationInterval = SettingsDefaults.rotationInterval
     @AppStorage(SettingsKey.maxToolHistory) private var maxToolHistory = SettingsDefaults.maxToolHistory
@@ -453,6 +454,12 @@ private struct BehaviorPage: View {
                     title: l10n["auto_expand_on_permission"],
                     desc: l10n["auto_expand_on_permission_desc"],
                     isOn: $autoExpandOnPermission,
+                    animation: .smartSuppress
+                )
+                BehaviorToggleRow(
+                    title: l10n["auto_expand_on_question"],
+                    desc: l10n["auto_expand_on_question_desc"],
+                    isOn: $autoExpandOnQuestion,
                     animation: .smartSuppress
                 )
                 BehaviorToggleRow(

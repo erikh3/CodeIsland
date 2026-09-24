@@ -340,7 +340,8 @@ final class FollowUpReminderController {
     }
 
     /// Re-open the item's card, honouring the same switch the first card did:
-    /// with "auto-expand on approval" off an approval only chimes and hints.
+    /// with "auto-expand on approval" / "auto-expand on question" off, the
+    /// item only chimes and hints (a question keeps its click-to-open badge).
     private func reopenCard(for reminder: FollowUpReminder) -> Bool {
         guard let appState else { return false }
         let sid = reminder.sessionId
@@ -351,6 +352,7 @@ final class FollowUpReminderController {
             withAnimation(NotchAnimation.open) { appState.surface = .approvalCard(sessionId: sid) }
             return true
         case .question:
+            guard AppState.autoExpandOnQuestion() else { return false }
             appState.activeSessionId = sid
             withAnimation(NotchAnimation.open) { appState.surface = .questionCard(sessionId: sid) }
             return true

@@ -217,6 +217,19 @@ struct NotchPanelView: View {
                     // doesn't expand the panel (smart suppress with the
                     // terminal frontmost); expanded cards show it inline.
                     .help(collapsedRecapTooltip)
+                    // With a question waiting off-screen, a click on the collapsed
+                    // bar opens its card. Otherwise the gesture is off entirely so
+                    // the bar keeps behaving exactly as before.
+                    .contentShape(Rectangle())
+                    .gesture(
+                        TapGesture().onEnded {
+                            hoverTimer?.invalidate()
+                            hoverTimer = nil
+                            appState.openPendingQuestionCard()
+                        },
+                        including: !shouldShowExpanded && appState.hiddenPendingQuestionSessionId != nil
+                            ? .all : .subviews
+                    )
                 } else if showIdleIndicator {
                     IdleIndicatorBar(
                         mascotSize: mascotSize,
@@ -649,10 +662,20 @@ private struct CompactRightWing: View {
                         .shadow(color: Color(red: 0.4, green: 1.0, blue: 0.5).opacity(0.7), radius: 3)
                 }
 
-                // Follow-up reminder fired while collapsed (auto-expand off, or
-                // an unseen completion): badge the bell and bounce it on each
-                // reminder, until the island is opened or the item resolves.
-                if appState.followUps.hintActive {
+                // A question the island is not showing (auto-expand off, or
+                // Smart Suppress) gets its own badge: clicking the collapsed bar
+                // opens that card. A follow-up reminder bounces it like the bell.
+                if appState.hiddenPendingQuestionSessionId != nil {
+                    Image(systemName: "questionmark.bubble.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Color(red: 1.0, green: 0.7, blue: 0.28))
+                        .symbolEffect(.pulse, options: .repeating)
+                        .symbolEffect(.bounce, value: appState.followUps.hintPulse)
+                        .help(l10n["question_waiting_hint"])
+                } else if appState.followUps.hintActive {
+                    // Follow-up reminder fired while collapsed (auto-expand off, or
+                    // an unseen completion): badge the bell and bounce it on each
+                    // reminder, until the island is opened or the item resolves.
                     Image(systemName: "bell.badge.fill")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(Color(red: 1.0, green: 0.7, blue: 0.28))
@@ -2858,6 +2881,30 @@ private struct SessionCard: View {
                 // Agent checklist progress (TaskCreate / TodoWrite / update_plan).
                 if showTaskProgress && !session.agentTasks.isEmpty {
                     AgentTaskProgressView(tasks: session.agentTasks, fontSize: fontSize)
+                }
+
+                // A question waiting on this session that is not on screen
+                // (auto-expand off, Smart Suppress, or queued behind another
+                // card): the session card itself cannot answer it, so offer the
+                // way to its card rather than only a jump to the terminal.
+                if session.status == .waitingQuestion,
+                   !showsExternalCursorQuestion,
+                   appState.pendingQuestion(forSession: sessionId) != nil,
+                   appState.surface.questionSessionId != sessionId {
+                    HStack(spacing: 8) {
+                        Text(L10n.shared["question_waiting_inline"])
+                            .font(.system(size: fontSize, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Color(red: 1.0, green: 0.6, blue: 0.2).opacity(0.85))
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        inlineActionButton(
+                            L10n.shared["question_answer"],
+                            fg: .white,
+                            bg: Color(red: 0.25, green: 0.55, blue: 0.85),
+                            enabled: true,
+                            action: { appState.openPendingQuestionCard(sessionId: sessionId) }
+                        )
+                    }
                 }
 
                 // Session title: first user prompt (hide when detailed mode shows chat history)

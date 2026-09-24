@@ -1305,6 +1305,38 @@ final class AppState {
         return defaults.bool(forKey: SettingsKey.autoExpandOnPermission)
     }
 
+    /// The question counterpart of `autoExpandOnPermission`. Questions never
+    /// honoured that switch — an AskUserQuestion card opened even when the
+    /// user had asked the island not to steal focus. With this off the sound
+    /// still plays, the collapsed bar shows a question badge, and one click
+    /// (on the bar, or "Answer" in the session list) opens the card.
+    static func autoExpandOnQuestion(_ defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: SettingsKey.autoExpandOnQuestion) != nil else {
+            return SettingsDefaults.autoExpandOnQuestion
+        }
+        return defaults.bool(forKey: SettingsKey.autoExpandOnQuestion)
+    }
+
+    /// Session of a queued question the island is not showing — what the
+    /// collapsed bar's question badge advertises and a click opens.
+    var hiddenPendingQuestionSessionId: String? {
+        guard let head = questionQueue.first else { return nil }
+        if case .questionCard = surface { return nil }
+        return head.event.sessionId ?? "default"
+    }
+
+    /// Open the card for a pending question on an explicit user action (a click
+    /// on the collapsed bar, "Answer" in the session list). Never gated by
+    /// auto-expand or Smart Suppress: those only decide what opens *by itself*.
+    func openPendingQuestionCard(sessionId: String? = nil) {
+        guard let sid = sessionId ?? hiddenPendingQuestionSessionId,
+              pendingQuestion(forSession: sid) != nil else { return }
+        activeSessionId = sid
+        withAnimation(NotchAnimation.open) {
+            surface = .questionCard(sessionId: sid)
+        }
+    }
+
     func shouldAutoOpenPendingSurface(
         for sessionId: String,
         isTerminalFrontmost: (SessionSnapshot) -> Bool = TerminalVisibilityDetector.isTerminalFrontmostForSession
@@ -1316,6 +1348,7 @@ final class AppState {
     }
 
     private func shouldAutoOpenQuestionSurface(for event: HookEvent) -> Bool {
+        guard Self.autoExpandOnQuestion() else { return false }
         let source = SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String)
         let nativeAskIsRacing = event.rawJSON["_codeisland_native_ask_racing"] as? Bool == true
         // Marker-enabled OMP explicitly guarantees that its native ask dialog
@@ -2271,7 +2304,7 @@ final class AppState {
 
         if questionQueue.count == 1 {
             activeSessionId = sessionId
-            if shouldAutoOpenPendingSurface(for: sessionId) {
+            if Self.autoExpandOnQuestion(), shouldAutoOpenPendingSurface(for: sessionId) {
                 withAnimation(NotchAnimation.open) {
                     surface = .questionCard(sessionId: sessionId)
                 }
@@ -2778,7 +2811,10 @@ final class AppState {
         } else if let next = questionQueue.first {
             let sid = next.event.sessionId ?? "default"
             activeSessionId = sid
-            if shouldAutoOpenQuestionSurface(for: next.event) {
+            if !Self.autoExpandOnQuestion() {
+                // Nothing opens by itself — and a card the user opened with a
+                // click stays put. Stale cards were already folded above.
+            } else if shouldAutoOpenQuestionSurface(for: next.event) {
                 surface = .questionCard(sessionId: sid)
             } else if case .questionCard = surface {
                 // Smart Suppress wants this card collapsed (e.g. an OMP ask
