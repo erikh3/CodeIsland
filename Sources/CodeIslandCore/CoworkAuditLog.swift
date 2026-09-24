@@ -11,6 +11,8 @@ import Foundation
 ///     {"type":"system","subtype":"permission_request","uuid":…,"tool_name":…,"tool_input":…}
 ///     {"type":"system","subtype":"permission_response","uuid":…,"decision":…,"granted":…}
 ///     {"type":"result","subtype":"success","is_error":false,"result":…}   turn over
+///     {"type":"result","subtype":"error_during_execution","is_error":true,
+///      "terminal_reason":"aborted_streaming",…}           the user pressed Stop
 public enum CoworkAuditEvent: Equatable, Sendable {
     /// A new turn from the user (or a synthetic meta-notification Claude
     /// Desktop injects into the input stream).
@@ -27,7 +29,11 @@ public enum CoworkAuditEvent: Equatable, Sendable {
     case turnActivity
     case permissionRequested(id: String?, toolName: String, detail: String?)
     case permissionResolved(id: String?)
-    case turnEnded(isError: Bool, resultText: String?)
+    /// `interrupted` when the user stopped the turn in Claude Desktop. The
+    /// CLI reports that as an error result (`error_during_execution`) whose
+    /// `terminal_reason` says it was aborted; it is not a failure, and
+    /// `isError` is then false.
+    case turnEnded(isError: Bool, resultText: String?, interrupted: Bool = false)
     case ignored
 
     public struct ToolUse: Equatable, Sendable {
@@ -78,12 +84,18 @@ public enum CoworkAuditParser {
             )
         case "result":
             guard let json = parse(line) else {
-                return .turnEnded(isError: line.range(of: isErrorTrueMarker) != nil, resultText: nil)
+                let interrupted = line.range(of: abortedTerminalReasonMarker) != nil
+                return .turnEnded(
+                    isError: !interrupted && line.range(of: isErrorTrueMarker) != nil,
+                    resultText: nil,
+                    interrupted: interrupted
+                )
             }
+            let interrupted = (json["terminal_reason"] as? String)?.hasPrefix(abortedTerminalReasonPrefix) ?? false
             let subtype = json["subtype"] as? String
-            let isError = (json["is_error"] as? Bool) == true
-                || (subtype?.hasPrefix("error") ?? false)
-            return .turnEnded(isError: isError, resultText: trimmed(json["result"]))
+            let isError = !interrupted
+                && ((json["is_error"] as? Bool) == true || (subtype?.hasPrefix("error") ?? false))
+            return .turnEnded(isError: isError, resultText: trimmed(json["result"]), interrupted: interrupted)
         case "system":
             // `init` carries the full tool/skill inventory — tens of KB per turn
             // that only need recognising, not parsing.
@@ -138,6 +150,12 @@ public enum CoworkAuditParser {
     private static let toolResultMarker = Data(#""type":"tool_result""#.utf8)
     private static let toolUseMarker = Data(#""type":"tool_use""#.utf8)
     private static let isErrorTrueMarker = Data(#""is_error":true"#.utf8)
+    /// The CLI's own "was this turn aborted" test (shared by the Claude Code
+    /// build Claude Desktop runs and by Claude Desktop itself) is
+    /// `aborted_streaming` or `aborted_tools` — stopped mid-reply or while a
+    /// tool ran. Matched by prefix so a new abort flavour still reads as one.
+    private static let abortedTerminalReasonPrefix = "aborted_"
+    private static let abortedTerminalReasonMarker = Data(#""terminal_reason":"aborted_"#.utf8)
 
     /// Every audit record is written as `{"type":"…",…}` — SDK messages lead with
     /// `type`, and Claude Desktop's own records are object literals with `type`
@@ -235,6 +253,8 @@ public struct CoworkAuditState: Equatable, Sendable {
     /// The final assistant text the `result` record carried, if any.
     public private(set) var lastResultText: String?
     public private(set) var lastTurnFailed = false
+    /// The last turn was stopped by the user rather than finished or failed.
+    public private(set) var lastTurnInterrupted = false
     /// The tool call currently in flight (latest `tool_use` seen), cleared
     /// when the model goes back to writing text or the turn ends.
     public private(set) var currentTool: CoworkAuditEvent.ToolUse?
@@ -254,6 +274,7 @@ public struct CoworkAuditState: Equatable, Sendable {
             promptCount += 1
             lastResultText = nil
             lastTurnFailed = false
+            lastTurnInterrupted = false
             if !isSynthetic, let text { lastPrompt = text }
 
         case .toolResult, .turnActivity:
@@ -288,12 +309,13 @@ public struct CoworkAuditState: Equatable, Sendable {
             }
             refreshPhase(defaultPhase: .processing)
 
-        case .turnEnded(let isError, let resultText):
+        case .turnEnded(let isError, let resultText, let interrupted):
             phase = .idle
             pendingPermissions.removeAll()
             currentTool = nil
             completedTurnCount += 1
-            lastTurnFailed = isError
+            lastTurnFailed = isError && !interrupted
+            lastTurnInterrupted = interrupted
             lastResultText = resultText
 
         case .ignored:

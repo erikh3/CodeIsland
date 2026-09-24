@@ -193,6 +193,10 @@ extension AppState {
         // One cue per turn boundary, reusing the hook event names so the
         // existing per-event sound toggles apply unchanged.
         if update.turnsCompleted > 0, snapshot.status == .idle {
+            // Stopped with Claude Desktop's Stop button: the user is right
+            // there and knows. Like an AiWork abort — no jingle, no completion
+            // card (so no follow-up), no push; the card just reads interrupted.
+            guard !update.audit.lastTurnInterrupted else { return }
             SoundManager.shared.handleEvent(
                 update.audit.lastTurnFailed ? EventSoundRouting.turnFailed : "Stop",
                 sessionId: key
@@ -246,6 +250,7 @@ extension AppState {
         switch state.phase {
         case .idle:
             snapshot.status = .idle
+            snapshot.interrupted = state.lastTurnInterrupted
             snapshot.currentTool = nil
             snapshot.toolDescription = nil
         case .processing:
@@ -259,10 +264,12 @@ extension AppState {
             let tool = state.activePermission?.toolName ?? "tool"
             let ask = String(format: L10n.shared["cowork_waiting_approval"], tool)
             snapshot.status = .waitingApproval
+            snapshot.interrupted = false
             snapshot.currentTool = tool
             snapshot.toolDescription = state.activePermission?.detail.map { "\(ask) · \($0)" } ?? ask
         case .waitingQuestion:
             snapshot.status = .waitingQuestion
+            snapshot.interrupted = false
             snapshot.currentTool = "AskUserQuestion"
             if let question = state.activePermission?.detail {
                 snapshot.toolDescription = String(format: L10n.shared["cowork_waiting_question"], question)
@@ -280,8 +287,10 @@ extension AppState {
             snapshot.addRecentMessage(ChatMessage(isUser: true, text: prompt))
         }
         if state.phase == .idle, state.completedTurnCount > 0 {
-            let reply = state.lastResultText
-                ?? L10n.shared[state.lastTurnFailed ? "reply_failed_placeholder" : "reply_complete_placeholder"]
+            let placeholder = state.lastTurnInterrupted ? "reply_aborted_placeholder"
+                : state.lastTurnFailed ? "reply_failed_placeholder"
+                : "reply_complete_placeholder"
+            let reply = state.lastResultText ?? L10n.shared[placeholder]
             if snapshot.lastAssistantMessage != reply {
                 snapshot.lastAssistantMessage = reply
                 snapshot.addRecentMessage(ChatMessage(isUser: false, text: reply))

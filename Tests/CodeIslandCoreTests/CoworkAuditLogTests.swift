@@ -17,6 +17,12 @@ final class CoworkAuditLogTests: XCTestCase {
     static let toolResult = #"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"a.dmg","is_error":false}]},"parent_tool_use_id":null,"session_id":"d0a5","uuid":"u2","tool_use_result":{"stdout":"a.dmg"},"# + ts + "}"
     static let assistantReply = #"{"type":"assistant","message":{"model":"claude-opus-4-5","id":"msg_2","type":"message","role":"assistant","content":[{"type":"text","text":"Found a.dmg"}],"stop_reason":null},"parent_tool_use_id":null,"session_id":"d0a5","uuid":"a3","# + ts + "}"
     static let resultSuccess = #"{"type":"result","subtype":"success","is_error":false,"duration_ms":50948,"num_turns":2,"result":"Found a.dmg","session_id":"d0a5","total_cost_usd":0.24,"permission_denials":[],"uuid":"r1","# + ts + "}"
+    /// Claude Desktop's Stop button: the CLI ends the turn with an error
+    /// result that says why (`terminal_reason`), and no `result` text.
+    static let resultStoppedMidReply = #"{"type":"result","subtype":"error_during_execution","duration_ms":8123,"duration_api_ms":4012,"is_error":true,"num_turns":1,"stop_reason":null,"session_id":"d0a5","total_cost_usd":0.05,"permission_denials":[],"terminal_reason":"aborted_streaming","errors":["stopped"],"uuid":"r2","# + ts + "}"
+    /// Stopped while a tool ran, after a clean text step: a success-shaped
+    /// result that still carries the abort.
+    static let resultStoppedDuringTool = #"{"type":"result","subtype":"success","is_error":false,"duration_ms":9001,"num_turns":2,"result":"Looking at the installers","stop_reason":null,"session_id":"d0a5","permission_denials":[],"terminal_reason":"aborted_tools","uuid":"r3","# + ts + "}"
 
     static func permissionRequest(id: String, tool: String, input: String) -> String {
         #"{"type":"system","subtype":"permission_request","uuid":""# + id + #"","session_id":"d0a5","tool_name":""# + tool + #"","tool_input":"# + input + "," + ts + "}"
@@ -62,6 +68,29 @@ final class CoworkAuditLogTests: XCTestCase {
         XCTAssertEqual(event(flagged), .turnEnded(isError: true, resultText: nil))
         let subtypeOnly = #"{"type":"result","subtype":"error_max_turns","session_id":"d0a5"}"#
         XCTAssertEqual(event(subtypeOnly), .turnEnded(isError: true, resultText: nil))
+        // Any other terminal reason is still what the subtype says.
+        let apiError = #"{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"api_error"}"#
+        XCTAssertEqual(event(apiError), .turnEnded(isError: true, resultText: nil))
+    }
+
+    func testStoppedTurnIsAnInterruptionNotAFailure() {
+        XCTAssertEqual(
+            event(Self.resultStoppedMidReply),
+            .turnEnded(isError: false, resultText: nil, interrupted: true)
+        )
+        XCTAssertEqual(
+            event(Self.resultStoppedDuringTool),
+            .turnEnded(isError: false, resultText: "Looking at the installers", interrupted: true)
+        )
+        XCTAssertEqual(event(Self.resultSuccess), .turnEnded(isError: false, resultText: "Found a.dmg", interrupted: false))
+    }
+
+    func testStoppedTurnIsRecognisedWithoutParsingAnOversizedResult() {
+        let payload = String(repeating: "x", count: CoworkAuditParser.maxParsedLineBytes)
+        let stopped = #"{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools","errors":[""# + payload + #""]}"#
+        XCTAssertEqual(event(stopped), .turnEnded(isError: false, resultText: nil, interrupted: true))
+        let failed = #"{"type":"result","subtype":"error_during_execution","is_error":true,"errors":[""# + payload + #""]}"#
+        XCTAssertEqual(event(failed), .turnEnded(isError: true, resultText: nil, interrupted: false))
     }
 
     func testPermissionRecords() {
@@ -230,5 +259,21 @@ final class CoworkAuditLogTests: XCTestCase {
         state.apply(event(Self.userPrompt))
         XCTAssertFalse(state.lastTurnFailed)
         XCTAssertNil(state.lastResultText)
+    }
+
+    func testStoppedTurnEndsIdleAsInterrupted() {
+        let request = Self.permissionRequest(id: "r", tool: "Bash", input: #"{"command":"x"}"#)
+        var state = self.state(after: [Self.userPrompt, Self.assistantToolUse, request, Self.resultStoppedMidReply])
+        XCTAssertEqual(state.phase, .idle)
+        XCTAssertTrue(state.pendingPermissions.isEmpty, "the card went away with the turn")
+        XCTAssertNil(state.currentTool)
+        XCTAssertTrue(state.lastTurnInterrupted)
+        XCTAssertFalse(state.lastTurnFailed)
+        XCTAssertEqual(state.completedTurnCount, 1, "still a turn boundary")
+
+        state.apply(event(Self.userPrompt))
+        XCTAssertFalse(state.lastTurnInterrupted)
+        state.apply(event(Self.resultSuccess))
+        XCTAssertFalse(state.lastTurnInterrupted)
     }
 }

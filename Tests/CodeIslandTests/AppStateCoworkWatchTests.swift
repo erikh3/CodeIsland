@@ -346,6 +346,141 @@ final class AppStateCoworkWatchTests: XCTestCase {
     }
 }
 
+/// What a Cowork turn end sets off — sound, completion, follow-up — with the
+/// sound sink and the follow-up clock taken over.
+@MainActor
+final class AppStateCoworkTurnEndTests: XCTestCase {
+    private let storeId = "local_5b0e2c71-turn-end"
+    private var key: String { AppState.coworkSessionKey(storeId) }
+    private var played: [String] = []
+    private var savedDefaults: [String: Any?] = [:]
+
+    private let watchedKeys = [
+        SettingsKey.soundEnabled,
+        SettingsKey.soundTaskError,
+        SettingsKey.soundTaskComplete,
+        SettingsKey.quietHoursEnabled,
+        SettingsKey.completionNotificationStyle,
+    ]
+
+    override func setUp() {
+        super.setUp()
+        L10n.shared.language = "en"
+        played = []
+        for key in watchedKeys {
+            savedDefaults[key] = UserDefaults.standard.object(forKey: key)
+        }
+        SoundManager.shared.playSink = { [weak self] name in self?.played.append(name) }
+        UserDefaults.standard.set(true, forKey: SettingsKey.soundEnabled)
+        UserDefaults.standard.set(true, forKey: SettingsKey.soundTaskError)
+        UserDefaults.standard.set(true, forKey: SettingsKey.soundTaskComplete)
+        UserDefaults.standard.set(false, forKey: SettingsKey.quietHoursEnabled)
+        // Glance: a queued completion lights the dot instead of opening a
+        // card, which needs no window.
+        UserDefaults.standard.set("glance", forKey: SettingsKey.completionNotificationStyle)
+    }
+
+    override func tearDown() {
+        SoundManager.shared.playSink = nil
+        for key in watchedKeys {
+            if let value = savedDefaults[key] ?? nil {
+                UserDefaults.standard.set(value, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+        savedDefaults = [:]
+        L10n.shared.language = "system"
+        super.tearDown()
+    }
+
+    private func appState() -> AppState {
+        let appState = AppState()
+        appState.followUps.armsTimer = false
+        appState.followUps.intervalProvider = { 60 }
+        return appState
+    }
+
+    /// A live turn that started and ended in one batch, ending with `result`.
+    private func turn(endingWith result: String) -> CoworkSessionWatcher.SessionUpdate {
+        let metadata = CoworkSessionMetadata(
+            sessionId: storeId,
+            cliSessionId: "cli-turn-end",
+            title: "Installer inventory",
+            userSelectedFolders: ["/Users/alice/code/app"],
+            createdAt: Date(timeIntervalSinceNow: -3600)
+        )
+        var audit = CoworkAuditState()
+        audit.apply([CoworkAuditFixture.userPrompt, CoworkAuditFixture.assistantToolUse, result]
+            .map { CoworkAuditParser.event(fromLine: Data($0.utf8)) })
+        return CoworkSessionWatcher.SessionUpdate(
+            sessionId: storeId,
+            metadata: metadata,
+            audit: audit,
+            transcriptPath: nil,
+            lastActivity: nil,
+            isLive: true,
+            promptsStarted: 1,
+            turnsCompleted: 1,
+            permissionsRequested: 0
+        )
+    }
+
+    private func tracksCompletionFollowUp(_ appState: AppState) -> Bool {
+        appState.followUps.scheduler.origin(of: FollowUpReminderScheduler.Key(.completion, key)) != nil
+    }
+
+    func testStopInClaudeDesktopReadsInterruptedAndStaysQuiet() throws {
+        let appState = appState()
+        appState.applyCoworkUpdate(turn(endingWith: CoworkAuditFixture.resultStopped))
+
+        let card = try XCTUnwrap(appState.sessions[key])
+        XCTAssertEqual(card.status, .idle)
+        XCTAssertTrue(card.interrupted)
+        XCTAssertNil(card.currentTool)
+        XCTAssertEqual(card.lastAssistantMessage, "Reply interrupted")
+        XCTAssertEqual(played, [], "no error jingle, no completion jingle")
+        XCTAssertFalse(appState.glanceCompletionActive, "not queued as a completion")
+        XCTAssertFalse(tracksCompletionFollowUp(appState), "nothing to follow up")
+    }
+
+    func testFailedTurnStillRingsAndQueues() throws {
+        let appState = appState()
+        appState.applyCoworkUpdate(turn(endingWith: CoworkAuditFixture.resultFailed))
+
+        let card = try XCTUnwrap(appState.sessions[key])
+        XCTAssertEqual(card.status, .idle)
+        XCTAssertFalse(card.interrupted)
+        XCTAssertEqual(card.lastAssistantMessage, L10n.shared["reply_failed_placeholder"])
+        XCTAssertEqual(played, ["8bit_error"])
+        XCTAssertTrue(appState.glanceCompletionActive)
+        XCTAssertTrue(tracksCompletionFollowUp(appState))
+    }
+
+    func testNextPromptClearsTheInterruptedMark() throws {
+        let appState = appState()
+        appState.applyCoworkUpdate(turn(endingWith: CoworkAuditFixture.resultStopped))
+        XCTAssertEqual(appState.sessions[key]?.interrupted, true)
+
+        var next = turn(endingWith: CoworkAuditFixture.resultStopped).audit
+        next.apply(CoworkAuditParser.event(fromLine: Data(CoworkAuditFixture.userPrompt.utf8)))
+        appState.applyCoworkUpdate(CoworkSessionWatcher.SessionUpdate(
+            sessionId: storeId,
+            metadata: CoworkSessionMetadata(sessionId: storeId, cliSessionId: "cli-turn-end"),
+            audit: next,
+            transcriptPath: nil,
+            lastActivity: nil,
+            isLive: true,
+            promptsStarted: 1,
+            turnsCompleted: 0,
+            permissionsRequested: 0
+        ))
+        let card = try XCTUnwrap(appState.sessions[key])
+        XCTAssertEqual(card.status, .processing)
+        XCTAssertFalse(card.interrupted)
+    }
+}
+
 /// `audit.jsonl` lines in the real record shapes (the core suite's
 /// CoworkAuditLogTests pins the parser against the same shapes).
 enum CoworkAuditFixture {
@@ -355,6 +490,9 @@ enum CoworkAuditFixture {
     static let assistantToolUse = #"{"type":"assistant","message":{"model":"claude-opus-4-5","id":"msg_1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"find /sessions/bold-inspiring-tesla/mnt/alice -name \"*.dmg\""}}],"stop_reason":null},"parent_tool_use_id":null,"session_id":"d0a5","uuid":"a2","# + ts + "}"
     static let assistantReply = #"{"type":"assistant","message":{"model":"claude-opus-4-5","id":"msg_2","type":"message","role":"assistant","content":[{"type":"text","text":"Found a.dmg"}],"stop_reason":null},"parent_tool_use_id":null,"session_id":"d0a5","uuid":"a3","# + ts + "}"
     static let resultSuccess = #"{"type":"result","subtype":"success","is_error":false,"duration_ms":50948,"num_turns":2,"result":"Found a.dmg","session_id":"d0a5","total_cost_usd":0.24,"permission_denials":[],"uuid":"r1","# + ts + "}"
+    static let resultFailed = #"{"type":"result","subtype":"error_during_execution","duration_ms":3000,"is_error":true,"num_turns":1,"stop_reason":null,"session_id":"d0a5","permission_denials":[],"terminal_reason":"api_error","errors":["overloaded"],"uuid":"r4","# + ts + "}"
+    /// Claude Desktop's Stop button, as the CLI reports it.
+    static let resultStopped = #"{"type":"result","subtype":"error_during_execution","duration_ms":8123,"is_error":true,"num_turns":1,"stop_reason":null,"session_id":"d0a5","permission_denials":[],"terminal_reason":"aborted_streaming","errors":["stopped"],"uuid":"r2","# + ts + "}"
 
     static func permissionRequest(id: String, tool: String, input: String) -> String {
         #"{"type":"system","subtype":"permission_request","uuid":""# + id + #"","session_id":"d0a5","tool_name":""# + tool + #"","tool_input":"# + input + "," + ts + "}"
