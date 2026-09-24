@@ -104,6 +104,12 @@ public indirect enum PushContent: Equatable, Sendable {
     /// `pending`: what is still waiting (usually the original permission or
     /// question); `waitingSince`: when it started waiting.
     case reminder(pending: PushContent?, waitingSince: Date?)
+    /// A display-only wait (`DisplayOnlyWait`): `pending` is what is asked
+    /// (`.permission` / `.question`), `app` where it has to be answered — nil
+    /// when unknown. Nothing on the island (or the phone) can answer it, and
+    /// the push says so. It is an approval / question in every other respect:
+    /// same kind, so the same channel checkboxes and dedupe apply.
+    case answerElsewhere(pending: PushContent, app: String?)
 
     public var kind: PushEventKind {
         switch self {
@@ -112,16 +118,18 @@ public indirect enum PushContent: Equatable, Sendable {
         case .completion: return .completion
         case .error: return .error
         case .reminder: return .reminder
+        case .answerElsewhere(let pending, _): return pending.kind
         }
     }
 
     /// A reminder about a finished turn must not break through Focus just
     /// because it is a reminder; one about an approval must.
     public var blocksAgent: Bool {
-        if case .reminder(let pending, _) = self {
-            return pending?.blocksAgent ?? true
+        switch self {
+        case .reminder(let pending, _): return pending?.blocksAgent ?? true
+        case .answerElsewhere(let pending, _): return pending.blocksAgent
+        default: return kind.blocksAgent
         }
-        return kind.blocksAgent
     }
 }
 
@@ -140,6 +148,10 @@ public struct PushStrings: Equatable, Sendable {
     public var moreOptions: String
     public var testHeadline: String
     public var testBody: String
+    /// `%@` = the app a display-only wait has to be answered in.
+    public var answerIn: String
+    /// A display-only wait whose app is unknown.
+    public var answerOnMac: String
 
     public init(
         permission: String,
@@ -151,7 +163,9 @@ public struct PushStrings: Equatable, Sendable {
         secretQuestion: String,
         moreOptions: String,
         testHeadline: String,
-        testBody: String
+        testBody: String,
+        answerIn: String = "Respond in %@.",
+        answerOnMac: String = "Respond on your Mac."
     ) {
         self.permission = permission
         self.question = question
@@ -163,6 +177,8 @@ public struct PushStrings: Equatable, Sendable {
         self.moreOptions = moreOptions
         self.testHeadline = testHeadline
         self.testBody = testBody
+        self.answerIn = answerIn
+        self.answerOnMac = answerOnMac
     }
 
     public static let english = PushStrings(
@@ -175,7 +191,9 @@ public struct PushStrings: Equatable, Sendable {
         secretQuestion: "Sensitive prompt — answer it on your Mac.",
         moreOptions: "+%d more",
         testHeadline: "Test notification",
-        testBody: "If you can read this, CodeIsland can reach you here."
+        testBody: "If you can read this, CodeIsland can reach you here.",
+        answerIn: "Respond in %@.",
+        answerOnMac: "Respond on your Mac."
     )
 }
 
@@ -298,6 +316,15 @@ public enum PushMessageFormatter {
             let inner = lines(for: pending, strings: strings, summaryLimit: summaryLimit, now: now)
             let body = [inner.headline, inner.body].filter { !$0.isEmpty }.joined(separator: "\n")
             return (headline, body)
+
+        case .answerElsewhere(let pending, let app):
+            // What is asked reads exactly like an island approval / question;
+            // the last line says where it has to be answered.
+            let inner = lines(for: pending, strings: strings, summaryLimit: summaryLimit, now: now)
+            let place = app?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let whereTo = place.isEmpty ? strings.answerOnMac : String(format: strings.answerIn, place)
+            let body = [inner.body, whereTo].filter { !$0.isEmpty }.joined(separator: "\n")
+            return (inner.headline, body)
         }
     }
 

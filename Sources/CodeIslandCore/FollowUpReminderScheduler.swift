@@ -23,6 +23,19 @@ public enum FollowUpReminderKind: String, Sendable, CaseIterable {
 /// One follow-up reminder, handed to whoever reacts to it (the island's sound
 /// and card, and any push channel wired to `FollowUpReminderController`).
 public struct FollowUpReminder: Equatable, Sendable {
+    /// Where the waiting item lives, and so what a reminder can do about it.
+    public enum Origin: String, Equatable, Sendable {
+        /// The island holds it: a queued approval / question, or a finished
+        /// turn. Its card can be shown again.
+        case island
+        /// A display-only wait: it exists only as the session's waiting status
+        /// (Claude Desktop Cowork, Cursor's in-IDE question, AiWork, a
+        /// terminal permission prompt announced by a Notification hook). It
+        /// can only be answered in the app that asked, so a reminder chimes
+        /// and hints but has no card to open.
+        case displayOnly
+    }
+
     public enum Delivery: String, Equatable, Sendable {
         /// Delivered locally at its due time.
         case onTime
@@ -43,6 +56,7 @@ public struct FollowUpReminder: Equatable, Sendable {
     /// When the item started waiting (request arrival / turn completion).
     public let waitingSince: Date
     public let delivery: Delivery
+    public let origin: Origin
 
     public init(
         kind: FollowUpReminderKind,
@@ -50,7 +64,8 @@ public struct FollowUpReminder: Equatable, Sendable {
         attempt: Int,
         maxAttempts: Int,
         waitingSince: Date,
-        delivery: Delivery
+        delivery: Delivery,
+        origin: Origin = .island
     ) {
         self.kind = kind
         self.sessionId = sessionId
@@ -58,6 +73,7 @@ public struct FollowUpReminder: Equatable, Sendable {
         self.maxAttempts = maxAttempts
         self.waitingSince = waitingSince
         self.delivery = delivery
+        self.origin = origin
     }
 
     /// No further reminder will follow for this item.
@@ -74,7 +90,9 @@ public struct FollowUpReminder: Equatable, Sendable {
 ///   sessions that are waiting via `sync`, and entries appear and disappear
 ///   with it. A silenced or exhausted entry stays until its item stops
 ///   waiting, so a later sync cannot restart the reminders for the very same
-///   request.
+///   request. Each synced entry has an origin — held by the island, or a
+///   display-only wait read off the session's status — and each origin is
+///   reconciled on its own (see `sync(kind:origin:waiting:now:)`).
 /// - **Tracked** (completions): started by an event with `track`; a newer
 ///   event for the same session restarts it, and it is dropped once done.
 ///
@@ -106,6 +124,7 @@ public struct FollowUpReminderScheduler: Sendable {
         var done: Bool
         /// Created by `sync` rather than `track`.
         var synced: Bool
+        var origin: FollowUpReminder.Origin = .island
     }
 
     /// Seconds between reminders; nil means the feature is off.
@@ -131,17 +150,66 @@ public struct FollowUpReminderScheduler: Sendable {
         if interval == nil { entries.removeAll() }
     }
 
-    /// Reconcile one synced kind against the sessions currently waiting.
+    /// Reconcile one synced kind against the sessions whose request the
+    /// island holds.
     public mutating func sync(kind: FollowUpReminderKind, waiting: Set<String>, now: Date) {
+        sync(kind: kind, origin: .island, waiting: waiting, now: now)
+    }
+
+    /// Reconcile the entries of one kind and origin against the sessions
+    /// currently waiting that way. Entries of the other origin are left
+    /// alone: the island's queues are re-read on every change, display-only
+    /// waits only once a session's status has settled — a queue that empties
+    /// a beat before its session's status catches up must not read as a
+    /// display-only wait.
+    ///
+    /// A listed session that already has an entry of the other origin is the
+    /// same wait changing hands (a terminal permission prompt the island then
+    /// queued): the entry is adopted with its timing, attempts and silence.
+    public mutating func sync(
+        kind: FollowUpReminderKind,
+        origin: FollowUpReminder.Origin,
+        waiting: Set<String>,
+        now: Date
+    ) {
         guard isEnabled else { return }
-        for key in entries.keys where key.kind == kind && !waiting.contains(key.sessionId) {
+        for (key, entry) in entries
+        where key.kind == kind && entry.origin == origin && !waiting.contains(key.sessionId) {
             entries.removeValue(forKey: key)
         }
         for sessionId in waiting {
             let key = Key(kind, sessionId)
-            guard entries[key] == nil else { continue }
-            entries[key] = Entry(waitingSince: now, anchor: now, delivered: 0, owed: false, done: false, synced: true)
+            if entries[key] == nil {
+                entries[key] = Entry(
+                    waitingSince: now, anchor: now, delivered: 0, owed: false, done: false,
+                    synced: true, origin: origin
+                )
+            } else {
+                entries[key]?.origin = origin
+            }
         }
+    }
+
+    /// A new wait began for a synced item that may still be tracked from an
+    /// earlier one whose end was never seen (the session left the wait and
+    /// came back between two syncs). Start it over: fresh timing, no attempts
+    /// spent, not silenced.
+    public mutating func restart(
+        kind: FollowUpReminderKind,
+        sessionId: String,
+        origin: FollowUpReminder.Origin,
+        now: Date
+    ) {
+        guard isEnabled else { return }
+        entries[Key(kind, sessionId)] = Entry(
+            waitingSince: now, anchor: now, delivered: 0, owed: false, done: false,
+            synced: true, origin: origin
+        )
+    }
+
+    /// Where a tracked item is waiting; nil when it is not tracked.
+    public func origin(of key: Key) -> FollowUpReminder.Origin? {
+        entries[key]?.origin
     }
 
     /// Start (or restart) an event-driven item.
@@ -206,14 +274,15 @@ public struct FollowUpReminderScheduler: Sendable {
                 entries[key]?.owed = true
                 out.append(FollowUpReminder(
                     kind: key.kind, sessionId: key.sessionId, attempt: attempt,
-                    maxAttempts: maxAttempts, waitingSince: entry.waitingSince, delivery: .deferred
+                    maxAttempts: maxAttempts, waitingSince: entry.waitingSince, delivery: .deferred,
+                    origin: entry.origin
                 ))
                 continue
             }
             out.append(FollowUpReminder(
                 kind: key.kind, sessionId: key.sessionId, attempt: attempt,
                 maxAttempts: maxAttempts, waitingSince: entry.waitingSince,
-                delivery: entry.owed ? .catchUp : .onTime
+                delivery: entry.owed ? .catchUp : .onTime, origin: entry.origin
             ))
             if attempt >= maxAttempts {
                 if entry.synced {
