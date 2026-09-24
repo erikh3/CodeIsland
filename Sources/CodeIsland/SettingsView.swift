@@ -729,6 +729,8 @@ private struct HooksPage: View {
                 .id("aiwork-cli-\(refreshKey)")
             }
 
+            ClaudeDesktopCoworkSection(appState: appState)
+
             Section("Custom CLIs") {
                 let customItems = ConfigInstaller.customCLIConfigs()
                 if customItems.isEmpty {
