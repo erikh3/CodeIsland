@@ -1,5 +1,37 @@
 # Changelog
 
+## [v1.0.35] - 2026-09-24
+
+### English
+- **Task progress on session cards.** The agent's own checklist — Claude Code's TaskCreate / TaskUpdate and TodoWrite, Codex's plan — shows as a segmented bar with "2/5" and the step it's on; click for the full list. It fades once everything is done, and a plan the agent abandoned no longer lingers on an idle card. Settings → Appearance → Show task progress (on)
+- **Session recap.** When Claude Code writes its "while you were away" summary, the idle card shows it under the last reply (↻). A new prompt retires it. Settings → Appearance → Show session recap (on)
+- **Model and reasoning effort** on each card ("Opus 5.5 1M · xhigh", "gpt-5.6-sol · max"), read from the transcript; subagents show their own model. Off by default — Settings → Appearance
+- **Replies render as Markdown.** The completion card shows the finished reply in full — headings, lists, task checkboxes, tables, code blocks with a copy button — in a scrollable area sized to the window. One-line previews in the session list are now clean text instead of raw `**`, `#` and table pipes, and so are the previews sent to the iPhone / Watch / ESP32 Buddy
+- **Pushes to your phone or team chat.** Settings → Behavior → Push notifications sends approvals, questions (with numbered options), finished turns, turn errors and follow-up reminders to Bark, ntfy, DingTalk, Lark / Feishu, WeCom, Slack or Telegram — several at once, each with its own event choices and a Send test button that shows the service's real reply. By default a push only goes out while you're away (locked, screen saver, displays asleep, or 5 minutes without input), and a request that arrived while you were at the Mac is pushed when you leave. Team-chat channels send titles only unless you turn on details; commands and replies go through credential redaction. Off by default
+- **Follow-up reminders.** Settings → Behavior → Follow-up reminders (off / 1 / 2 / 3 / 5 min): an approval or question still waiting rings again (up to 3 times), a finished turn you haven't looked at rings once. Reminders stop when you answer or jump to the session and wait a round while its terminal is in front or your pointer is on the card; one that came due while the screen was locked plays right after you unlock, and one held back while you're away from the Mac still reaches your phone. Also covers waits the island can only show — Claude Desktop Cowork permission prompts, Cursor's in-IDE questions, AiWork — and those reach your phone too
+- **Claude Desktop Cowork on the island.** Cowork runs in a sandbox where hooks never fire, so CodeIsland reads the session files Claude Desktop keeps on your Mac (read-only): title, live status, running tool, latest reply, completion sound, and a waiting state for permission prompts. Click to open the conversation in Claude Desktop. Stopping a turn is treated as an interrupt, not a failure. Settings → Hooks → Claude Desktop
+- **Several accounts.** Register extra Claude Code, Codex and Grok config directories (e.g. a second `CLAUDE_CONFIG_DIR`) in Settings → Hooks. Each gets its own hooks and status line; sessions, transcripts and usage cover all of them, and each running process is matched to the directory in its own environment. A directory that turns out to be the main one (or shares its settings file through a symlink) is never written twice or unhooked by mistake
+- **Error sound only when a turn dies.** A single failed tool call (a command exiting non-zero, an edit that didn't match) no longer plays the "task error" jingle; Claude Code's `StopFailure` (API error, rate limit) does, once per burst
+- **Quieter when you're not there.** Event sounds mute while the screen is locked or the screen saver runs (Settings → Sound, on). The boot jingle no longer plays when CodeIsland starts at login
+- **Questions get their own auto-expand switch.** Turn off "Auto-expand on question" to keep the island collapsed: the sound plays, a badge appears, and one click opens the card. Keyboard shortcuts now act only on the card you can see — with a card hidden, approve / deny opens it instead of acting blind
+- **Polish:** hover-to-expand delay (0.1–1.0 s); content font up to 16 pt; the volume slider goes much quieter at the low end; "Show project name" switch for screen sharing; About links this version's release notes and explains when the app can't update itself (running from the disk image or a translocated copy)
+- **Reliability:** AppleScript for terminal jumps and Smart Suppress checks now runs out of process instead of on background threads inside the app; hook config files that are symlinks stay symlinks when CodeIsland edits them
+
+### 中文
+- **会话卡片显示任务进度。** Agent 自己的任务清单（Claude Code 的 TaskCreate / TaskUpdate 与 TodoWrite、Codex 的计划）显示为分段进度条、「2/5」和当前步骤，点击展开完整清单。全部完成后自动淡出；Agent 半途放弃的计划不会一直留在空闲卡片上。设置 → 外观 → 显示任务进度（默认开）
+- **会话回顾。** Claude Code 写下「离开期间」总结时，空闲卡片会在最后一条回复下方显示它（↻），有新的提问后自动失效。设置 → 外观 → 显示会话回顾（默认开）
+- **模型与推理强度标签**（「Opus 5.5 1M · xhigh」「gpt-5.6-sol · max」），从 transcript 读取；子 Agent 显示它自己的模型。默认关闭，设置 → 外观
+- **回复按 Markdown 渲染。** 完成卡片完整显示本轮回复：标题、列表、任务复选框、表格、带复制按钮的代码块，放在按窗口高度自适应的滚动区域里。会话列表里的单行预览改为干净的纯文本，不再出现 `**`、`#` 和表格竖线；发给 iPhone / Watch / ESP32 Buddy 的预览同样如此
+- **推送到手机或群聊。** 设置 → 行为 → 推送通知，可把审批、提问（附编号选项）、完成、整轮出错和跟进提醒推送到 Bark、ntfy、钉钉、飞书 / Lark、企业微信、Slack 或 Telegram；可同时启用多个通道，每个通道单独选择事件，「发送测试」显示服务端的真实返回。默认只在你离开时推送（锁屏、屏保、显示器睡眠，或 5 分钟无操作），你在 Mac 前时到达的请求会在你离开时补推。群聊类通道默认只推标题，可单独开启详情；命令和回复会做凭据脱敏。默认关闭
+- **跟进提醒。** 设置 → 行为 → 跟进提醒（关 / 1 / 2 / 3 / 5 分钟）：还在等待的审批或提问会再次提醒（最多 3 次），你还没看的完成结果提醒一次。你作答或跳转到该会话后停止提醒；它的终端在前台、或指针停在卡片上时顺延一轮；锁屏期间到点的提醒会在解锁后立即补上；你不在 Mac 前时被压下的提醒仍会推到手机。也覆盖只能在岛上显示的等待——Claude Desktop Cowork 的权限请求、Cursor 在 IDE 里的提问、AiWork——并同样推送到手机
+- **Claude Desktop Cowork 上岛。** Cowork 跑在沙盒里，hook 不会触发，CodeIsland 改为只读地读取 Claude Desktop 保存在本机的会话文件：标题、实时状态、正在运行的工具、最新回复、完成提示音，以及权限请求时的等待状态。点击在 Claude Desktop 里打开对应对话。在 Desktop 里停止回合按中断处理，不算失败。设置 → Hooks → Claude Desktop
+- **多账号。** 在 设置 → Hooks 登记额外的 Claude Code、Codex、Grok 配置目录（比如第二个 `CLAUDE_CONFIG_DIR`），每个目录单独安装 hook、单独显示状态；会话、transcript 和用量统计覆盖所有目录，每个运行中的进程按它自己的环境变量归到对应目录。如果某个目录其实就是主目录（或通过软链共享同一个设置文件），不会被重复写入，也不会被误卸载 hook
+- **只有整轮失败才响错误音。** 单个工具失败（命令非零退出、编辑没匹配上）不再响「任务错误」；Claude Code 的 `StopFailure`（API 错误、限流）才响，连续失败只响一次
+- **你不在时更安静。** 锁屏或屏保期间事件音自动静音（设置 → 声音，默认开）。开机登录自启时不再播放启动音
+- **提问有了单独的自动展开开关。** 关掉「提问时自动展开」后岛保持收起：响提示音、显示角标，点一下打开卡片。键盘快捷键现在只作用于你看得见的卡片——卡片被隐藏时，批准 / 拒绝快捷键会先打开卡片，而不是盲目执行
+- **细节打磨：** 悬停展开延迟可调（0.1–1.0 秒）；内容字号最大 16pt；音量滑块低端可以调得更轻；新增「显示项目名」开关，方便共享屏幕；关于页可查看本版本更新说明，并在无法自动更新时说明原因（从磁盘映像或被系统隔离的副本运行）
+- **可靠性：** 终端跳转和智能抑制检测用到的 AppleScript 改为进程外执行，不再在 App 内的后台线程跑；hook 配置文件是软链接时，CodeIsland 编辑后仍保持软链接
+
 ## [v1.0.34] - 2026-09-23
 
 ### English
