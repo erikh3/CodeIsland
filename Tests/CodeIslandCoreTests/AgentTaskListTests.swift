@@ -416,6 +416,35 @@ final class AgentTaskListTests: XCTestCase {
         XCTAssertTrue(matches(codexPlanLine(callId: "c", steps: [("A", "pending")])))
         XCTAssertFalse(matches(claudeToolUseLine(id: "t", name: "Bash", input: #"{"command":"ls"}"#)))
         XCTAssertFalse(matches(claudeResultLine(toolUseId: "t", text: "file contents", toolUseResult: #"{"stdout":"x"}"#)))
+        // Every spelling the live parser accepts (forks rename the tool).
+        for name in ["todo_write", "write_todos", "todowrite", "WriteTodos", "task_create", "TASKUPDATE", "update-plan"] {
+            XCTAssertTrue(matches(claudeToolUseLine(id: "t", name: name, input: #"{"todos":[]}"#)), name)
+        }
+        XCTAssertFalse(matches(claudeToolUseLine(id: "t", name: "todo_read", input: #"{}"#)))
+        XCTAssertFalse(matches(claudeToolUseLine(id: "t", name: "TaskCreateAndRun", input: #"{}"#)))
+    }
+
+    func testBackfillReplaysAForkTranscriptThatSpellsTheToolDifferently() {
+        let lines = [
+            claudePromptLine("plan it"),
+            claudeToolUseLine(id: "toolu_w1", name: "write_todos", input: #"{"todos":[{"description":"Scan","status":"completed"},{"description":"Fix","status":"in_progress"}]}"#),
+        ]
+        let events = AgentTaskTranscript.scan(Data((lines.joined(separator: "\n") + "\n").utf8), startsAtLineBoundary: true)
+        let rebuilt = AgentTaskList.rebuilt(
+            fromTranscript: events,
+            coversWholeTranscript: true,
+            live: AgentTaskList(items: [AgentTaskItem(id: "step:0", title: "Stale", status: .pending)])
+        )
+        XCTAssertEqual(rebuilt.items.map(\.title), ["Scan", "Fix"])
+    }
+
+    func testTranscriptOfOnlyPromptsAndUnrelatedFailuresKeepsTheLiveList() {
+        // A Bash call failed (is_error) and a prompt was typed: nothing in
+        // there can build a checklist, so what hooks built must survive.
+        let live = AgentTaskList(items: [AgentTaskItem(id: "step:0", title: "A", status: .inProgress)])
+        let events: [AgentTaskEvent] = [.newTurn, .opFailed(opId: "toolu_bash"), .createdPerText(opId: "toolu_mcp", taskId: "9", title: nil)]
+        XCTAssertFalse(events.contains(where: \.buildsList))
+        XCTAssertEqual(AgentTaskList.rebuilt(fromTranscript: events, coversWholeTranscript: true, live: live), live)
     }
 
     func testScanFileStopsAtTheTailerOffset() throws {

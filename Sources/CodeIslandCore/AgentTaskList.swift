@@ -157,9 +157,15 @@ public enum AgentTaskEvent: Equatable, Sendable {
     /// A full-list snapshot replaced the checklist (TodoWrite / update_plan).
     case replace(opId: String?, items: [AgentTaskDraft])
 
-    var isOperation: Bool {
-        if case .newTurn = self { return false }
-        return true
+    /// Whether this event can put rows on a list that starts out empty. A
+    /// transcript whose only events are prompts, failures (any failing tool
+    /// yields `.opFailed`) or text-only results holds no checklist history,
+    /// so replaying it must not replace what hooks or persistence built.
+    public var buildsList: Bool {
+        switch self {
+        case .create, .created, .update, .replace: return true
+        case .newTurn, .createdPerText, .opFailed: return false
+        }
     }
 
     /// Dedupe key for this operation, or nil when it is naturally idempotent.
@@ -329,7 +335,8 @@ public struct AgentTaskList: Sendable {
 
     /// Rebuild a session's list from its transcript on attach.
     ///
-    /// - A transcript without checklist operations says nothing new: keep `live`.
+    /// - A transcript without checklist-building operations (see
+    ///   ``AgentTaskEvent/buildsList``) says nothing new: keep `live`.
     /// - A scan that covered the whole transcript is authoritative: replay it
     ///   from empty (persisted rows are the same tool calls, replayed).
     /// - A scan of only the transcript's tail cannot see creates older than the
@@ -343,7 +350,7 @@ public struct AgentTaskList: Sendable {
         coversWholeTranscript: Bool,
         live: AgentTaskList
     ) -> AgentTaskList {
-        guard events.contains(where: \.isOperation) else { return live }
+        guard events.contains(where: \.buildsList) else { return live }
         var board = coversWholeTranscript
             ? AgentTaskList()
             : AgentTaskList(items: live.items, completedAt: live.completedAt)

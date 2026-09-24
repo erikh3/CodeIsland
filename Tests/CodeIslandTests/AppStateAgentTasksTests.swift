@@ -97,6 +97,27 @@ final class AppStateAgentTasksTests: XCTestCase {
         XCTAssertEqual(result, live, "replaying a prompt the live list already saw must not clear it")
     }
 
+    func testBackfillOfUnrelatedToolFailuresLeavesLiveListAlone() {
+        // Gemini-style list built by write_todos hooks; the transcript scan
+        // only found a failing Bash call. Replaying that from empty used to
+        // wipe the list.
+        var live = AgentTaskList()
+        live.apply(.replace(opId: "w1", items: [
+            AgentTaskDraft(title: "A", status: .completed),
+            AgentTaskDraft(title: "B", status: .inProgress),
+        ]), now: Date())
+        let result = AppState.agentTasksAfterBackfill(
+            live: live,
+            backfill: AgentTaskTranscript.Backfill(
+                events: [.newTurn, .opFailed(opId: "toolu_bash")],
+                coversWholeFile: true
+            ),
+            bufferedEvents: [],
+            now: Date()
+        )
+        XCTAssertEqual(result, live)
+    }
+
     func testPersistedSessionKeepsChecklistAndDecodesOlderFiles() throws {
         let legacy = """
         {"sessionId":"s","source":"claude","startTime":"2026-04-09T10:00:00Z","lastActivity":"2026-04-09T10:01:00Z"}

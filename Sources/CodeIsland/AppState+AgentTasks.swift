@@ -57,17 +57,18 @@ extension AppState {
         scheduleSave()
     }
 
-    /// The list after an attach-time scan. A scan without checklist
-    /// operations leaves the live list (which already holds the buffered tail
-    /// events) alone; otherwise history is replayed and the buffered tail
-    /// events are applied on top, as live events.
+    /// The list after an attach-time scan. A scan without checklist-building
+    /// operations (prompts and unrelated tool failures don't count) leaves
+    /// the live list (which already holds the buffered tail events) alone;
+    /// otherwise history is replayed and the buffered tail events are applied
+    /// on top, as live events.
     nonisolated static func agentTasksAfterBackfill(
         live: AgentTaskList,
         backfill: AgentTaskTranscript.Backfill,
         bufferedEvents: [AgentTaskEvent],
         now: Date
     ) -> AgentTaskList {
-        guard backfill.events.contains(where: { $0 != .newTurn }) else { return live }
+        guard backfill.events.contains(where: \.buildsList) else { return live }
         var board = AgentTaskList.rebuilt(
             fromTranscript: backfill.events,
             coversWholeTranscript: backfill.coversWholeFile,

@@ -16,16 +16,23 @@ enum AgentTaskTool: Equatable {
     case planSnapshot
 
     init?(toolName: String?) {
-        guard let toolName else { return nil }
-        let key = toolName.lowercased().filter { $0 != "_" && $0 != "-" && $0 != " " }
-        switch key {
-        case "taskcreate": self = .taskCreate
-        case "taskupdate": self = .taskUpdate
-        case "todowrite", "writetodos": self = .todoSnapshot
-        case "updateplan": self = .planSnapshot
-        default: return nil
-        }
+        guard let toolName,
+              let tool = Self.byNormalizedName[Self.normalizedName(toolName)] else { return nil }
+        self = tool
     }
+
+    /// Lowercased, separators dropped: `todo_write` / `TodoWrite` → `todowrite`.
+    static func normalizedName(_ name: String) -> String {
+        name.lowercased().filter { $0 != "_" && $0 != "-" && $0 != " " }
+    }
+
+    static let byNormalizedName: [String: AgentTaskTool] = [
+        "taskcreate": .taskCreate,
+        "taskupdate": .taskUpdate,
+        "todowrite": .todoSnapshot,
+        "writetodos": .todoSnapshot,
+        "updateplan": .planSnapshot,
+    ]
 
     /// Events implied by a *call* of this tool (its input alone).
     func callEvents(opId: String?, input: [String: Any]) -> [AgentTaskEvent] {
@@ -416,8 +423,11 @@ public enum AgentTaskTranscript {
         return events
     }
 
-    /// Byte prefilter so the backfill decodes only rows that can matter.
+    /// Byte prefilter so the backfill decodes only rows that can matter. It
+    /// must pass every row the live parser acts on: a row it drops here is
+    /// missing from the replay that rebuilds the list from empty.
     static func mayCarryTaskEvent(_ ptr: UnsafePointer<UInt8>, length: Int) -> Bool {
+        if namesChecklistTool(ptr, length: length) { return true }
         for marker in operationMarkers where contains(ptr, length: length, marker: marker) {
             return true
         }
@@ -426,13 +436,43 @@ public enum AgentTaskTranscript {
             && !contains(ptr, length: length, marker: toolUseIdMarker)
     }
 
+    /// Whether any `"name":"…"` value in the row is a checklist tool, spelled
+    /// any way `AgentTaskTool(toolName:)` accepts (`TodoWrite`, `todo_write`,
+    /// `write_todos`, `todowrite`, …).
+    private static func namesChecklistTool(_ ptr: UnsafePointer<UInt8>, length: Int) -> Bool {
+        let maxNameBytes = 32
+        var offset = 0
+        while offset < length {
+            let found = nameMarker.withUnsafeBytes { needle in
+                memmem(ptr + offset, length - offset, needle.baseAddress, needle.count)
+            }
+            guard let found else { return false }
+            let valueStart = UnsafeRawPointer(ptr).distance(to: UnsafeRawPointer(found)) + nameMarker.count
+            var normalized: [UInt8] = []
+            var index = valueStart
+            while index < length, index - valueStart < maxNameBytes, ptr[index] != 0x22 {  // '"'
+                let byte = ptr[index]
+                switch byte {
+                case 0x5F, 0x2D, 0x20: break  // '_', '-', ' '
+                case 0x41...0x5A: normalized.append(byte + 0x20)  // A-Z → a-z
+                default: normalized.append(byte)
+                }
+                index += 1
+            }
+            if index < length, ptr[index] == 0x22, checklistToolNames.contains(normalized) {
+                return true
+            }
+            offset = valueStart
+        }
+        return false
+    }
+
+    private static let nameMarker = Array(#""name":""#.utf8)
+    private static let checklistToolNames = Set(AgentTaskTool.byNormalizedName.keys.map { Array($0.utf8) })
+
     /// Key-order independent: TaskCreate results say "created successfully" in
     /// their text, TaskUpdate results always carry `updatedFields`.
     private static let operationMarkers: [[UInt8]] = [
-        #""name":"TaskCreate""#,
-        #""name":"TaskUpdate""#,
-        #""name":"TodoWrite""#,
-        #""name":"update_plan""#,
         #" created successfully"#,
         #""updatedFields":"#,
         #""is_error":true"#,
