@@ -49,8 +49,15 @@ final class FollowUpReminderController {
     @ObservationIgnored var intervalProvider: () -> TimeInterval? = FollowUpReminderController.storedInterval
     /// Quiet hours or nobody at the screen: reminders wait and catch up later.
     @ObservationIgnored var isHeldBack: () -> Bool = { SoundManager.shared.isEventSoundDeferred }
-    /// Set by `PanelWindowController`: is the pointer over the island?
+    /// Set by `PanelWindowController`: is the pointer inside the panel's
+    /// window at all? The window is a fixed transparent canvas far larger
+    /// than the island, so this alone says little; it only guards against a
+    /// `pointerOverIsland` left stale by a view that went away mid-hover.
     @ObservationIgnored var isPointerOverPanel: () -> Bool = { false }
+    /// Set by the island view's own hover tracking: the pointer is on the
+    /// visible island (collapsed bar or expanded card), not merely somewhere
+    /// in its window.
+    @ObservationIgnored var pointerOverIsland = false
     @ObservationIgnored var terminalFrontmost: (SessionSnapshot) -> Bool =
         TerminalVisibilityDetector.isTerminalFrontmostForSession
     /// Tab-level check; may block on AppleScript, so it always runs detached.
@@ -361,7 +368,7 @@ final class FollowUpReminderController {
     /// auto-opened card nobody is in front of does not count — that is the
     /// user who most needs the reminder.
     private func isBeingLookedAt(_ key: Key) -> Bool {
-        guard let appState, isPointerOverPanel() else { return false }
+        guard let appState, pointerOverIsland, isPointerOverPanel() else { return false }
         switch appState.surface {
         case .sessionList:
             return true

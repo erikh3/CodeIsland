@@ -212,6 +212,7 @@ final class FollowUpReminderTests: XCTestCase {
         try await requestApproval("looking")
         XCTAssertEqual(appState.surface, .approvalCard(sessionId: "looking"))
         pointerOverPanel = true
+        followUps.pointerOverIsland = true
 
         await advance(60)
         XCTAssertEqual(fired, [])
@@ -219,9 +220,51 @@ final class FollowUpReminderTests: XCTestCase {
         XCTAssertEqual(keptOffTheMac.map(\.sessionId), ["looking"])
         XCTAssertEqual(followUps.armedWakeDate, now.addingTimeInterval(60), "postponed, not silenced")
         pointerOverPanel = false
+        followUps.pointerOverIsland = false
         await advance(60)
         XCTAssertEqual(fired.map(\.attempt), [1], "the skipped reminder was not counted")
         XCTAssertEqual(played, ["PermissionRequest"])
+    }
+
+    /// The panel's window is a fixed, mostly transparent canvas around the
+    /// island. A pointer resting in it — below the notch, beside the card —
+    /// is not on the card, and does not make anyone a reader of it.
+    func testPointerInTheWindowButOffTheIslandStillReminds() async throws {
+        try await requestApproval("beside")
+        XCTAssertEqual(appState.surface, .approvalCard(sessionId: "beside"))
+        pointerOverPanel = true
+        followUps.pointerOverIsland = false
+
+        await advance(60)
+        XCTAssertEqual(fired.map(\.sessionId), ["beside"])
+        XCTAssertEqual(played, ["PermissionRequest"])
+    }
+
+    /// Same with the session list open: only a pointer on the list itself
+    /// reads as looking at everything in it.
+    func testSessionListOpenWithThePointerElsewhereStillReminds() async throws {
+        try await requestApproval("list-open")
+        appState.surface = .sessionList
+        pointerOverPanel = true
+
+        await advance(60)
+        XCTAssertEqual(fired.map(\.sessionId), ["list-open"])
+
+        followUps.pointerOverIsland = true
+        await advance(60)
+        XCTAssertEqual(fired.count, 1, "on the list: the next one waits")
+        XCTAssertEqual(keptOffTheMac.map(\.attempt), [2])
+    }
+
+    /// A hover flag left behind by a view that went away mid-hover does not
+    /// count once the pointer is outside the window.
+    func testStaleIslandHoverOutsideTheWindowDoesNotCount() async throws {
+        try await requestApproval("stale-hover")
+        followUps.pointerOverIsland = true
+        pointerOverPanel = false
+
+        await advance(60)
+        XCTAssertEqual(fired.map(\.sessionId), ["stale-hover"])
     }
 
     /// An auto-opened card with nobody in front of it is exactly who the

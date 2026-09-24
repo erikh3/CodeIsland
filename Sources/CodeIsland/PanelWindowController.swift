@@ -254,7 +254,10 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         self.panel = panel
         self.lastChosenScreenSignature = ScreenDetector.signature(for: screen)
         // A follow-up for the card under the pointer would remind someone who
-        // is already reading it.
+        // is already reading it. The island's own hover says whether the
+        // pointer is on the card (`pointerOverIsland`); the window frame —
+        // mostly transparent, and as large as the card ever gets — only
+        // backs that up against a hover flag a rebuilt view left behind.
         appState.followUps.isPointerOverPanel = { [weak self] in
             guard let panel = self?.panel, panel.isVisible else { return false }
             return panel.frame.contains(NSEvent.mouseLocation)

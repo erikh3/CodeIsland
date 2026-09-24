@@ -372,6 +372,10 @@ struct NotchPanelView: View {
             .scaleEffect(shouldShowPrehover ? NotchHoverInteraction.prehoverScale : 1, anchor: .top)
             .contentShape(Rectangle())
             .onHover { hovering in
+                // The pointer is on the island itself — what follow-up
+                // reminders count as "reading this card" — whatever the
+                // hover then does to the surface below.
+                appState.followUps.pointerOverIsland = hovering
                 // Idle indicator hover — delay un-hover to prevent oscillation when
                 // the animated width change crosses the mouse position (#52).
                 if showIdleIndicator {
