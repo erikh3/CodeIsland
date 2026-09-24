@@ -138,6 +138,8 @@ struct NotchPanelView: View {
     @State private var curtainOffset: CGFloat = 0
     @State private var curtainOpacity: Double = 1
     @State private var displayedToolStatus: Bool = SettingsDefaults.showToolStatus
+    /// Window and panel heights for the completion card's reply area.
+    @State private var cardSpace = CompletionCardSpace()
 
     private var isActive: Bool { !appState.sessions.isEmpty }
     /// First launch / no-session state should still render a visible marker so the app
@@ -331,6 +333,7 @@ struct NotchPanelView: View {
                     }
                 }
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { cardSpace.recordPanelHeight($0) }
             .frame(width: panelWidth)
             .clipped()
             .background(
@@ -485,7 +488,15 @@ struct NotchPanelView: View {
             Spacer()
                 .allowsHitTesting(false)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // minHeight 0: the frame is the window's height even when the content
+        // runs taller (without it the frame grows with its content), so the
+        // measurement below is the window, and any overflow runs off the
+        // bottom instead of pushing the notch bar off the top.
+        .frame(maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+        // The hosting view fills the panel window, whose height is already
+        // clamped to the screen.
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { cardSpace.recordWindowHeight($0) }
+        .environment(cardSpace)
         .animation(NotchAnimation.open, value: appState.surface)
     }
 }
@@ -2925,6 +2936,9 @@ private struct SessionCard: View {
                         ? Array(session.recentMessages.suffix(2))
                         : session.recentMessages
                     let fullReplyId = CompletionReplyMetrics.fullReplyId(in: visibleMessages, isCompletionCard: isCompletion)
+                    let olderReplyLimit = isCompletion
+                        ? CompletionReplyMetrics.olderReplyLineLimit(aiLineLimit)
+                        : aiLineLimit
                     ForEach(visibleMessages) { msg in
                         // Extracted to separate view so SwiftUI skips re-rendering
                         // when only the parent's hover state changes (#52 perf).
@@ -2932,8 +2946,9 @@ private struct SessionCard: View {
                             text: msg.text,
                             isUser: msg.isUser,
                             fontSize: fontSize,
-                            aiLineLimit: aiLineLimit,
-                            isCompletionReply: msg.id == fullReplyId
+                            aiLineLimit: olderReplyLimit,
+                            isCompletionReply: msg.id == fullReplyId,
+                            pinsHeight: isCompletion
                         )
                     }
 
@@ -2969,9 +2984,15 @@ private struct SessionCard: View {
                 SessionRecapRow(
                     text: recap.text,
                     fontSize: fontSize,
-                    lineLimit: aiLineLimit.map { max($0, 2) }
+                    lineLimit: isCompletion
+                        ? CompletionReplyMetrics.recapLineLimit
+                        : aiLineLimit.map { max($0, 2) }
                 )
                 .equatable()
+                // On the completion card the reply's scroll area is sized
+                // around this row; squeezed to one line it would be measured
+                // short and never get its second line back.
+                .fixedSize(horizontal: false, vertical: isCompletion)
                 .padding(.leading, 4)
             }
             } // end Column 2 VStack
@@ -3755,11 +3776,15 @@ private struct ChatMessageRow: View, Equatable {
     /// The finished reply on the completion card: rendered in full, ignoring
     /// aiLineLimit.
     var isCompletionReply = false
+    /// Keep a capped reply at its full height (up to the cap) instead of
+    /// letting a crowded card squeeze it — on the completion card, where the
+    /// reply's scroll area is sized around these rows.
+    var pinsHeight = false
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.text == rhs.text && lhs.isUser == rhs.isUser
         && lhs.fontSize == rhs.fontSize && lhs.aiLineLimit == rhs.aiLineLimit
-        && lhs.isCompletionReply == rhs.isCompletionReply
+        && lhs.isCompletionReply == rhs.isCompletionReply && lhs.pinsHeight == rhs.pinsHeight
     }
 
     var body: some View {
@@ -3788,6 +3813,7 @@ private struct ChatMessageRow: View, Equatable {
                     lineLimit: aiLineLimit,
                     isCompletionReply: isCompletionReply
                 )
+                .fixedSize(horizontal: false, vertical: pinsHeight && !isCompletionReply)
             }
         }
     }

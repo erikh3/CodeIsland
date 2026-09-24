@@ -58,29 +58,84 @@ final class MarkdownReplyViewTests: XCTestCase {
         XCTAssertNil(CompletionReplyMetrics.fullReplyId(in: [], isCompletionCard: true))
     }
 
-    func testCompletionReplyHeightFitsThePanelWindow() {
-        // Default: 5 visible sessions → 510pt window, under the 560pt ceiling.
-        let defaultHeight = CompletionReplyMetrics.maxHeight(
-            maxVisibleSessions: SettingsDefaults.maxVisibleSessions,
-            maxPanelHeight: SettingsDefaults.maxPanelHeight
+    private func replyMaxHeight(
+        window: CGFloat = 510,
+        panel: CGFloat,
+        reply: CGFloat,
+        maxVisibleSessions: Int = SettingsDefaults.maxVisibleSessions,
+        maxPanelHeight: Int = SettingsDefaults.maxPanelHeight,
+        minimum: CGFloat = 40
+    ) -> CGFloat {
+        CompletionReplyMetrics.maxHeight(
+            windowHeight: window,
+            panelHeight: panel,
+            replyHeight: reply,
+            maxVisibleSessions: maxVisibleSessions,
+            maxPanelHeight: maxPanelHeight,
+            minimumHeight: minimum
         )
-        XCTAssertEqual(defaultHeight, 510 - CompletionReplyMetrics.reservedHeight)
+    }
 
-        // "Unlimited" sessions must not let an auto-opening card grow to the
-        // window's 8970pt: maxPanelHeight caps it.
+    func testCompletionReplyGetsWhatTheRestOfTheCardLeavesInTheWindow() {
+        let margin = CompletionReplyMetrics.bottomMargin
+        // Card chrome measured at 230pt (notch 38, font 16, task progress,
+        // "2 sessions" link…): the reply may use the other 280 − margin.
+        XCTAssertEqual(replyMaxHeight(panel: 230 + 300, reply: 300), 510 - 230 - margin)
+        // Stable once the reply takes that height: the chrome is the same.
+        XCTAssertEqual(replyMaxHeight(panel: 510 - margin, reply: 280 - margin), 510 - 230 - margin)
+        // More chrome (an expanded task list, a recap) → less reply.
+        XCTAssertEqual(replyMaxHeight(panel: 330 + 100, reply: 100), 510 - 330 - margin)
+        // The window is already clamped to the screen; a shorter one shrinks the reply.
+        XCTAssertEqual(replyMaxHeight(window: 400, panel: 230 + 50, reply: 50), 400 - 230 - margin)
+    }
+
+    func testCompletionReplyStaysReadableWhenTheCardIsCrowded() {
+        XCTAssertEqual(replyMaxHeight(window: 300, panel: 290 + 60, reply: 60, minimum: 45), 45)
         XCTAssertEqual(
-            CompletionReplyMetrics.maxHeight(maxVisibleSessions: 99, maxPanelHeight: 560),
-            560 - CompletionReplyMetrics.reservedHeight
+            CompletionReplyMetrics.minimumHeight(lineHeight: 14),
+            42,
+            "three lines of the reply's font"
         )
-        // A small window still leaves a readable area.
+    }
+
+    func testCompletionReplyFallsBackToAnEstimateUntilTheCardIsMeasured() {
+        let estimate = 510 - CompletionReplyMetrics.estimatedChromeHeight - CompletionReplyMetrics.bottomMargin
+        // Nothing measured yet — the window PanelWindowController asks for.
+        XCTAssertEqual(replyMaxHeight(window: 0, panel: 0, reply: 0), estimate)
+        // The reply is laid out but the panel still reports its collapsed
+        // height: a panel can't be shorter than the reply inside it.
+        XCTAssertEqual(replyMaxHeight(panel: 32, reply: 330), estimate)
+    }
+
+    func testMaxPanelHeightStillCapsATallWindow() {
+        // "Unlimited" sessions: the window may be the whole screen; the
+        // maxPanelHeight ceiling keeps an auto-opening card from covering it.
         XCTAssertEqual(
-            CompletionReplyMetrics.maxHeight(maxVisibleSessions: 2, maxPanelHeight: 100),
-            CompletionReplyMetrics.minimumHeight
+            replyMaxHeight(window: 1100, panel: 200 + 100, reply: 100, maxVisibleSessions: 99, maxPanelHeight: 560),
+            560 - 200 - CompletionReplyMetrics.bottomMargin
         )
-        // An unset (0) ceiling falls back to the window alone.
+        // An unset (0) ceiling leaves the window alone.
         XCTAssertEqual(
-            CompletionReplyMetrics.maxHeight(maxVisibleSessions: 8, maxPanelHeight: 0),
-            PanelHeightMetrics.desiredHeight(maxVisibleSessions: 8) - CompletionReplyMetrics.reservedHeight
+            replyMaxHeight(window: 1100, panel: 200 + 100, reply: 100, maxPanelHeight: 0),
+            1100 - 200 - CompletionReplyMetrics.bottomMargin
+        )
+    }
+
+    func testOlderRepliesOnTheCompletionCardTakeOneOrTwoLines() {
+        XCTAssertEqual(CompletionReplyMetrics.olderReplyLineLimit(1), 1)
+        XCTAssertEqual(CompletionReplyMetrics.olderReplyLineLimit(2), 2)
+        XCTAssertEqual(CompletionReplyMetrics.olderReplyLineLimit(5), 2)
+        XCTAssertEqual(CompletionReplyMetrics.olderReplyLineLimit(nil), 2, "unlimited setting")
+    }
+
+    func testExpandedTaskListScrollsPastSixRows() {
+        let visible = AgentTaskProgressView.visibleListedItems
+        XCTAssertNil(AgentTaskProgressView.listViewportHeight(itemCount: visible, lineHeight: 13))
+        let height = try? XCTUnwrap(AgentTaskProgressView.listViewportHeight(itemCount: 40, lineHeight: 13))
+        XCTAssertEqual(height, ((CGFloat(visible) + 0.5) * 16).rounded(), "six and a half rows, whatever the list length")
+        XCTAssertEqual(
+            AgentTaskProgressView.listViewportHeight(itemCount: 500, lineHeight: 13), height,
+            "a runaway list is capped too"
         )
     }
 

@@ -29,8 +29,14 @@ struct AgentTaskProgressView: View, Equatable {
     static let doneColor = Color(red: 0.3, green: 0.85, blue: 0.4)
     static let activeColor = Color(red: 1.0, green: 0.78, blue: 0.3)
     static let pendingColor = Color.white.opacity(0.18)
-    /// Longer lists collapse into "+N more" when expanded inline.
-    static let maxListedItems = 12
+    /// Rows the expanded list shows before it scrolls. The card has to stay
+    /// inside the panel window, and on the completion card every row here is
+    /// a row less for the reply.
+    static let visibleListedItems = 6
+    /// Rows rendered at all; the rest collapse into "+N more" so a runaway
+    /// list can't cost unbounded layout.
+    static let maxListedItems = 50
+    private static let listRowSpacing: CGFloat = 2
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.tasks == rhs.tasks && lhs.fontSize == rhs.fontSize && lhs.agentIsIdle == rhs.agentIsIdle
@@ -147,8 +153,34 @@ struct AgentTaskProgressView: View, Equatable {
         .contentShape(Rectangle())
     }
 
-    private var fullList: some View {
-        VStack(alignment: .leading, spacing: 2) {
+    @ViewBuilder private var fullList: some View {
+        if let height = Self.listViewportHeight(
+            itemCount: tasks.items.count,
+            lineHeight: IslandMarkdownStyle.lineHeight(smallSize)
+        ) {
+            ScrollView(.vertical) {
+                listRows
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: height)
+            .scrollIndicatorsFlash(onAppear: true)
+        } else {
+            listRows
+        }
+    }
+
+    /// Height of the expanded list's scroll area, or nil when every row fits
+    /// without one. Shows half of the next row so the list reads as
+    /// scrollable. A row is a point taller than the monospaced line: the
+    /// ✓ ▶ ○ glyphs come from a fallback font.
+    static func listViewportHeight(itemCount: Int, lineHeight: CGFloat) -> CGFloat? {
+        let rendered = min(itemCount, maxListedItems) + (itemCount > maxListedItems ? 1 : 0)
+        guard rendered > visibleListedItems else { return nil }
+        return ((CGFloat(visibleListedItems) + 0.5) * (lineHeight + 1 + listRowSpacing)).rounded()
+    }
+
+    private var listRows: some View {
+        VStack(alignment: .leading, spacing: Self.listRowSpacing) {
             ForEach(tasks.items.prefix(Self.maxListedItems)) { item in
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Text(Self.symbol(item.status))

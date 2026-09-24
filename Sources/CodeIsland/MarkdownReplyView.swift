@@ -46,11 +46,19 @@ private struct CompletionReplyView: View {
     let fontSize: CGFloat
     @AppStorage(SettingsKey.maxVisibleSessions) private var maxVisibleSessions = SettingsDefaults.maxVisibleSessions
     @AppStorage(SettingsKey.maxPanelHeight) private var maxPanelHeight = SettingsDefaults.maxPanelHeight
+    @Environment(CompletionCardSpace.self) private var space: CompletionCardSpace?
+    /// This view's own laid-out height, so the rest of the card can be told
+    /// apart from it in the panel's measured height.
+    @State private var replyHeight: CGFloat = 0
 
     var body: some View {
         let maxHeight = CompletionReplyMetrics.maxHeight(
+            windowHeight: space?.windowHeight ?? 0,
+            panelHeight: space?.panelHeight ?? 0,
+            replyHeight: replyHeight,
             maxVisibleSessions: maxVisibleSessions,
-            maxPanelHeight: maxPanelHeight
+            maxPanelHeight: maxPanelHeight,
+            minimumHeight: CompletionReplyMetrics.minimumHeight(lineHeight: IslandMarkdownStyle.lineHeight(fontSize))
         )
         ScrollView(.vertical) {
             MarkdownBlocksView(blocks: ChatMessageTextFormatter.markdownBlocks(text), fontSize: fontSize)
@@ -65,31 +73,74 @@ private struct CompletionReplyView: View {
         // hugs a short reply and stops growing at maxHeight.
         .frame(maxHeight: maxHeight)
         .fixedSize(horizontal: false, vertical: true)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { replyHeight = $0 }
         .scrollIndicatorsFlash(onAppear: true)
         .tint(IslandMarkdownStyle.link)
     }
 }
 
-enum CompletionReplyMetrics {
-    /// Everything else the completion card stacks inside the panel window
-    /// around the reply: notch bar, card header, the prompt row, task
-    /// progress, the "show all sessions" link and paddings.
-    static let reservedHeight: CGFloat = 180
-    /// Never squeeze the reply below a handful of lines.
-    static let minimumHeight: CGFloat = 120
+/// How much room the completion card has, measured by NotchPanelView: the
+/// panel window's height (already clamped to the screen) and the expanded
+/// panel's laid-out height. Observable rather than view state so a change
+/// only re-renders the reply that reads it, not the whole panel.
+@MainActor
+@Observable
+final class CompletionCardSpace {
+    private(set) var windowHeight: CGFloat = 0
+    private(set) var panelHeight: CGFloat = 0
 
-    /// The window is sized for `maxVisibleSessions` cards
-    /// (PanelHeightMetrics) and content past its bottom edge is simply cut,
-    /// so the reply gets that height minus the card's chrome — further
-    /// capped by the maxPanelHeight setting, which keeps an auto-opening
-    /// card from covering half the screen when the session list is set to
-    /// "unlimited".
-    static func maxHeight(maxVisibleSessions: Int, maxPanelHeight: Int) -> CGFloat {
-        var panel = PanelHeightMetrics.desiredHeight(maxVisibleSessions: maxVisibleSessions)
+    func recordWindowHeight(_ height: CGFloat) {
+        if windowHeight != height { windowHeight = height }
+    }
+
+    func recordPanelHeight(_ height: CGFloat) {
+        if panelHeight != height { panelHeight = height }
+    }
+}
+
+enum CompletionReplyMetrics {
+    /// Estimate of everything the card stacks around the reply, used only
+    /// until the panel has been measured once.
+    static let estimatedChromeHeight: CGFloat = 180
+    /// Kept free under the panel so its rounded bottom edge always shows.
+    static let bottomMargin: CGFloat = 4
+    /// Never squeeze the reply below a few lines.
+    static let minimumLines: CGFloat = 3
+
+    static func minimumHeight(lineHeight: CGFloat) -> CGFloat {
+        (lineHeight * minimumLines).rounded(.up)
+    }
+
+    /// The reply gets whatever the panel window leaves once the rest of the
+    /// card is laid out. That rest — notch bar, card header, task progress
+    /// (expanded or not), older messages, the recap, the "N sessions" link,
+    /// paddings — changes with the notch height, the font size and the
+    /// settings, so it is measured, not estimated: the panel's height minus
+    /// the reply's own. The window is further capped by the maxPanelHeight
+    /// setting, which keeps an auto-opening card from covering half the
+    /// screen when the session list is set to "unlimited".
+    ///
+    /// Content past the window's bottom edge is simply cut, so this is what
+    /// keeps the card whole.
+    static func maxHeight(
+        windowHeight: CGFloat,
+        panelHeight: CGFloat,
+        replyHeight: CGFloat,
+        maxVisibleSessions: Int,
+        maxPanelHeight: Int,
+        minimumHeight: CGFloat
+    ) -> CGFloat {
+        var limit = windowHeight > 0
+            ? windowHeight
+            : PanelHeightMetrics.desiredHeight(maxVisibleSessions: maxVisibleSessions)
         if maxPanelHeight > 0 {
-            panel = min(panel, CGFloat(maxPanelHeight))
+            limit = min(limit, CGFloat(maxPanelHeight))
         }
-        return max(minimumHeight, panel - reservedHeight)
+        // The panel contains the reply, so a panel no taller than the reply
+        // is a stale measurement from before the card opened.
+        let measured = replyHeight > 0 && panelHeight > replyHeight
+        let chrome = measured ? panelHeight - replyHeight : estimatedChromeHeight
+        return max(minimumHeight, (limit - chrome - bottomMargin).rounded(.down))
     }
 
     /// The message the completion card renders in full: the newest one, when
@@ -99,6 +150,16 @@ enum CompletionReplyMetrics {
         guard isCompletionCard, let last = messages.last, !last.isUser else { return nil }
         return last.id
     }
+
+    /// Line cap for the older replies above the finished one: one or two
+    /// lines whatever the setting. They are context, and every line they
+    /// take is a line less for the reply the card is about.
+    static func olderReplyLineLimit(_ setting: Int?) -> Int {
+        min(setting ?? 2, 2)
+    }
+
+    /// Same for the recap under the chat rows; the tooltip has all of it.
+    static let recapLineLimit = 2
 }
 
 private struct CapsBlockHeightKey: EnvironmentKey {
