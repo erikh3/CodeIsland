@@ -523,8 +523,9 @@ public struct HookEvent {
     }
 
     /// Removes common credential shapes and home-directory usernames before a
-    /// bounded detail string reaches the notch, companion payloads, or history.
-    private static func sanitizedSummary(_ value: String, limit: Int) -> String? {
+    /// bounded detail string reaches the notch, companion payloads, history,
+    /// or a phone push (PushMessageFormatter).
+    static func sanitizedSummary(_ value: String, limit: Int) -> String? {
         var result = value
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
