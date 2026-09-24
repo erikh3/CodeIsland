@@ -189,7 +189,7 @@ public enum ClaudeQuotaClient {
     /// One fetch. The credential is re-read every call so a token Claude Code
     /// rotated in the meantime is picked up without any state here.
     public static func fetch(
-        credential: @escaping @Sendable () -> ClaudeOAuthCredential? = ClaudeCredentialStore.load,
+        credential: @escaping @Sendable () -> ClaudeOAuthCredential? = { ClaudeCredentialStore.load() },
         session: URLSession = ClaudeQuotaClient.session,
         now: Date = Date()
     ) async throws -> ClaudeQuotaSnapshot {
