@@ -122,14 +122,38 @@ final class PushPolicyTests: XCTestCase {
         XCTAssertNil(dedupe.lastSent(kind: .completion, sessionId: "a"), "forgotten after `memory`")
     }
 
-    func testGlobalRateLimitProtectsChatBots() {
-        var dedupe = PushDeduplicator(window: 60, maxPerMinute: 3)
+    // MARK: Rate limits
+
+    func testRateLimiterFindsTheNextFreeSlotAcrossWindows() {
         let t0 = Date(timeIntervalSince1970: 1_000)
+        var limiter = PushRateLimiter(windows: [PushRateWindow(count: 3, seconds: 60)])
         for i in 0..<3 {
-            XCTAssertNil(dedupe.admit(kind: .permission, sessionId: "s\(i)", now: t0.addingTimeInterval(Double(i))))
+            let at = t0.addingTimeInterval(Double(i))
+            XCTAssertEqual(limiter.nextSlot(now: at), at)
+            limiter.record(at)
         }
-        XCTAssertEqual(dedupe.admit(kind: .permission, sessionId: "s9", now: t0.addingTimeInterval(5)), .rateLimited)
-        XCTAssertNil(dedupe.admit(kind: .permission, sessionId: "s9", now: t0.addingTimeInterval(61)))
+        let now = t0.addingTimeInterval(5)
+        XCTAssertEqual(limiter.nextSlot(now: now), t0.addingTimeInterval(60), "room once the oldest ages out")
+        XCTAssertEqual(limiter.nextSlot(now: t0.addingTimeInterval(61)), t0.addingTimeInterval(61))
+
+        var perSecond = PushRateLimiter(windows: [PushRateWindow(count: 5, seconds: 60), PushRateWindow(count: 1, seconds: 1)])
+        perSecond.record(t0)
+        XCTAssertEqual(perSecond.nextSlot(now: t0.addingTimeInterval(0.2)), t0.addingTimeInterval(1))
+        XCTAssertEqual(PushRateLimiter(windows: []).nextSlot(now: t0), t0, "no limit")
+    }
+
+    func testOnlyTeamChatsAreThrottledAndApprovalsMustBeDelivered() {
+        for kind in PushChannelKind.allCases {
+            XCTAssertEqual(!kind.rateLimits.isEmpty, kind.isGroupChat, kind.rawValue)
+        }
+        // Under the documented 20 / min, so the robot is never silenced.
+        XCTAssertLessThan(PushChannelKind.dingtalk.rateLimits[0].count, 20)
+        XCTAssertLessThan(PushChannelKind.wecom.rateLimits[0].count, 20)
+        XCTAssertTrue(PushThrottle.mustDeliver(.permission))
+        XCTAssertTrue(PushThrottle.mustDeliver(.question))
+        for kind in [PushEventKind.completion, .error, .reminder] {
+            XCTAssertFalse(PushThrottle.mustDeliver(kind))
+        }
     }
 
     // MARK: Classification

@@ -596,6 +596,126 @@ final class PushNotifierTests: XCTestCase {
         XCTAssertEqual(appState.pushFollowUpReminder(reminder), .skipped(.noChannel))
     }
 
+    // MARK: Volume
+
+    private var fakeNow = Date(timeIntervalSinceReferenceDate: 700_000)
+    private var slept: [TimeInterval] = []
+    private var sleepGate: CheckedContinuation<Void, Never>?
+
+    /// The notifier's clock and waits, under the test's control: a wait is
+    /// recorded, parks until `releaseSleep()`, then moves the clock on.
+    private func controlTime() {
+        PushNotifier.shared.clock = { [unowned self] in self.fakeNow }
+        PushNotifier.shared.sleep = { [unowned self] seconds in
+            self.slept.append(seconds)
+            await withCheckedContinuation { self.sleepGate = $0 }
+            self.fakeNow = self.fakeNow.addingTimeInterval(seconds)
+        }
+    }
+
+    private func releaseSleep() async {
+        for _ in 0..<50 where sleepGate == nil { await Task.yield() }
+        let gate = sleepGate
+        sleepGate = nil
+        gate?.resume()
+    }
+
+    private func waiting(_ content: PushContent, isWaiting: @escaping () -> Bool = { true }) -> PushPendingRequest {
+        PushPendingRequest(key: UUID().uuidString) { isWaiting() ? content : nil }
+    }
+
+    private func configureDingTalk() {
+        var dingtalk = PushChannelConfig(kind: .dingtalk)
+        dingtalk.enabled = true
+        dingtalk.endpoint = "https://oapi.dingtalk.com/robot/send?access_token=abc"
+        defaults.set(PushChannelConfig.encodeList([dingtalk]), forKey: SettingsKey.pushChannels)
+    }
+
+    private func dingTalkContents() -> [String] {
+        sentBodies().compactMap { ($0["text"] as? [String: Any])?["content"] as? String }
+    }
+
+    /// A flood of finished turns is capped; approvals are never refused.
+    func testGlobalCapDropsFinishedTurnsButNeverApprovals() {
+        controlTime()
+        let notifier = PushNotifier.shared
+        for i in 0..<PushThrottle.global.count {
+            XCTAssertEqual(notifier.notify(.completion(summary: "done"), subject: PushSubject(sessionId: "cap-\(i)", agent: "Claude")), .sent([.bark]))
+        }
+        XCTAssertEqual(notifier.notify(.completion(summary: "done"), subject: PushSubject(sessionId: "cap-x", agent: "Claude")), .skipped(.rateLimited))
+        let approval = PushContent.permission(tool: "Bash", detail: "make deploy")
+        XCTAssertEqual(notifier.notify(approval, subject: PushSubject(sessionId: "cap-y", agent: "Claude"), request: waiting(approval)), .sent([.bark]))
+        let question = PushContent.question(items: [PushQuestionItem(question: "Ship?")], isSecret: false)
+        XCTAssertEqual(notifier.notify(question, subject: PushSubject(sessionId: "cap-z", agent: "Claude"), request: waiting(question)), .sent([.bark]))
+    }
+
+    /// DingTalk silences a robot for 10 minutes past 20 a minute. Over its
+    /// limit, an approval waits for room; a finished turn is dropped.
+    func testTeamChatQueuesApprovalsOverItsLimitAndDropsTheRest() async throws {
+        controlTime()
+        configureDingTalk()
+        let notifier = PushNotifier.shared
+        let limit = PushChannelKind.dingtalk.rateLimits[0].count
+        for i in 0..<limit {
+            let approval = PushContent.permission(tool: "Bash", detail: "step \(i)")
+            XCTAssertEqual(notifier.notify(approval, subject: PushSubject(sessionId: "ding-\(i)", agent: "Claude"), request: waiting(approval)), .sent([.dingtalk]))
+        }
+        await waitForRequests(limit)
+
+        let late = PushContent.permission(tool: "Bash", detail: "the late one")
+        XCTAssertEqual(notifier.notify(late, subject: PushSubject(sessionId: "ding-late", agent: "Claude"), request: waiting(late)), .sent([.dingtalk]))
+        notifier.notify(.completion(summary: "done"), subject: PushSubject(sessionId: "ding-done", agent: "Claude"))
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(transport.requests.count, limit, "nothing more this minute")
+
+        await releaseSleep()
+        await waitForRequests(limit + 1)
+        XCTAssertEqual(slept, [60], "until the first send of the minute ages out")
+        XCTAssertEqual(transport.requests.count, limit + 1)
+        XCTAssertTrue(dingTalkContents().last?.contains("🔐 Claude") == true)
+        XCTAssertFalse(dingTalkContents().contains { $0.contains(L10n.shared["push_msg_completion"]) }, "the finished turn was dropped")
+    }
+
+    /// An approval queued behind the limit and answered meanwhile is not sent.
+    func testQueuedApprovalAnsweredMeanwhileIsDropped() async throws {
+        controlTime()
+        configureDingTalk()
+        let notifier = PushNotifier.shared
+        let limit = PushChannelKind.dingtalk.rateLimits[0].count
+        for i in 0..<limit {
+            let approval = PushContent.permission(tool: "Bash", detail: "step \(i)")
+            notifier.notify(approval, subject: PushSubject(sessionId: "answered-\(i)", agent: "Claude"), request: waiting(approval))
+        }
+        await waitForRequests(limit)
+
+        var stillWaiting = true
+        let late = PushContent.permission(tool: "Bash", detail: "answered on the Mac")
+        notifier.notify(late, subject: PushSubject(sessionId: "answered-late", agent: "Claude"), request: waiting(late) { stillWaiting })
+        stillWaiting = false
+        notifier.forgetAnsweredRequests()
+        await releaseSleep()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(transport.requests.count, limit)
+    }
+
+    /// Slack takes one message a second: a second finished turn in the same
+    /// second waits a moment rather than being dropped.
+    func testPerSecondLimitDelaysRatherThanDrops() async throws {
+        controlTime()
+        var slack = PushChannelConfig(kind: .slack)
+        slack.enabled = true
+        slack.endpoint = "https://hooks.slack.com/services/T0/B0/xyz"
+        defaults.set(PushChannelConfig.encodeList([slack]), forKey: SettingsKey.pushChannels)
+        let notifier = PushNotifier.shared
+        notifier.notify(.completion(summary: "one"), subject: PushSubject(sessionId: "slack-1", agent: "Claude"))
+        notifier.notify(.completion(summary: "two"), subject: PushSubject(sessionId: "slack-2", agent: "Claude"))
+        await waitForRequests(1)
+        await releaseSleep()
+        await waitForRequests(2)
+        XCTAssertEqual(slept, [1])
+        XCTAssertEqual(transport.requests.count, 2)
+    }
+
     // MARK: Send test
 
     func testSendTestReportsTheServersOwnError() async {

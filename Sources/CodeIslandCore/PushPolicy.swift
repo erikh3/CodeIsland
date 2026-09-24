@@ -51,8 +51,9 @@ public enum PushSkipReason: String, Equatable, Sendable {
     case interrupted
     /// Same session, same kind, moments ago.
     case duplicate
-    /// Global cap reached; protects chat bots that ban a noisy webhook
-    /// (DingTalk: 20/min, then 10 minutes of silence).
+    /// The global cap on pushes that can wait (finished turns, errors,
+    /// reminders) was reached (`PushThrottle.global`). Approvals and
+    /// questions are never refused for volume.
     case rateLimited
     /// No enabled, configured channel takes this kind.
     case noChannel
@@ -119,25 +120,18 @@ public struct PushDeduplicator: Sendable {
     /// A completion right after an error in the same session is the same
     /// turn ending; the error already told the story.
     public var errorShadow: TimeInterval
-    /// Across all sessions, per rolling minute.
-    public var maxPerMinute: Int
-    /// How long `lastSent(kind:sessionId:)` remembers a push — long enough
-    /// for a follow-up reminder, minutes later, to see that the moment it
-    /// reminds about already reached the phone.
+    /// How long `lastSent(kind:sessionId:)` remembers a push.
     public var memory: TimeInterval
 
     private var lastSent: [String: Date] = [:]
-    private var recentSends: [Date] = []
 
     public init(
         window: TimeInterval = 60,
         errorShadow: TimeInterval = 60,
-        maxPerMinute: Int = 12,
         memory: TimeInterval = 3_600
     ) {
         self.window = window
         self.errorShadow = errorShadow
-        self.maxPerMinute = maxPerMinute
         self.memory = memory
     }
 
@@ -167,11 +161,7 @@ public struct PushDeduplicator: Sendable {
            now.timeIntervalSince(error) < errorShadow {
             return .duplicate
         }
-        if recentSends.count >= maxPerMinute {
-            return .rateLimited
-        }
         lastSent[slot] = now
-        recentSends.append(now)
         return nil
     }
 
@@ -185,11 +175,89 @@ public struct PushDeduplicator: Sendable {
         return "\(kind.rawValue)|\(sessionId)|\(requestKey)"
     }
 
-    /// Keeps both tables bounded by time rather than by session count.
+    /// Keeps the table bounded by time rather than by session count.
     private mutating func prune(now: Date) {
         let horizon = max(window, errorShadow, memory)
         lastSent = lastSent.filter { now.timeIntervalSince($0.value) < horizon }
-        recentSends.removeAll { now.timeIntervalSince($0) >= 60 }
+    }
+}
+
+// MARK: - Rate limits
+
+/// At most `count` sends in any rolling `seconds`.
+public struct PushRateWindow: Equatable, Sendable {
+    public var count: Int
+    public var seconds: TimeInterval
+
+    public init(count: Int, seconds: TimeInterval) {
+        self.count = count
+        self.seconds = seconds
+    }
+}
+
+/// Sliding-window limiter: when the next send fits every window.
+public struct PushRateLimiter: Sendable {
+    public let windows: [PushRateWindow]
+    private var sends: [Date] = []
+
+    public init(windows: [PushRateWindow]) {
+        self.windows = windows
+    }
+
+    /// The earliest moment at or after `now` the next send fits every window.
+    public func nextSlot(now: Date) -> Date {
+        var slot = now
+        for window in windows where window.count > 0 {
+            let recent = sends.filter { now.timeIntervalSince($0) < window.seconds }.sorted()
+            guard recent.count >= window.count else { continue }
+            // Room opens when enough of the recent sends age out of the window.
+            let frees = recent[recent.count - window.count].addingTimeInterval(window.seconds)
+            slot = max(slot, frees)
+        }
+        return slot
+    }
+
+    public mutating func record(_ date: Date) {
+        let horizon = windows.map(\.seconds).max() ?? 0
+        sends.removeAll { date.timeIntervalSince($0) >= horizon }
+        sends.append(date)
+    }
+}
+
+public enum PushThrottle {
+    /// Across all channels and sessions: finished turns, errors and
+    /// reminders past it are dropped — a flood of them says less than one.
+    public static let global = PushRateWindow(count: 12, seconds: 60)
+
+    /// Approvals and questions keep an agent blocked until someone answers:
+    /// never refused by the global cap, and queued (not dropped) when a team
+    /// chat's own limit is reached.
+    public static func mustDeliver(_ kind: PushEventKind) -> Bool {
+        kind == .permission || kind == .question
+    }
+
+    /// A push that can be dropped still waits this long for a team chat's
+    /// slot — per-second limits (Feishu, Slack) free up that fast.
+    public static let dropGrace: TimeInterval = 5
+}
+
+extension PushChannelKind {
+    /// What the service allows one incoming webhook, with some headroom:
+    /// exceeding it gets messages rejected (Feishu, Slack) or the robot
+    /// silenced for 10 minutes (DingTalk). Personal channels have none worth
+    /// throttling at this volume.
+    ///
+    /// - DingTalk: 20 messages a minute per robot.
+    /// - WeCom: 20 messages a minute per robot.
+    /// - Feishu / Lark custom bot: 100 a minute, 5 a second.
+    /// - Slack incoming webhook: 1 a second.
+    public var rateLimits: [PushRateWindow] {
+        switch self {
+        case .dingtalk, .wecom: return [PushRateWindow(count: 18, seconds: 60)]
+        case .feishu: return [PushRateWindow(count: 90, seconds: 60), PushRateWindow(count: 4, seconds: 1)]
+        case .slack: return [PushRateWindow(count: 1, seconds: 1)]
+        case .bark, .ntfy, .telegram: return []
+        }
     }
 }
 

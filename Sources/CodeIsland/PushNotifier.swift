@@ -301,9 +301,14 @@ final class PushNotifier: ObservableObject {
         }
 
         let now = clock()
+        if !PushThrottle.mustDeliver(kind), globalLimiter.nextSlot(now: now) > now {
+            return skip(.rateLimited, kind, subject)
+        }
         if let reason = deduplicator.admit(kind: kind, sessionId: subject.sessionId, requestKey: request?.key, now: now) {
             return skip(reason, kind, subject)
         }
+        // Approvals and questions neither wait for nor use up the global cap.
+        if !PushThrottle.mustDeliver(kind) { globalLimiter.record(now) }
         if let request, let trackingId {
             tracked[trackingId] = TrackedRequest(kind: kind, subject: subject, request: request, heldBack: false)
         }
@@ -320,10 +325,134 @@ final class PushNotifier: ObservableObject {
                 now: now
             )
             rendered[channel.includeDetails] = message
-            deliver(message, to: channel, kind: kind, now: now)
+            enqueue(Outgoing(
+                message: message,
+                channel: channel,
+                kind: kind,
+                requestId: trackingId,
+                attempt: 0,
+                notBefore: now,
+                enqueued: now
+            ))
         }
         log.info("push \(kind.rawValue, privacy: .public) session=\(subject.sessionId, privacy: .public) → \(targets.map(\.kind.rawValue).joined(separator: ","), privacy: .public)")
         return .sent(targets.map(\.kind))
+    }
+
+    // MARK: Outbox
+
+    /// One push on its way to one channel.
+    private struct Outgoing {
+        let message: PushMessage
+        let channel: PushChannelConfig
+        /// What the push is about (`PushContent.kind`).
+        let kind: PushEventKind
+        /// The approval / question it asks about (`tracked` key), so a push
+        /// still queued when it is answered is dropped instead of sent.
+        let requestId: String?
+        var attempt: Int
+        var notBefore: Date
+        let enqueued: Date
+    }
+
+    /// Per channel, what still waits for its moment (a retry) or for room
+    /// under the channel's own rate limit. Personal channels have no limit,
+    /// so theirs goes out on the spot and never lingers here.
+    private var outbox: [PushChannelKind: [Outgoing]] = [:]
+    private var channelLimiters: [PushChannelKind: PushRateLimiter] = [:]
+    private var globalLimiter = PushRateLimiter(windows: [PushThrottle.global])
+    private var outboxWake: [PushChannelKind: Date] = [:]
+    private var outboxTasks: [PushChannelKind: Task<Void, Never>] = [:]
+    /// Waits out a retry delay or a rate-limit slot. Tests replace it.
+    var sleep: @MainActor (TimeInterval) async -> Void = { seconds in
+        try? await Task.sleep(nanoseconds: UInt64(max(seconds, 0) * 1_000_000_000))
+    }
+
+    private func enqueue(_ item: Outgoing) {
+        outbox[item.channel.kind, default: []].append(item)
+        pump(item.channel.kind, now: clock())
+    }
+
+    /// Sends what is due and fits the channel's limit, oldest first; keeps
+    /// the rest and arms one wake-up for the earliest of them. Over the
+    /// limit, an approval or question waits for room; anything else waits
+    /// only a few seconds (per-second limits) and is otherwise dropped.
+    private func pump(_ channelKind: PushChannelKind, now: Date) {
+        guard let queue = outbox[channelKind], !queue.isEmpty else { return }
+        var limiter = channelLimiters[channelKind] ?? PushRateLimiter(windows: channelKind.rateLimits)
+        var waiting: [Outgoing] = []
+        var wake: Date?
+        for item in queue {
+            if item.notBefore > now {
+                waiting.append(item)
+                wake = min(wake ?? item.notBefore, item.notBefore)
+                continue
+            }
+            if let id = item.requestId, tracked[id] == nil {
+                log.info("push \(item.kind.rawValue, privacy: .public) to \(channelKind.rawValue, privacy: .public) dropped: answered while queued")
+                continue
+            }
+            let slot = limiter.nextSlot(now: now)
+            if slot > now {
+                if PushThrottle.mustDeliver(item.kind)
+                    || slot.timeIntervalSince(item.enqueued) <= PushThrottle.dropGrace {
+                    waiting.append(item)
+                    wake = min(wake ?? slot, slot)
+                } else {
+                    log.info("push \(item.kind.rawValue, privacy: .public) to \(channelKind.rawValue, privacy: .public) dropped: over the channel's rate limit")
+                }
+                continue
+            }
+            limiter.record(now)
+            transmit(item)
+        }
+        channelLimiters[channelKind] = limiter
+        outbox[channelKind] = waiting.isEmpty ? nil : waiting
+        armOutbox(channelKind, at: wake)
+    }
+
+    private func armOutbox(_ channelKind: PushChannelKind, at wake: Date?) {
+        guard let wake else {
+            outboxTasks[channelKind]?.cancel()
+            outboxTasks[channelKind] = nil
+            outboxWake[channelKind] = nil
+            return
+        }
+        if let armed = outboxWake[channelKind], armed <= wake { return }
+        outboxTasks[channelKind]?.cancel()
+        outboxWake[channelKind] = wake
+        let delay = wake.timeIntervalSince(clock())
+        outboxTasks[channelKind] = Task { @MainActor [weak self] in
+            await self?.sleep(delay)
+            guard !Task.isCancelled, let self else { return }
+            self.outboxWake[channelKind] = nil
+            self.outboxTasks[channelKind] = nil
+            // Never before the wake it slept for, so a shortened sleep
+            // (tests) still moves on.
+            self.pump(channelKind, now: max(self.clock(), wake))
+        }
+    }
+
+    /// Builds the request at send time — DingTalk and Feishu signatures carry
+    /// a timestamp — and records the server's verdict.
+    private func transmit(_ item: Outgoing) {
+        let channel = item.channel
+        let request: PushHTTPRequest
+        do {
+            request = try PushRequestBuilder.request(for: item.message, channel: channel, now: clock())
+        } catch {
+            lastDelivery[channel.kind] = PushDeliveryRecord(date: clock(), kind: item.kind, result: Self.configFailure(error))
+            return
+        }
+        let transport = self.transport
+        Task { [weak self] in
+            let response = await transport.send(request)
+            let result = PushDeliveryResult.from(response, kind: channel.kind, requestURL: request.url)
+            if !result.ok {
+                log.error("push to \(channel.kind.rawValue, privacy: .public) failed: \(result.loggableSummary(for: channel), privacy: .public)")
+            }
+            self?.lastDelivery[channel.kind] = PushDeliveryRecord(date: self?.clock() ?? Date(), kind: item.kind, result: result)
+        }
     }
 
     /// "Send test": bypasses every gate and the dedupe, and reports exactly
@@ -340,25 +469,6 @@ final class PushNotifier: ObservableObject {
         }
         lastDelivery[channel.kind] = PushDeliveryRecord(date: clock(), kind: nil, result: result)
         return result
-    }
-
-    private func deliver(_ message: PushMessage, to channel: PushChannelConfig, kind: PushEventKind, now: Date) {
-        let request: PushHTTPRequest
-        do {
-            request = try PushRequestBuilder.request(for: message, channel: channel, now: now)
-        } catch {
-            lastDelivery[channel.kind] = PushDeliveryRecord(date: now, kind: kind, result: Self.configFailure(error))
-            return
-        }
-        let transport = self.transport
-        Task { [weak self] in
-            let response = await transport.send(request)
-            let result = PushDeliveryResult.from(response, kind: channel.kind, requestURL: request.url)
-            if !result.ok {
-                log.error("push to \(channel.kind.rawValue, privacy: .public) failed: \(result.loggableSummary(for: channel), privacy: .public)")
-            }
-            self?.lastDelivery[channel.kind] = PushDeliveryRecord(date: self?.clock() ?? Date(), kind: kind, result: result)
-        }
     }
 
     private func skip(_ reason: PushSkipReason, _ kind: PushEventKind, _ subject: PushSubject) -> PushDecision {
@@ -396,6 +506,15 @@ final class PushNotifier: ObservableObject {
         tracked = [:]
         pruneScheduled = false
         disarmCatchUpTimer()
+        outboxTasks.values.forEach { $0.cancel() }
+        outboxTasks = [:]
+        outboxWake = [:]
+        outbox = [:]
+        channelLimiters = [:]
+        globalLimiter = PushRateLimiter(windows: [PushThrottle.global])
+        sleep = { seconds in
+            try? await Task.sleep(nanoseconds: UInt64(max(seconds, 0) * 1_000_000_000))
+        }
     }
 }
 
