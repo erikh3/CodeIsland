@@ -1427,8 +1427,12 @@ final class AppState {
         return !isTerminalFrontmost(session)
     }
 
+    /// Smart Suppress for a question: may its card open by itself, as far as
+    /// "is the user already looking at the agent" goes? The "auto-expand on
+    /// question" switch is a separate, UI-only choice checked where the card
+    /// opens; folded in here, it read as "the user is looking" to anything
+    /// else that asked (the AskUserQuestion push once did).
     private func shouldAutoOpenQuestionSurface(for event: HookEvent) -> Bool {
-        guard Self.autoExpandOnQuestion() else { return false }
         let source = SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String)
         let nativeAskIsRacing = event.rawJSON["_codeisland_native_ask_racing"] as? Bool == true
         // Marker-enabled OMP explicitly guarantees that its native ask dialog
@@ -2535,7 +2539,7 @@ final class AppState {
 
         if questionQueue.count == 1 {
             activeSessionId = sessionId
-            if shouldAutoOpenQuestionSurface(for: event) {
+            if Self.autoExpandOnQuestion(), shouldAutoOpenQuestionSurface(for: event) {
                 withAnimation(NotchAnimation.open) {
                     surface = .questionCard(sessionId: sessionId)
                 }
