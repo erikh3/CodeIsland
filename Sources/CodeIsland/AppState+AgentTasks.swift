@@ -1,13 +1,18 @@
 import Foundation
 import CodeIslandCore
 
-/// An attach-time checklist backfill that is still scanning.
+/// An attach-time checklist backfill that is still scanning — and, for a
+/// Codex rollout whose tail window held no `turn_context`, the model/effort
+/// search that rides along with it.
 struct PendingAgentTaskBackfill {
     /// Tailer attachment the scan belongs to; a re-attach supersedes it.
     let attachmentToken: UUID
     /// Tail events that landed while the scan ran. They are newer than every
     /// scanned byte, so they replay on top of the rebuilt list.
     var bufferedEvents: [AgentTaskEvent] = []
+    /// A live line named the model while the scan ran; history must not
+    /// overwrite it.
+    var sawLiveModelObservation = false
 }
 
 extension AppState {
@@ -17,8 +22,16 @@ extension AppState {
     ///
     /// `endOffset` is the offset the tailer starts reading at, so the scan and
     /// the live tail read disjoint bytes and no operation or prompt is seen
-    /// twice — or by neither.
-    func startAgentTaskBackfill(sessionId: String, path: String, endOffset: UInt64, attachmentToken: UUID) {
+    /// twice — or by neither. With `searchCodexModel`, the last `turn_context`
+    /// before it is looked up too: the attach-time tail window often misses
+    /// it, leaving the card without its reasoning effort until the next turn.
+    func startAgentTaskBackfill(
+        sessionId: String,
+        path: String,
+        endOffset: UInt64,
+        attachmentToken: UUID,
+        searchCodexModel: Bool = false
+    ) {
         guard endOffset > 0 else {
             pendingAgentTaskBackfills.removeValue(forKey: sessionId)
             return
@@ -26,10 +39,14 @@ extension AppState {
         pendingAgentTaskBackfills[sessionId] = PendingAgentTaskBackfill(attachmentToken: attachmentToken)
         Task.detached(priority: .utility) { [weak self] in
             let backfill = AgentTaskTranscript.scanFile(atPath: path, endOffset: endOffset)
+            let codexModel = searchCodexModel
+                ? ModelObservation.latestCodexTurnContext(path: path, endOffset: endOffset)
+                : nil
             await self?.finishAgentTaskBackfill(
                 sessionId: sessionId,
                 attachmentToken: attachmentToken,
-                backfill: backfill
+                backfill: backfill,
+                codexModel: codexModel
             )
         }
     }
@@ -37,22 +54,32 @@ extension AppState {
     func finishAgentTaskBackfill(
         sessionId: String,
         attachmentToken: UUID,
-        backfill: AgentTaskTranscript.Backfill?
+        backfill: AgentTaskTranscript.Backfill?,
+        codexModel: ModelObservation? = nil
     ) {
         guard let pending = pendingAgentTaskBackfills[sessionId],
               pending.attachmentToken == attachmentToken else { return }
         pendingAgentTaskBackfills.removeValue(forKey: sessionId)
         guard attachedTranscriptTokens[sessionId] == attachmentToken,
-              let backfill,
               var session = sessions[sessionId] else { return }
-        let rebuilt = Self.agentTasksAfterBackfill(
-            live: session.agentTasks,
-            backfill: backfill,
-            bufferedEvents: pending.bufferedEvents,
-            now: Date()
-        )
-        guard rebuilt != session.agentTasks else { return }
-        session.agentTasks = rebuilt
+        var changed = false
+        if let codexModel, !pending.sawLiveModelObservation,
+           session.applyBackfilledModelObservation(codexModel) {
+            changed = true
+        }
+        if let backfill {
+            let rebuilt = Self.agentTasksAfterBackfill(
+                live: session.agentTasks,
+                backfill: backfill,
+                bufferedEvents: pending.bufferedEvents,
+                now: Date()
+            )
+            if rebuilt != session.agentTasks {
+                session.agentTasks = rebuilt
+                changed = true
+            }
+        }
+        guard changed else { return }
         sessions[sessionId] = session
         scheduleSave()
     }

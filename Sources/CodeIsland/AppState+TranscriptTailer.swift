@@ -122,7 +122,10 @@ extension AppState {
             sessionId: sessionId,
             path: path,
             endOffset: attachOffset,
-            attachmentToken: attachmentToken
+            attachmentToken: attachmentToken,
+            // A long Codex turn's output often pushes its turn_context out of
+            // the tail window; look further back, off the main actor.
+            searchCodexModel: sessions[sessionId]?.source == "codex" && tailScan?.delta.modelObservation == nil
         )
     }
 
@@ -323,6 +326,10 @@ extension AppState {
         // Recap + model/effort label. Written back without bumping lastActivity:
         // a recap arrives minutes after the turn ended and is not activity.
         let metadataChanged = session.applyTranscriptMetadata(from: delta)
+        if delta.modelObservation != nil {
+            // Newer than anything the attach-time search can still turn up.
+            pendingAgentTaskBackfills[delta.sessionId]?.sawLiveModelObservation = true
+        }
 
         if mutated {
             session.lastActivity = Date()

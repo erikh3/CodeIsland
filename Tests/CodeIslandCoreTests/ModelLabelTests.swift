@@ -129,4 +129,59 @@ final class ModelLabelTests: XCTestCase {
         )
         XCTAssertNil(ModelObservation.latestInClaudeTranscript(Data()))
     }
+
+    func testObservationKeepsTheLinesTimestampWithoutChangingEquality() {
+        let timed = ModelObservation.from(model: "gpt-5.6-sol", effort: "max", timestamp: "2026-09-24T09:05:19.777Z")
+        XCTAssertEqual(timed?.observedAt, ClaudeUsageScanner.parseISO8601("2026-09-24T09:05:19.777Z"))
+        XCTAssertEqual(timed, ModelObservation(model: "gpt-5.6-sol", effort: "max"))
+        XCTAssertNil(ModelObservation.from(model: "gpt-5.6-sol", effort: nil, timestamp: "t")?.observedAt)
+    }
+
+    // MARK: - Codex turn_context search
+
+    private func turnContext(effort: String, turn: String) -> String {
+        #"{"timestamp":"2026-09-24T09:05:19.777Z","ordinal":1,"type":"turn_context","payload":{"turn_id":"\#(turn)","cwd":"/repo","model":"gpt-5.6-sol","effort":"\#(effort)","summary":"auto"}}"#
+    }
+
+    private func toolOutput(_ bytes: Int) -> String {
+        #"{"timestamp":"2026-09-24T09:05:20.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c","output":"\#(String(repeating: "o", count: bytes))"}}"#
+    }
+
+    private func writeRollout(_ lines: [String]) throws -> String {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codeisland-turn-context-\(UUID().uuidString).jsonl")
+        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url.path
+    }
+
+    func testLatestCodexTurnContextSearchesBackPastTheTailWindow() throws {
+        let path = try writeRollout(
+            [turnContext(effort: "low", turn: "t1"), turnContext(effort: "max", turn: "t2")]
+                + Array(repeating: toolOutput(3_000), count: 60)
+        )
+        // Small chunks, so the row straddles chunk boundaries on the way back.
+        let found = ModelObservation.latestCodexTurnContext(path: path, chunkSize: 1_000)
+        XCTAssertEqual(found, ModelObservation(model: "gpt-5.6-sol", effort: "max"))
+        XCTAssertNotNil(found?.observedAt)
+        XCTAssertEqual(ModelObservation.latestCodexTurnContext(path: path), found)
+    }
+
+    func testLatestCodexTurnContextHonoursTheEndOffsetAndTheSearchBound() throws {
+        let head = [turnContext(effort: "low", turn: "t1"), toolOutput(500)].joined(separator: "\n") + "\n"
+        let path = try writeRollout([
+            turnContext(effort: "low", turn: "t1"), toolOutput(500),
+            turnContext(effort: "max", turn: "t2"), toolOutput(20_000),
+        ])
+        XCTAssertEqual(
+            ModelObservation.latestCodexTurnContext(path: path, endOffset: UInt64(head.utf8.count), chunkSize: 256)?.effort,
+            "low",
+            "rows past the tailer's start offset are the tailer's"
+        )
+        XCTAssertNil(
+            ModelObservation.latestCodexTurnContext(path: path, maxBytes: 10_000, chunkSize: 4_096),
+            "the search stops at its bound"
+        )
+        XCTAssertNil(ModelObservation.latestCodexTurnContext(path: path + ".missing"))
+    }
 }

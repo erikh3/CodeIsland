@@ -53,6 +53,66 @@ public struct ModelObservation: Equatable, Sendable {
         )
     }
 
+    /// The last `turn_context` in a Codex rollout before `endOffset` (default:
+    /// the end of the file), searched backwards in `chunkSize` pieces over at
+    /// most `maxBytes`.
+    ///
+    /// A fixed tail window is not enough: a forked child thread opens with a
+    /// copy of its parent's history, and a long turn's tool output can push
+    /// the turn's one `turn_context` far back, so it often lies beyond the
+    /// last 128 KB. Rows are only parsed when they carry the marker. Blocking
+    /// file I/O: call off the main actor.
+    public static func latestCodexTurnContext(
+        path: String,
+        endOffset: UInt64? = nil,
+        maxBytes: UInt64 = 2 * 1024 * 1024,
+        chunkSize: UInt64 = 128 * 1024
+    ) -> ModelObservation? {
+        guard chunkSize > 0, let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return nil }
+        let end = min(endOffset ?? size, size)
+        let floor = end > maxBytes ? end - maxBytes : 0
+        var chunkEnd = end
+        // Head of the region already searched: the tail of a row that began
+        // in an earlier chunk (its newline excluded).
+        var carry = Data()
+        while chunkEnd > floor {
+            let chunkStart = max(floor, chunkEnd > chunkSize ? chunkEnd - chunkSize : 0)
+            guard (try? handle.seek(toOffset: chunkStart)) != nil,
+                  var region = try? handle.read(upToCount: Int(chunkEnd - chunkStart)),
+                  !region.isEmpty else { return nil }
+            region.append(carry)
+            var rows = region.startIndex..<region.endIndex
+            if chunkStart > 0 {
+                // Up to the first newline, the row may have started earlier.
+                guard let newline = region.firstIndex(of: 0x0A) else {
+                    carry = region
+                    chunkEnd = chunkStart
+                    continue
+                }
+                carry = Data(region[..<newline])
+                rows = region.index(after: newline)..<region.endIndex
+            }
+            if let observation = lastTurnContext(in: region[rows]) { return observation }
+            chunkEnd = chunkStart
+        }
+        return nil
+    }
+
+    private static let turnContextMarker = Data(#""type":"turn_context""#.utf8)
+
+    private static func lastTurnContext(in rows: Data.SubSequence) -> ModelObservation? {
+        guard rows.range(of: turnContextMarker) != nil else { return nil }
+        for row in rows.split(separator: 0x0A).reversed() where row.range(of: turnContextMarker) != nil {
+            guard let json = try? JSONSerialization.jsonObject(with: Data(row)) as? [String: Any],
+                  json["type"] as? String == "turn_context",
+                  let observation = fromCodexTurnContext(json) else { continue }
+            return observation
+        }
+        return nil
+    }
+
     /// Newest assistant model/effort in a Claude transcript blob, sidechain
     /// lines included — for a subagent's own transcript, where every line is a
     /// sidechain line. (The live tailer skips sidechain lines on purpose: in a

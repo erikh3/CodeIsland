@@ -378,11 +378,11 @@ final class AppState {
     }
     private var modelReadRetryAt: [String: Date] = [:]
     /// Per parent session → subagent id: the subagent's own model/effort once
-    /// read from its transcript, and when to retry while the file has none yet.
+    /// read from its transcript, and the reads still trying to find it.
     @ObservationIgnored
     var subagentModelObservations: [String: [String: ModelObservation]] = [:]
     @ObservationIgnored
-    var subagentModelReadRetryAt: [String: [String: Date]] = [:]
+    var subagentModelReads: [String: [String: SubagentModelRead]] = [:]
 
     private var dismissedPermissionSessionIds: Set<String> = [] {
         didSet { followUps.waitingChanged() }
@@ -946,7 +946,7 @@ final class AppState {
         exitingSessions.removeValue(forKey: sessionId)
         modelReadRetryAt.removeValue(forKey: sessionId)
         subagentModelObservations.removeValue(forKey: sessionId)
-        subagentModelReadRetryAt.removeValue(forKey: sessionId)
+        subagentModelReads.removeValue(forKey: sessionId)
         hostHarnessProbes.removeValue(forKey: sessionId)
         hostHarnessProbeRetryAt.removeValue(forKey: sessionId)
         completionQueue.removeAll { $0 == sessionId }
