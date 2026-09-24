@@ -207,6 +207,16 @@ final class AgentTaskListTests: XCTestCase {
         reduce(&sessions, todoWrite("toolu_w1", [("A", "in_progress")]))
         reduce(&sessions, ["hook_event_name": "SessionStart", "source": "compact", "cwd": "/tmp/p"])
         XCTAssertEqual(sessions["s1"]!.agentTasks.items.map(\.title), ["A"])
+        reduce(&sessions, ["hook_event_name": "SessionStart", "source": "resume", "cwd": "/tmp/p"])
+        XCTAssertEqual(sessions["s1"]!.agentTasks.items.map(\.title), ["A"])
+    }
+
+    func testSessionStartAfterClearDropsTheChecklist() {
+        // /clear can keep the session id; the conversation (and its plan) is gone.
+        var sessions: [String: SessionSnapshot] = [:]
+        reduce(&sessions, todoWrite("toolu_w1", [("A", "in_progress"), ("B", "pending")]))
+        reduce(&sessions, ["hook_event_name": "SessionStart", "source": "clear", "cwd": "/tmp/p"])
+        XCTAssertTrue(sessions["s1"]!.agentTasks.isEmpty)
     }
 
     // MARK: - Subagents

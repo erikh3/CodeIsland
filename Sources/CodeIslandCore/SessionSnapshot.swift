@@ -1453,8 +1453,11 @@ public func reduceEvent(
     }
 
     // SessionStart rebuilt the snapshot, but a resumed or compacted
-    // conversation is still working through the same checklist.
-    if eventName == "SessionStart", let agentTasksBeforeEvent {
+    // conversation is still working through the same checklist. /clear
+    // starts the conversation over — even when it keeps the session id — so
+    // the old checklist goes with it.
+    if eventName == "SessionStart", let agentTasksBeforeEvent,
+       (event.rawJSON["source"] as? String)?.lowercased() != "clear" {
         sessions[sessionId]?.agentTasks = agentTasksBeforeEvent
     }
 
