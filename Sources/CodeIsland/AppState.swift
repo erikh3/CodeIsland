@@ -118,10 +118,16 @@ final class AppState {
     var sessions: [String: SessionSnapshot] = [:]
     var activeSessionId: String?
     var permissionQueue: [PermissionRequest] = [] {
-        didSet { followUps.waitingChanged() }
+        didSet {
+            followUps.waitingChanged()
+            PushNotifier.shared.requestsChanged()
+        }
     }
     var questionQueue: [QuestionRequest] = [] {
-        didSet { followUps.waitingChanged() }
+        didSet {
+            followUps.waitingChanged()
+            PushNotifier.shared.requestsChanged()
+        }
     }
     /// Follow-up reminders for waiting approvals / questions and unseen
     /// completions. Holds no entries and arms no timer while the setting is off.

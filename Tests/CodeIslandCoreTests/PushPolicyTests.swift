@@ -82,6 +82,18 @@ final class PushPolicyTests: XCTestCase {
         XCTAssertNil(dedupe.admit(kind: .permission, sessionId: "a", now: t0.addingTimeInterval(61)), "window over")
     }
 
+    func testApprovalsAndQuestionsAreDedupedPerRequestUntilAnswered() {
+        var dedupe = PushDeduplicator(window: 60)
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        XCTAssertNil(dedupe.admit(kind: .permission, sessionId: "a", requestKey: "id:1", now: t0))
+        XCTAssertEqual(dedupe.admit(kind: .permission, sessionId: "a", requestKey: "id:1", now: t0.addingTimeInterval(5)), .duplicate, "a replay")
+        XCTAssertNil(dedupe.admit(kind: .permission, sessionId: "a", requestKey: "id:2", now: t0.addingTimeInterval(6)), "another request")
+
+        dedupe.forget(kind: .permission, sessionId: "a", requestKey: "id:1")
+        XCTAssertNil(dedupe.admit(kind: .permission, sessionId: "a", requestKey: "id:1", now: t0.addingTimeInterval(7)), "answered, then asked again")
+        XCTAssertEqual(dedupe.admit(kind: .permission, sessionId: "a", requestKey: "id:2", now: t0.addingTimeInterval(8)), .duplicate)
+    }
+
     func testSkippedPushesDoNotStartAWindow() {
         var dedupe = PushDeduplicator(window: 60)
         let t0 = Date(timeIntervalSince1970: 1_000)

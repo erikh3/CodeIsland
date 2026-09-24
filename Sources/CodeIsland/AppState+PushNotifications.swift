@@ -24,7 +24,8 @@ extension AppState {
         notifier.notify(
             Self.pushContent(forPermission: event, cwd: sessions[sessionId]?.cwd),
             subject: pushSubject(for: sessionId),
-            smartSuppressed: smartSuppressed()
+            smartSuppressed: smartSuppressed(),
+            request: pushRequest(forPermission: event, sessionId: sessionId)
         )
     }
 
@@ -35,8 +36,66 @@ extension AppState {
         notifier.notify(
             Self.pushContent(forQuestion: request),
             subject: pushSubject(for: sessionId),
-            smartSuppressed: smartSuppressed()
+            smartSuppressed: smartSuppressed(),
+            request: pushRequest(forQuestion: request, sessionId: sessionId)
         )
+    }
+
+    // MARK: Request identity
+
+    /// Which approval / question a push is about: the tool call id when the
+    /// agent sends one, else a fingerprint of what is asked — so a replayed
+    /// hook is the same request and a new one in the same session is not.
+    nonisolated static func pushRequestKey(toolUseId: String?, asking content: PushContent) -> String {
+        if let id = toolUseId?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
+            return "id:\(id)"
+        }
+        return "ask:\(content.hashValue)"
+    }
+
+    /// Fingerprinted without the session's cwd, which can still arrive after
+    /// the request did.
+    nonisolated static func pushRequestKey(forPermission event: HookEvent) -> String {
+        pushRequestKey(toolUseId: event.toolUseId, asking: pushContent(forPermission: event, cwd: nil))
+    }
+
+    static func pushRequestKey(forQuestion request: QuestionRequest) -> String {
+        pushRequestKey(toolUseId: request.event.toolUseId, asking: pushContent(forQuestion: request))
+    }
+
+    /// A queued approval, found again by identity until it leaves the queue.
+    func pushRequest(forPermission event: HookEvent, sessionId: String) -> PushPendingRequest {
+        let key = Self.pushRequestKey(forPermission: event)
+        return PushPendingRequest(key: key) { [weak self] in
+            guard let self,
+                  let queued = self.permissionQueue.first(where: {
+                      ($0.event.sessionId ?? "default") == sessionId && Self.pushRequestKey(forPermission: $0.event) == key
+                  }) else { return nil }
+            return Self.pushContent(forPermission: queued.event, cwd: self.sessions[sessionId]?.cwd)
+        }
+    }
+
+    /// A queued question, found again by identity until it leaves the queue.
+    func pushRequest(forQuestion request: QuestionRequest, sessionId: String) -> PushPendingRequest {
+        let key = Self.pushRequestKey(forQuestion: request)
+        return PushPendingRequest(key: key) { [weak self] in
+            guard let self,
+                  let queued = self.questionQueue.first(where: {
+                      ($0.event.sessionId ?? "default") == sessionId && Self.pushRequestKey(forQuestion: $0) == key
+                  }) else { return nil }
+            return Self.pushContent(forQuestion: queued)
+        }
+    }
+
+    /// A display-only wait, identified by what it asks: the same wait asking
+    /// something else (Claude Desktop's next card) is a new request.
+    func pushRequest(forDisplayOnlyWait sessionId: String, asking content: PushContent) -> PushPendingRequest {
+        let key = "wait:\(content.hashValue)"
+        return PushPendingRequest(key: key) { [weak self] in
+            guard let current = self?.displayOnlyWaitPushContent(forSession: sessionId),
+                  "wait:\(current.hashValue)" == key else { return nil }
+            return current
+        }
     }
 
     /// Runs right after the reducer, before its side effects: a turn that

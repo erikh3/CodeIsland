@@ -56,6 +56,8 @@ extension AppState {
     ) {
         let current = displayOnlyWaitKind(forSession: sessionId)
         guard before != nil || current != nil else { return }
+        // A wait that ended or now asks something else frees its push slot.
+        PushNotifier.shared.requestsChanged()
         guard let current else {
             displayOnlyWaitAsks.removeValue(forKey: sessionId)
             followUps.displayOnlyWaitsChanged()
@@ -90,7 +92,8 @@ extension AppState {
         return notifier.notify(
             content,
             subject: pushSubject(for: sessionId),
-            smartSuppressed: !self.shouldAutoOpenPendingSurface(for: sessionId)
+            smartSuppressed: !self.shouldAutoOpenPendingSurface(for: sessionId),
+            request: pushRequest(forDisplayOnlyWait: sessionId, asking: content)
         )
     }
 

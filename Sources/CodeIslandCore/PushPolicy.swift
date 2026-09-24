@@ -109,9 +109,12 @@ public enum PushGate {
 // MARK: - Dedupe
 
 public struct PushDeduplicator: Sendable {
-    /// Same session + same kind inside this window is one moment: parallel
-    /// tool approvals, a question re-asked by a replayed hook, a Stop
-    /// followed by the idle sweep's own completion.
+    /// Same session + same kind (+ same request, for approvals and
+    /// questions) inside this window is one moment: a question re-asked by
+    /// a replayed hook, a Stop followed by the idle sweep's own completion.
+    /// A different request of the same session is news — the approval that
+    /// follows one answered on the iPhone a minute ago — and so is the same
+    /// request once it was answered (`forget`).
     public var window: TimeInterval
     /// A completion right after an error in the same session is the same
     /// turn ending; the error already told the story.
@@ -144,9 +147,19 @@ public struct PushDeduplicator: Sendable {
     }
 
     /// nil = admitted, and recorded as sent at `now`.
-    public mutating func admit(kind: PushEventKind, sessionId: String, now: Date) -> PushSkipReason? {
+    ///
+    /// - `requestKey`: which approval / question this is (a tool call id, or
+    ///   a fingerprint of what is asked); nil for kinds that are about the
+    ///   session as a whole.
+    public mutating func admit(
+        kind: PushEventKind,
+        sessionId: String,
+        requestKey: String? = nil,
+        now: Date
+    ) -> PushSkipReason? {
         prune(now: now)
-        if let last = lastSent[key(kind, sessionId)], now.timeIntervalSince(last) < window {
+        let slot = key(kind, sessionId, requestKey)
+        if let last = lastSent[slot], now.timeIntervalSince(last) < window {
             return .duplicate
         }
         if kind == .completion,
@@ -157,13 +170,19 @@ public struct PushDeduplicator: Sendable {
         if recentSends.count >= maxPerMinute {
             return .rateLimited
         }
-        lastSent[key(kind, sessionId)] = now
+        lastSent[slot] = now
         recentSends.append(now)
         return nil
     }
 
-    private func key(_ kind: PushEventKind, _ sessionId: String) -> String {
-        "\(kind.rawValue)|\(sessionId)"
+    /// The request was answered: its next push is news, not a repeat.
+    public mutating func forget(kind: PushEventKind, sessionId: String, requestKey: String?) {
+        lastSent[key(kind, sessionId, requestKey)] = nil
+    }
+
+    private func key(_ kind: PushEventKind, _ sessionId: String, _ requestKey: String? = nil) -> String {
+        guard let requestKey, !requestKey.isEmpty else { return "\(kind.rawValue)|\(sessionId)" }
+        return "\(kind.rawValue)|\(sessionId)|\(requestKey)"
     }
 
     /// Keeps both tables bounded by time rather than by session count.

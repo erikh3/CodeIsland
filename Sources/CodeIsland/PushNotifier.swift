@@ -23,6 +23,17 @@ struct PushDeliveryRecord: Equatable {
     let result: PushDeliveryResult
 }
 
+/// The approval or question a push is about, so the notifier can tell when
+/// it has been answered.
+struct PushPendingRequest {
+    /// Identity within its session and kind: the tool call id when the
+    /// agent sends one, else a fingerprint of what is asked.
+    let key: String
+    /// What is waiting under this identity right now, rebuilt from the
+    /// queue (or the display-only wait); nil once it was answered or dropped.
+    let current: @MainActor () -> PushContent?
+}
+
 /// Sends pushes to a phone or a team chat. Decides once per moment (gate →
 /// channel selection → dedupe), then fans out to every channel that takes
 /// the kind. Fire-and-forget like the webhook: a slow or failing push server
@@ -48,7 +59,45 @@ final class PushNotifier: ObservableObject {
     private(set) var lastDecision: PushDecision?
     private var deduplicator = PushDeduplicator()
 
+    /// Approvals / questions pushed and not yet seen answered. Each holds
+    /// its dedupe slot until `requestsChanged` finds it gone, so a replay
+    /// stays one push while the same request waits, and the next one after
+    /// it is answered is news even seconds later.
+    private var tracked: [String: TrackedRequest] = [:]
+    private var pruneScheduled = false
+
+    private struct TrackedRequest {
+        let kind: PushEventKind
+        let subject: PushSubject
+        let request: PushPendingRequest
+    }
+
     private init() {}
+
+    /// The approval / question queues or a display-only wait changed. The
+    /// check runs on the next main-actor turn, once the change has settled:
+    /// a queue is emptied and refilled in one go when a request is replayed
+    /// or promoted, and that must not read as "answered". One flag check
+    /// when nothing is tracked.
+    func requestsChanged() {
+        guard !tracked.isEmpty, !pruneScheduled else { return }
+        pruneScheduled = true
+        Task { @MainActor [weak self] in self?.forgetAnsweredRequests() }
+    }
+
+    /// Drops every tracked request that is no longer waiting, freeing its
+    /// dedupe slot.
+    func forgetAnsweredRequests() {
+        pruneScheduled = false
+        for (id, entry) in tracked where entry.request.current() == nil {
+            tracked[id] = nil
+            deduplicator.forget(kind: entry.kind, sessionId: entry.subject.sessionId, requestKey: entry.request.key)
+        }
+    }
+
+    private static func trackingId(_ kind: PushEventKind, _ sessionId: String, _ key: String) -> String {
+        "\(kind.rawValue)|\(sessionId)|\(key)"
+    }
 
     /// Whether a push of `kind` for this session went out at or after `date`
     /// (remembered for an hour).
@@ -91,20 +140,24 @@ final class PushNotifier: ObservableObject {
     /// - `smartSuppressed`: the island itself declined to pop this up
     ///   because the agent's terminal is in front (Smart Suppress).
     /// - `isSubagent` / `interrupted`: only meaningful for completions.
+    /// - `request`: the approval / question this push is about, for
+    ///   `.permission` / `.question` content; nil otherwise.
     @discardableResult
     func notify(
         _ content: PushContent,
         subject: PushSubject,
         smartSuppressed: @autoclosure () -> Bool = false,
         isSubagent: Bool = false,
-        interrupted: Bool = false
+        interrupted: Bool = false,
+        request: PushPendingRequest? = nil
     ) -> PushDecision {
         let decision = decide(
             content,
             subject: subject,
             smartSuppressed: smartSuppressed(),
             isSubagent: isSubagent,
-            interrupted: interrupted
+            interrupted: interrupted,
+            request: request
         )
         lastDecision = decision
         return decision
@@ -115,7 +168,8 @@ final class PushNotifier: ObservableObject {
         subject: PushSubject,
         smartSuppressed: @autoclosure () -> Bool,
         isSubagent: Bool,
-        interrupted: Bool
+        interrupted: Bool,
+        request: PushPendingRequest?
     ) -> PushDecision {
         guard isEnabled else { return .disabled }
         let kind = content.kind
@@ -134,8 +188,16 @@ final class PushNotifier: ObservableObject {
         if let reason = PushGate.evaluate(gate) { return skip(reason, kind, subject) }
 
         let now = clock()
-        if let reason = deduplicator.admit(kind: kind, sessionId: subject.sessionId, now: now) {
+        let request = kind == .permission || kind == .question ? request : nil
+        if let reason = deduplicator.admit(kind: kind, sessionId: subject.sessionId, requestKey: request?.key, now: now) {
             return skip(reason, kind, subject)
+        }
+        if let request {
+            tracked[Self.trackingId(kind, subject.sessionId, request.key)] = TrackedRequest(
+                kind: kind,
+                subject: subject,
+                request: request
+            )
         }
 
         // Rendered once per detail level; team chats default to headlines only.
@@ -223,6 +285,8 @@ final class PushNotifier: ObservableObject {
         deduplicator = PushDeduplicator()
         lastDelivery = [:]
         lastDecision = nil
+        tracked = [:]
+        pruneScheduled = false
     }
 }
 

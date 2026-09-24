@@ -155,7 +155,9 @@ final class PushNotifierTests: XCTestCase {
         XCTAssertTrue(transport.requests.isEmpty)
     }
 
-    func testParallelApprovalsFromOneSessionPushOnce() async throws {
+    /// Each approval is its own push; only a replay of the same request
+    /// (same tool call id) is one.
+    func testEachApprovalOfASessionPushesOnce() async throws {
         let appState = AppState()
         var responses: [Task<Data, Never>] = []
         for (index, command) in ["ls", "pwd"].enumerated() {
@@ -167,14 +169,47 @@ final class PushNotifierTests: XCTestCase {
                 "tool_input": ["command": command],
             ])
             responses.append(await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) })
+            XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark]), command)
         }
+        await waitForRequests(2)
+        XCTAssertEqual(sentBodies().compactMap { $0["body"] as? String }, ["ls", "pwd"])
+
+        // The hook bridge replays the first request: same id, same push.
+        PushNotifier.shared.notify(
+            AppState.pushContent(forPermission: appState.permissionQueue[0].event, cwd: nil),
+            subject: appState.pushSubject(for: "push-burst"),
+            request: appState.pushRequest(forPermission: appState.permissionQueue[0].event, sessionId: "push-burst")
+        )
         XCTAssertEqual(PushNotifier.shared.lastDecision, .skipped(.duplicate))
-        await waitForRequests(1)
-        XCTAssertEqual(transport.requests.count, 1)
 
         appState.denyPermission(expectedSessionId: "push-burst")
         appState.denyPermission(expectedSessionId: "push-burst")
         for response in responses { _ = try await awaitValue(of: response) }
+        XCTAssertEqual(transport.requests.count, 2)
+    }
+
+    /// Answered on the iPhone, and the agent asks again 40 s later — even
+    /// the very same command, from an agent that sends no tool call id.
+    func testTheNextApprovalAfterAnAnsweredOneIsPushed() async throws {
+        let appState = AppState()
+        let event = try makeEvent([
+            "hook_event_name": "PermissionRequest",
+            "session_id": "push-again",
+            "tool_name": "Bash",
+            "tool_input": ["command": "npm test"],
+        ])
+        let first = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark]))
+        appState.approvePermission(expectedSessionId: "push-again")
+        _ = try await awaitValue(of: first)
+        // The answered request frees its slot once the queue change settles.
+        PushNotifier.shared.forgetAnsweredRequests()
+
+        let second = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark]), "a new request, not a repeat")
+        await waitForRequests(2)
+        appState.denyPermission(expectedSessionId: "push-again")
+        _ = try await awaitValue(of: second)
     }
 
     /// A team chat added with default settings hears that an approval is
