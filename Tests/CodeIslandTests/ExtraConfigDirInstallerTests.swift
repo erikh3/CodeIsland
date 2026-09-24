@@ -165,6 +165,31 @@ final class ExtraConfigDirInstallerTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(ConfigInstaller.extraConfigDirStatus(for: dir)).hooksInstalled)
     }
 
+    // MARK: - Codex "Always allow" account
+
+    /// The root was registered through a symlink; Codex reports the real
+    /// transcript path. The rule must go to that account, not to the primary.
+    func testAlwaysAllowTargetsTheAccountRegisteredThroughASymlink() throws {
+        let work = try makeRoot("codex-work", files: ["auth.json"], dirs: ["sessions/2026/09/24"])
+        let alias = sandbox.appendingPathComponent("codex-alias").path
+        try fm.createSymbolicLink(atPath: alias, withDestinationPath: work)
+        let primary = try makeRoot("codex", files: ["auth.json"])
+        let transcript = work + "/sessions/2026/09/24/rollout-1.jsonl"
+        XCTAssertTrue(fm.createFile(atPath: transcript, contents: Data()))
+        let event = try XCTUnwrap(HookEvent(from: JSONSerialization.data(withJSONObject: [
+            "hook_event_name": "PermissionRequest",
+            "session_id": "s1",
+            "_source": "codex",
+            "transcript_path": transcript,
+        ])))
+
+        XCTAssertEqual(CodexPermissionRules.codexHome(for: event, roots: [primary, alias], primary: primary), alias)
+        let unrelated = try XCTUnwrap(HookEvent(from: JSONSerialization.data(withJSONObject: [
+            "hook_event_name": "PermissionRequest", "session_id": "s2", "_source": "codex",
+        ])))
+        XCTAssertEqual(CodexPermissionRules.codexHome(for: unrelated, roots: [primary, alias], primary: primary), primary)
+    }
+
     // MARK: - Settings wiring
 
     func testSettingsKeyMatchesTheCoreKey() {

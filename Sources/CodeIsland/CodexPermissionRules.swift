@@ -16,11 +16,17 @@ struct CodexPermissionRules {
     /// rules are the ones that apply. A session started with CODEX_HOME set to
     /// an extra root registered in Settings is recognised by the transcript
     /// path Codex reports; everything else belongs to the primary root.
-    static func codexHome(for event: HookEvent) -> String {
+    /// Paths are matched by identity (symlinks, letter case), so a root
+    /// registered through a symlink still claims the real transcript path.
+    static func codexHome(
+        for event: HookEvent,
+        roots: [String] = ConfigInstaller.codexHomes(),
+        primary: String = ConfigInstaller.codexHome()
+    ) -> String {
         ExtraConfigDirs.owningRoot(
             of: event.rawJSON["transcript_path"] as? String,
-            among: ConfigInstaller.codexHomes()
-        ) ?? ConfigInstaller.codexHome()
+            among: roots
+        ) ?? primary
     }
 
     static func shouldDeferToCodexAutoReview(for event: HookEvent, fileManager: FileManager = .default) -> Bool {

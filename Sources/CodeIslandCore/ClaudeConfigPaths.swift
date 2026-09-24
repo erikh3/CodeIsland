@@ -79,9 +79,11 @@ public enum ClaudeConfigPaths {
     /// within the app's lifetime; not needed for preference edits, which re-key the cache.
     public static func invalidateCache() {
         cacheLock.lock()
-        defer { cacheLock.unlock() }
         cachedKey = nil
         cachedValue = nil
+        cacheLock.unlock()
+        // Same reason, for the de-duplicated primary + extra root lists.
+        ExtraConfigDirs.invalidateRootsCache()
     }
 
     /// Where per-project transcripts live.

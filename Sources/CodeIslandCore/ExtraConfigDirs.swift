@@ -199,18 +199,50 @@ public enum ExtraConfigDirs {
 
     // MARK: Roots
 
-    /// Identity used to decide that two spellings are the same directory:
-    /// NFC plus symlink resolution, so `~/.claude-work` and a symlink to it do
-    /// not get scanned (and their usage counted) twice.
+    /// Identity used to decide that two spellings are the same directory or
+    /// file: `realpath` (symlinks resolved, on-disk case) plus NFC, so
+    /// `~/.claude-work`, a symlink to it and `~/.Claude-Work` typed by hand are
+    /// one root — scanned, counted and hooked once. See `ConfigPathIdentity`.
     public static func identity(of path: String) -> String {
-        ClaudeConfigPaths.canonical((path as NSString).resolvingSymlinksInPath)
+        ConfigPathIdentity.identity(of: path)
     }
 
+    private static let rootsCacheLock = NSLock()
+    private static var rootsCache: [String: [String]] = [:]
+
     /// Primary root first, then the extras, without duplicates.
+    ///
+    /// Read on every hook event (title and transcript lookups) and discovery
+    /// scan, so the result is memoized on the spellings passed in, like
+    /// `load()` is on the stored string: a Settings edit changes the key and
+    /// is picked up at once, while the steady state costs no `realpath`. A
+    /// symlink created on disk afterwards is only seen once the inputs change
+    /// or `invalidateRootsCache()` runs (Reinstall does) — at worst one root
+    /// is read twice; hook writes never go through this cache.
+    public static func roots(primary: String, extras: [String]) -> [String] {
+        let key = ([primary] + extras).joined(separator: "\u{0}")
+        rootsCacheLock.lock()
+        if let cached = rootsCache[key] {
+            rootsCacheLock.unlock()
+            return cached
+        }
+        rootsCacheLock.unlock()
+
+        let result = roots(primary: primary, extras: extras, identity: identity(of:))
+        rootsCacheLock.lock()
+        // Keys only change with the configuration; the cap just bounds a
+        // session that keeps editing it.
+        if rootsCache.count >= 32 { rootsCache.removeAll() }
+        rootsCache[key] = result
+        rootsCacheLock.unlock()
+        return result
+    }
+
+    /// Unmemoized `roots(primary:extras:)` with an injected identity.
     public static func roots(
         primary: String,
         extras: [String],
-        identity: (String) -> String = ExtraConfigDirs.identity(of:)
+        identity: (String) -> String
     ) -> [String] {
         var seen = Set<String>()
         var result: [String] = []
@@ -218,6 +250,14 @@ public enum ExtraConfigDirs {
             result.append(path)
         }
         return result
+    }
+
+    /// Forget memoized `roots` — after a Reinstall, or anything else that may
+    /// have moved directories around on disk.
+    public static func invalidateRootsCache() {
+        rootsCacheLock.lock()
+        rootsCache.removeAll()
+        rootsCacheLock.unlock()
     }
 
     /// The root a running CLI process reads, from its own environment.
@@ -247,15 +287,24 @@ public enum ExtraConfigDirs {
     /// reported, say) — how a hook event is traced back to the account it came
     /// from. The deepest match wins, so a root nested in another is not
     /// swallowed by its parent.
-    public static func owningRoot(of path: String?, among roots: [String]) -> String? {
+    ///
+    /// Both sides are compared by `identity`: the CLI reports the path it
+    /// built from its own variable, while the root may be registered as a
+    /// symlink or with different letter case. A spelling mismatch must not
+    /// fall back to the primary account — that is how "Always allow" would
+    /// land in another account's rules.
+    public static func owningRoot(
+        of path: String?,
+        among roots: [String],
+        identity: (String) -> String = ExtraConfigDirs.identity(of:)
+    ) -> String? {
         guard let path, !path.isEmpty else { return nil }
-        let candidate = ClaudeConfigPaths.canonical(path)
+        let candidate = identity(path)
         return roots
-            .filter { root in
-                let canonicalRoot = ClaudeConfigPaths.canonical(root)
-                return candidate == canonicalRoot || candidate.hasPrefix(canonicalRoot + "/")
-            }
-            .max { $0.count < $1.count }
+            .map { (root: $0, identity: identity($0)) }
+            .filter { candidate == $0.identity || candidate.hasPrefix($0.identity + "/") }
+            .max { $0.identity.count < $1.identity.count }?
+            .root
     }
 
     // MARK: Validation
