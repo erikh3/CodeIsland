@@ -301,7 +301,7 @@ extension AppState {
                 update.audit.lastTurnFailed ? EventSoundRouting.turnFailed : "Stop",
                 sessionId: key
             )
-            enqueueCompletion(key)
+            enqueueCompletion(key, turnFailed: update.audit.lastTurnFailed)
             // A failed turn's `result` record carries the error text.
             pushTurnEnded(
                 sessionId: key,

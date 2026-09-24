@@ -68,6 +68,10 @@ public struct FollowUpReminder: Equatable, Sendable {
     /// is looking while someone is at the Mac, and a Mac left unlocked keeps
     /// reporting its last frontmost app.
     public let locallySuppressed: Bool
+    /// A `.completion` whose turn ended on an error (StopFailure, a failed
+    /// AiWork stream, a failed Cowork turn): the Mac rings the error sound
+    /// again, and no channel may present it as work that finished.
+    public let turnFailed: Bool
 
     public init(
         kind: FollowUpReminderKind,
@@ -78,7 +82,8 @@ public struct FollowUpReminder: Equatable, Sendable {
         delivery: Delivery,
         origin: Origin = .island,
         requestId: String? = nil,
-        locallySuppressed: Bool = false
+        locallySuppressed: Bool = false,
+        turnFailed: Bool = false
     ) {
         self.kind = kind
         self.sessionId = sessionId
@@ -89,6 +94,7 @@ public struct FollowUpReminder: Equatable, Sendable {
         self.origin = origin
         self.requestId = requestId
         self.locallySuppressed = locallySuppressed
+        self.turnFailed = turnFailed
     }
 
     /// The same reminder, marked as kept off the Mac (`locallySuppressed`).
@@ -96,7 +102,7 @@ public struct FollowUpReminder: Equatable, Sendable {
         FollowUpReminder(
             kind: kind, sessionId: sessionId, attempt: attempt, maxAttempts: maxAttempts,
             waitingSince: waitingSince, delivery: delivery, origin: origin, requestId: requestId,
-            locallySuppressed: true
+            locallySuppressed: true, turnFailed: turnFailed
         )
     }
 
@@ -159,6 +165,8 @@ public struct FollowUpReminderScheduler: Sendable {
         /// The island's request this entry reminds about; nil when the wait
         /// has no request of its own (display-only, tracked).
         var requestId: String?
+        /// Tracked completions only: the turn ended on an error.
+        var turnFailed = false
     }
 
     /// Seconds between reminders; nil means the feature is off.
@@ -279,11 +287,13 @@ public struct FollowUpReminderScheduler: Sendable {
         entries[key]?.origin
     }
 
-    /// Start (or restart) an event-driven item.
-    public mutating func track(kind: FollowUpReminderKind, sessionId: String, now: Date) {
+    /// Start (or restart) an event-driven item. `turnFailed`: a completion
+    /// whose turn ended on an error; its reminders say so.
+    public mutating func track(kind: FollowUpReminderKind, sessionId: String, now: Date, turnFailed: Bool = false) {
         guard isEnabled else { return }
         entries[Key(kind, sessionId)] = Entry(
-            waitingSince: now, anchor: now, delivered: 0, owed: false, done: false, synced: false
+            waitingSince: now, anchor: now, delivered: 0, owed: false, done: false, synced: false,
+            turnFailed: turnFailed
         )
     }
 
@@ -365,7 +375,7 @@ public struct FollowUpReminderScheduler: Sendable {
                 out.append(FollowUpReminder(
                     kind: key.kind, sessionId: key.sessionId, attempt: attempt,
                     maxAttempts: maxAttempts, waitingSince: entry.waitingSince, delivery: .deferred,
-                    origin: entry.origin, requestId: entry.requestId
+                    origin: entry.origin, requestId: entry.requestId, turnFailed: entry.turnFailed
                 ))
                 continue
             }
@@ -373,7 +383,7 @@ public struct FollowUpReminderScheduler: Sendable {
                 kind: key.kind, sessionId: key.sessionId, attempt: attempt,
                 maxAttempts: maxAttempts, waitingSince: entry.waitingSince,
                 delivery: entry.owed ? .catchUp : .onTime, origin: entry.origin,
-                requestId: entry.requestId
+                requestId: entry.requestId, turnFailed: entry.turnFailed
             ))
             if attempt >= maxAttempts {
                 entries[key]?.done = true

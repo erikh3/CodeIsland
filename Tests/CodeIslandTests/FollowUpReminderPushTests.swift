@@ -155,7 +155,49 @@ final class FollowUpReminderPushTests: XCTestCase {
         XCTAssertEqual(appState.pushFollowUpReminder(reminder), .sent([.bark]))
     }
 
+    // MARK: - Failed turns
+
+    /// The turn died while the user was at the Mac (no error push), and they
+    /// walked off: its follow-up, driven end to end, is never pushed as
+    /// "still waiting · finished".
+    func testFailedTurnIsNotRemindedAsFinishedOnThePhone() async throws {
+        UserDefaults.standard.set(false, forKey: SettingsKey.smartSuppress)
+        presence = PushPresenceSnapshot(idleSeconds: 2)
+        appState.handleEvent(try stopFailure("died-unseen"))
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .skipped(.userPresent))
+
+        var handed: [FollowUpReminder] = []
+        followUps.addReminderHandler { handed.append($0) }
+        presence = PushPresenceSnapshot(screenLocked: true)
+        await advance(60)
+        XCTAssertEqual(played, [EventSoundRouting.turnFailed], "the Mac rings the error again")
+        XCTAssertEqual(handed.map(\.turnFailed), [true])
+        XCTAssertEqual(appState.pushFollowUpReminder(try XCTUnwrap(handed.first)), .skipped(.duplicate))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(reminderPushes().count, 0)
+    }
+
+    /// Its error already reached the phone: the reminder would only repeat it.
+    func testFailedTurnReminderIsNotPushedAfterItsErrorWent() throws {
+        presence = PushPresenceSnapshot(screenLocked: true)
+        appState.handleEvent(try stopFailure("died-pushed"))
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark]))
+
+        let reminder = FollowUpReminder(
+            kind: .completion, sessionId: "died-pushed", attempt: 1, maxAttempts: 1,
+            waitingSince: now, delivery: .deferred, turnFailed: true
+        )
+        XCTAssertEqual(appState.pushFollowUpReminder(reminder), .skipped(.duplicate))
+    }
+
     // MARK: - Helpers
+
+    private func stopFailure(_ sid: String) throws -> HookEvent {
+        try XCTUnwrap(HookEvent(from: try JSONSerialization.data(withJSONObject: [
+            "hook_event_name": "StopFailure", "session_id": sid,
+            "error": "rate_limit", "last_assistant_message": "API Error: Rate limit reached",
+        ] as [String: Any])))
+    }
 
     private func advance(_ s: TimeInterval) async {
         now = now.addingTimeInterval(s)

@@ -1189,11 +1189,13 @@ final class AppState {
         return .expand
     }
 
-    func enqueueCompletion(_ sessionId: String) {
+    /// `turnFailed`: the turn ended on an error (StopFailure, a failed AiWork
+    /// stream or Cowork turn) — its follow-up says so.
+    func enqueueCompletion(_ sessionId: String, turnFailed: Bool = false) {
         let style = Self.completionStyle()
         // Follow-ups only chase completions the user asked to hear about.
         if style != .off {
-            followUps.trackCompletion(sessionId: sessionId)
+            followUps.trackCompletion(sessionId: sessionId, turnFailed: turnFailed)
         }
         switch style {
         case .off:
@@ -1721,8 +1723,13 @@ final class AppState {
         }
 
         pushAfterReduce(event, sessionId: sessionId, effects: effects)
+        // The normalizer folds StopFailure onto Stop; only the raw name says
+        // the turn died (same rule as its sound).
+        let turnFailed = EventSoundRouting.soundEvent(
+            rawEventName: event.eventName, normalizedEventName: normalizedEventName
+        ) == EventSoundRouting.turnFailed
         for effect in effects {
-            executeEffect(effect, sessionId: sessionId)
+            executeEffect(effect, sessionId: sessionId, turnFailed: turnFailed)
         }
 
         if normalizedEventName == "SessionStart" {
@@ -1852,7 +1859,7 @@ final class AppState {
         refreshDerivedState()
     }
 
-    private func executeEffect(_ effect: SideEffect, sessionId: String) {
+    private func executeEffect(_ effect: SideEffect, sessionId: String, turnFailed: Bool = false) {
         switch effect {
         case .playSound(let eventName):
             SoundManager.shared.handleEvent(eventName, sessionId: sessionId)
@@ -1863,7 +1870,7 @@ final class AppState {
         case .removeSession(let sid):
             removeSession(sid)
         case .enqueueCompletion(let sid):
-            enqueueCompletion(sid)
+            enqueueCompletion(sid, turnFailed: turnFailed)
         case .setActiveSession(let sid):
             activeSessionId = sid
         }

@@ -160,12 +160,13 @@ final class FollowUpReminderController {
     }
 
     /// A turn finished and was announced. Interrupted turns (the user pressed
-    /// Esc) are not news to anyone and are not followed up.
-    func trackCompletion(sessionId: String) {
+    /// Esc) are not news to anyone and are not followed up. A turn that
+    /// ended on an error is followed up as one (the error sound).
+    func trackCompletion(sessionId: String, turnFailed: Bool = false) {
         guard applyInterval() else { return }
         if appState?.sessions[sessionId]?.interrupted == true { return }
         let now = clock()
-        scheduler.track(kind: .completion, sessionId: sessionId, now: now)
+        scheduler.track(kind: .completion, sessionId: sessionId, now: now, turnFailed: turnFailed)
         reschedule(now: now)
     }
 
@@ -418,11 +419,16 @@ final class FollowUpReminderController {
         }
         if hinted { hintPulse += 1 }
 
-        // Same sound as the original event, once per kind per tick. The
-        // regular gates (master switch, per-event toggle) still apply.
+        // Same sound as the original event, once per kind per tick — a turn
+        // that died rings the error jingle again, not "done". The regular
+        // gates (master switch, per-event toggle) still apply.
         var sounds: [String] = []
         for reminder in reminders {
-            let sound = reminder.kind == .completion ? "Stop" : "PermissionRequest"
+            let sound: String
+            switch reminder.kind {
+            case .approval, .question: sound = "PermissionRequest"
+            case .completion: sound = reminder.turnFailed ? EventSoundRouting.turnFailed : "Stop"
+            }
             if !sounds.contains(sound) { sounds.append(sound) }
         }
         sounds.forEach(playSound)

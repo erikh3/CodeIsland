@@ -442,6 +442,26 @@ final class FollowUpReminderTests: XCTestCase {
         XCTAssertEqual(fired.count, 1)
     }
 
+    /// A turn that died on an API error is followed up as the error it was:
+    /// the error jingle, not the "done" one.
+    func testFailedTurnIsFollowedUpWithTheErrorSound() async throws {
+        appState.handleEvent(try event([
+            "hook_event_name": "StopFailure", "session_id": "died",
+            "error": "rate_limit", "last_assistant_message": "API Error: Rate limit reached",
+        ]))
+        await advance(60)
+        XCTAssertEqual(fired.map(\.kind), [.completion])
+        XCTAssertEqual(fired.map(\.turnFailed), [true])
+        XCTAssertEqual(played, [EventSoundRouting.turnFailed])
+
+        // The next turn finishes normally: back to the regular sound.
+        appState.handleEvent(try event(["hook_event_name": "UserPromptSubmit", "session_id": "died", "prompt": "retry"]))
+        appState.handleEvent(try event(["hook_event_name": "Stop", "session_id": "died", "last_assistant_message": "Done."]))
+        await advance(60)
+        XCTAssertEqual(fired.map(\.turnFailed), [true, false])
+        XCTAssertEqual(played, [EventSoundRouting.turnFailed, "Stop"])
+    }
+
     func testNewActivityCancelsTheCompletionReminder() async throws {
         appState.handleEvent(try event(["hook_event_name": "Stop", "session_id": "busy"]))
         XCTAssertNotNil(followUps.armedWakeDate, "tracked before the cancel")

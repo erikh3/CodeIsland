@@ -407,7 +407,7 @@ extension AppState {
         )
 
         if AiWorkStatusMapper.isTerminalEvent(name) {
-            enqueueCompletion(sessionId)
+            enqueueCompletion(sessionId, turnFailed: name == "stream.failed")
             pushAiWorkTurnEnded(name, sessionId: sessionId, data: frame.dataObject)
         }
 

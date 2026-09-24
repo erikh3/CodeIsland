@@ -85,6 +85,18 @@ final class FollowUpReminderSchedulerTests: XCTestCase {
         XCTAssertEqual(scheduler.collectDue(now: at(760), heldBack: false).map(\.attempt), [1])
     }
 
+    func testFailedTurnIsCarriedIntoItsReminderUntilRetracked() {
+        var scheduler = FollowUpReminderScheduler(interval: 60)
+        scheduler.track(kind: .completion, sessionId: "c", now: t0, turnFailed: true)
+        let due = scheduler.collectDue(now: at(60), heldBack: false)
+        XCTAssertEqual(due.map(\.turnFailed), [true])
+        scheduler.postpone(due[0], now: at(60))
+        XCTAssertEqual(scheduler.collectDue(now: at(120), heldBack: false).map(\.turnFailed), [true])
+
+        scheduler.track(kind: .completion, sessionId: "c", now: at(200))
+        XCTAssertEqual(scheduler.collectDue(now: at(260), heldBack: false).map(\.turnFailed), [false])
+    }
+
     func testRetrackingACompletionRestartsItsClock() {
         var scheduler = FollowUpReminderScheduler(interval: 60)
         scheduler.track(kind: .completion, sessionId: "c", now: t0)
