@@ -171,11 +171,7 @@ final class PushNotifierTests: XCTestCase {
             "tool_name": "Bash",
             "tool_input": ["command": command],
         ])
-        let response = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(event, continuation: $0) }
-        }
-        await Task.yield()
-        return response
+        return await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
     }
 
     /// Walked off without locking: the approval that arrives 30 s later is
@@ -202,7 +198,7 @@ final class PushNotifierTests: XCTestCase {
         XCTAssertEqual(transport.requests.count, 1)
 
         appState.denyPermission(expectedSessionId: "push-held")
-        _ = await response.value
+        _ = try await awaitValue(of: response)
     }
 
     /// No lock: the timer looks when idle time could reach the threshold,
@@ -229,7 +225,7 @@ final class PushNotifierTests: XCTestCase {
         await waitForRequests(1)
 
         appState.denyPermission(expectedSessionId: "push-idle")
-        _ = await response.value
+        _ = try await awaitValue(of: response)
     }
 
     /// Answered at the Mac: out of the set, the timer goes, nothing is sent.
@@ -240,9 +236,9 @@ final class PushNotifierTests: XCTestCase {
         XCTAssertTrue(PushNotifier.shared.hasHeldBackRequests)
 
         appState.approvePermission(expectedSessionId: "push-answered")
-        _ = await response.value
-        for _ in 0..<3 { await Task.yield() }
-        XCTAssertFalse(PushNotifier.shared.hasHeldBackRequests)
+        _ = try await awaitValue(of: response)
+        // Dropped once the queue change settles, on a later main-actor turn.
+        await waitUntil("the answered request stays held back") { !PushNotifier.shared.hasHeldBackRequests }
         XCTAssertNil(PushNotifier.shared.catchUpWakeDate)
 
         presence = PushPresenceSnapshot(screenLocked: true)
@@ -270,7 +266,7 @@ final class PushNotifierTests: XCTestCase {
         XCTAssertFalse(PushNotifier.shared.hasHeldBackRequests)
         XCTAssertNil(PushNotifier.shared.catchUpWakeDate)
         appState.denyPermission(expectedSessionId: "push-held-off")
-        _ = await response.value
+        _ = try await awaitValue(of: response)
     }
 
     func testDisabledPushNeverDecidesAnything() async throws {
@@ -365,10 +361,7 @@ final class PushNotifierTests: XCTestCase {
             "tool_name": "Bash",
             "tool_input": ["command": "cat > deploy.key <<EOF\nPRIVATE KEY BODY\nEOF"],
         ])
-        let response = Task<Data, Never> {
-            await withCheckedContinuation { appState.handlePermissionRequest(event, continuation: $0) }
-        }
-        await Task.yield()
+        let response = await startHookRequest { appState.handlePermissionRequest(event, continuation: $0) }
         XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark, .dingtalk]))
         await waitForRequests(2)
 
@@ -379,7 +372,7 @@ final class PushNotifierTests: XCTestCase {
         XCTAssertEqual(content, "🔐 Claude · push-team\n\(L10n.shared["push_msg_permission"]): Bash\n\(PushRequestBuilder.keywordFooter)")
 
         appState.denyPermission(expectedSessionId: "push-team")
-        _ = await response.value
+        _ = try await awaitValue(of: response)
     }
 
     func testChannelEventFilterIsHonoured() async throws {
@@ -454,23 +447,19 @@ final class PushNotifierTests: XCTestCase {
                 "tool_name": "AskUserQuestion",
                 "tool_input": ["questions": [["question": "Which database?", "header": "DB", "options": [["label": "Postgres"]]]]],
             ])
-            let response = Task<Data, Never> {
-                await withCheckedContinuation { appState.handleAskUserQuestion(event, continuation: $0) }
-            }
-            await Task.yield()
-            return response
+            return await startHookRequest { appState.handleAskUserQuestion(event, continuation: $0) }
         }
         let first = try await ask("push-ask-badge")
         XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark]))
         appState.skipQuestion(expectedSessionId: "push-ask-badge")
-        _ = await first.value
+        _ = try await awaitValue(of: first)
 
         UserDefaults.standard.set(true, forKey: SettingsKey.smartSuppress)
         appState.questionTerminalFrontmostDetector = { _ in true }
         let second = try await ask("push-ask-terminal")
         XCTAssertEqual(PushNotifier.shared.lastDecision, .skipped(.smartSuppressed))
         appState.skipQuestion(expectedSessionId: "push-ask-terminal")
-        _ = await second.value
+        _ = try await awaitValue(of: second)
     }
 
     // MARK: Completion and errors
@@ -690,9 +679,7 @@ final class PushNotifierTests: XCTestCase {
     }
 
     private func waitForDelivery(_ channel: PushChannelKind = .bark) async {
-        for _ in 0..<200 where PushNotifier.shared.lastDelivery[channel] == nil {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await waitUntil("no delivery recorded for \(channel)") { PushNotifier.shared.lastDelivery[channel] != nil }
     }
 
     /// The completion push was admitted but never arrived: the reminder is
@@ -785,7 +772,7 @@ final class PushNotifierTests: XCTestCase {
     }
 
     private func releaseSleep() async {
-        for _ in 0..<50 where sleepGate == nil { await Task.yield() }
+        await waitUntil("the notifier never started waiting") { sleepGate != nil }
         let gate = sleepGate
         sleepGate = nil
         gate?.resume()
@@ -892,9 +879,7 @@ final class PushNotifierTests: XCTestCase {
     private let barkOK = PushTransportResponse(statusCode: 200, body: Data(#"{"code":200,"message":"success"}"#.utf8))
 
     private func waitFor(_ scripted: ScriptedTransport, _ count: Int) async {
-        for _ in 0..<200 where scripted.requests.count < count {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await waitUntil("expected \(count) requests") { scripted.requests.count >= count }
     }
 
     /// A 503 on an approval: one more try 5 s later, which lands.
@@ -910,8 +895,9 @@ final class PushNotifierTests: XCTestCase {
         XCTAssertEqual(slept, [PushRetryPolicy.delay])
         XCTAssertEqual(scripted.requests.count, 2)
         XCTAssertEqual(scripted.requests[0].body, scripted.requests[1].body)
-        for _ in 0..<20 where PushNotifier.shared.lastDelivery[.bark]?.result.ok != true { await Task.yield() }
-        XCTAssertEqual(PushNotifier.shared.lastDelivery[.bark]?.result.ok, true)
+        await waitUntil("the retry's delivery was never recorded") {
+            PushNotifier.shared.lastDelivery[.bark]?.result.ok == true
+        }
     }
 
     /// 429 with Retry-After is honoured (capped); a second failure is final.
