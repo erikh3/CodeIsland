@@ -185,6 +185,12 @@ public struct SessionSnapshot: Sendable {
     /// The agent's own task checklist (TaskCreate/TaskUpdate, TodoWrite,
     /// Codex update_plan), fed by hooks here and by the transcript tailer.
     public var agentTasks = AgentTaskList()
+    /// Claude Code's `away_summary` recap of an idle session; cleared by the
+    /// next user prompt. See ``SessionRecap``.
+    public var recap: SessionRecap?
+    /// Reasoning effort of the latest turn ("xhigh", "max", …), read from the
+    /// transcript next to the turn's model. Hooks don't report it.
+    public var reasoningEffort: String?
 
     public init(startTime: Date = Date()) {
         self.startTime = startTime
@@ -1055,6 +1061,7 @@ public func reduceEvent(
             maxHistory: maxHistory,
             effects: &effects
         )
+        recordSubagentModel(sessions: &sessions, sessionId: sessionId, agentId: agentId, event: event)
         if handled { return effects }
     }
 
@@ -1089,6 +1096,7 @@ public func reduceEvent(
     case "UserPromptSubmit":
         sessions[sessionId]?.interrupted = false
         sessions[sessionId]?.taskRoundEnded = false
+        sessions[sessionId]?.clearRecapIfSuperseded(byPromptAt: Date())
         if sessions[sessionId]?.source == "codex" {
             sessions[sessionId]?.liveCodexOutput = nil
         }
@@ -1901,6 +1909,22 @@ private func ensureSubagent(
         )
     }
     return true
+}
+
+/// Keep a child's own `model` (Codex child threads report it on their hooks)
+/// on its SubagentState. The parent's model is never used as a stand-in —
+/// `extractMetadata` is skipped for subagent events for the same reason.
+private func recordSubagentModel(
+    sessions: inout [String: SessionSnapshot],
+    sessionId: String,
+    agentId: String,
+    event: HookEvent
+) {
+    guard sessions[sessionId]?.subagents[agentId] != nil,
+          let model = (event.rawJSON["model"] as? String)?
+              .trimmingCharacters(in: .whitespacesAndNewlines),
+          !model.isEmpty else { return }
+    sessions[sessionId]?.subagents[agentId]?.model = model
 }
 
 /// Handle subagent events. Returns true if the event was consumed.

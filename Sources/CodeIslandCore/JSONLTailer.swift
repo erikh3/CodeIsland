@@ -43,6 +43,11 @@ public struct ConversationTailDelta: Equatable, Sendable {
     /// Checklist events (TaskCreate/TodoWrite/update_plan rows, new prompts)
     /// in transcript order. See `AgentTaskTranscript`.
     public let taskEvents: [AgentTaskEvent]
+    // Session metadata (recap + model label).
+    /// Newest `away_summary` recap that no later user prompt in the chunk superseded.
+    public let sessionRecap: SessionRecap?
+    /// Model / reasoning effort of the newest main-thread turn in the chunk.
+    public let modelObservation: ModelObservation?
 
     public init(
         sessionId: String,
@@ -53,7 +58,9 @@ public struct ConversationTailDelta: Equatable, Sendable {
         cursorQuestion: CursorQuestionSignal? = nil,
         attachmentToken: UUID? = nil,
         filePath: String? = nil,
-        taskEvents: [AgentTaskEvent] = []
+        taskEvents: [AgentTaskEvent] = [],
+        sessionRecap: SessionRecap? = nil,
+        modelObservation: ModelObservation? = nil
     ) {
         self.sessionId = sessionId
         self.lastUserPrompt = lastUserPrompt
@@ -64,6 +71,8 @@ public struct ConversationTailDelta: Equatable, Sendable {
         self.attachmentToken = attachmentToken
         self.filePath = filePath
         self.taskEvents = taskEvents
+        self.sessionRecap = sessionRecap
+        self.modelObservation = modelObservation
     }
 
     /// A delta only carries signal when at least one field is non-nil.
@@ -71,6 +80,7 @@ public struct ConversationTailDelta: Equatable, Sendable {
         lastUserPrompt == nil && lastAssistantMessage == nil && turnStatus == nil
             && !hasActivity && cursorQuestion == nil
             && taskEvents.isEmpty
+            && sessionRecap == nil && modelObservation == nil
     }
 }
 
@@ -327,7 +337,9 @@ public final class JSONLTailer: @unchecked Sendable {
                 cursorQuestion: scan.delta.cursorQuestion,
                 attachmentToken: watch.attachmentToken,
                 filePath: watch.filePath,
-                taskEvents: scan.delta.taskEvents
+                taskEvents: scan.delta.taskEvents,
+                sessionRecap: scan.delta.sessionRecap,
+                modelObservation: scan.delta.modelObservation
             )
             onDelta(delta)
         }
@@ -358,16 +370,24 @@ public final class JSONLTailer: @unchecked Sendable {
 
     public struct ScanResult: Equatable {
         public struct Delta: Equatable {
-            public var lastUserPrompt: String?
+            public var lastUserPrompt: String? {
+                // Lines are applied in file order, so a prompt seen after a
+                // recap in the same chunk means the recap is already stale.
+                didSet { if lastUserPrompt != nil { sessionRecap = nil } }
+            }
             public var lastAssistantMessage: String?
             public var turnStatus: ConversationTurnStatus?
             public var hasActivity = false
             public var cursorQuestion: CursorQuestionSignal?
             public var taskEvents: [AgentTaskEvent] = []
+            // Session metadata (recap + model label).
+            public var sessionRecap: SessionRecap?
+            public var modelObservation: ModelObservation?
             public var isEmpty: Bool {
                 lastUserPrompt == nil && lastAssistantMessage == nil && turnStatus == nil
                     && !hasActivity && cursorQuestion == nil
                     && taskEvents.isEmpty
+                    && sessionRecap == nil && modelObservation == nil
             }
         }
         public let delta: Delta
@@ -409,6 +429,23 @@ public final class JSONLTailer: @unchecked Sendable {
         scanLines(data).delta.cursorQuestion
     }
 
+    /// Scan the last `maxBytes` of a transcript with the same rules as the live
+    /// tail, for attach-time backfill of recap / model state. The first line of
+    /// the window is usually cut mid-way; it fails to parse and is skipped.
+    /// nil when the file can't be read.
+    public static func scanFileTail(path: String, maxBytes: Int = 128 * 1024) -> ScanResult.Delta? {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return nil }
+        let start = size > UInt64(maxBytes) ? size - UInt64(maxBytes) : 0
+        guard (try? handle.seek(toOffset: start)) != nil,
+              var data = try? handle.readToEnd() else { return nil }
+        // The last line may still be mid-write; a newline makes the scan treat
+        // it as complete, and an incomplete one simply fails to parse.
+        data.append(0x0A)
+        return scanLines(data).delta
+    }
+
     private static func apply(line: Data.SubSequence, into delta: inout ScanResult.Delta) {
         // Materialize the slice once so the byte probe and the JSON parser share a
         // single allocation. Going through `Data(line)` also sidesteps a Foundation
@@ -447,6 +484,32 @@ public final class JSONLTailer: @unchecked Sendable {
                 let trimmed = thinking.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
                     delta.lastAssistantMessage = trimmed
+                }
+            }
+            // Claude: `message.model` + top-level effort. Sidechain lines are a
+            // subagent's turns (older CLIs inlined them in the parent file) and
+            // must not relabel the parent with the subagent's model.
+            if json["isSidechain"] as? Bool != true,
+               let observation = ModelObservation.from(
+                   model: message["model"],
+                   effort: (json["perTurnEffort"] as? String) ?? (json["effort"] as? String)
+               ) {
+                delta.modelObservation = observation
+            }
+        case "system":
+            // Claude Code's idle recap; other system subtypes carry nothing we show.
+            if let recap = SessionRecap.from(transcriptLine: json) {
+                delta.sessionRecap = recap
+            }
+        case "turn_context":
+            // Codex writes the turn's model and effort once per turn.
+            if let payload = json["payload"] as? [String: Any] {
+                let settings = (payload["collaboration_mode"] as? [String: Any])?["settings"] as? [String: Any]
+                if let observation = ModelObservation.from(
+                    model: (payload["model"] as? String) ?? (settings?["model"] as? String),
+                    effort: (payload["effort"] as? String) ?? (settings?["reasoning_effort"] as? String)
+                ) {
+                    delta.modelObservation = observation
                 }
             }
         case "event_msg":
@@ -650,6 +713,10 @@ public final class JSONLTailer: @unchecked Sendable {
         case codexEvent
         case codexResponseItem
         case cursorRole
+        /// Claude `system` line whose subtype is `away_summary` (session recap).
+        case claudeRecap
+        /// Codex `turn_context` (the turn's model + reasoning effort).
+        case codexTurnContext
         case irrelevant
     }
 
@@ -712,6 +779,19 @@ public final class JSONLTailer: @unchecked Sendable {
                                     || isCodexPlanUpdateCandidate(ptr, total: total)
                                     ? .codexResponseItem : .irrelevant
                             }
+                        case 0x73:  // 's'
+                            // Only the recap subtype earns a parse; turn_duration /
+                            // stop_hook_summary rows stay on the skip path. The
+                            // subtype sits right after `type`, so a bounded probe
+                            // keeps an unusually long system row O(1) here.
+                            if hasExactValue(ptr, at: valueStart, total: total, expect: systemBytes),
+                               containsMarker(ptr, total: min(total, 4096), marker: awaySummaryMarker) {
+                                return .claudeRecap
+                            }
+                        case 0x74:  // 't'
+                            if hasExactValue(ptr, at: valueStart, total: total, expect: turnContextBytes) {
+                                return .codexTurnContext
+                            }
                         default:
                             break
                         }
@@ -762,6 +842,9 @@ public final class JSONLTailer: @unchecked Sendable {
 
     private static let eventMsgBytes: [UInt8] = Array(#"event_msg""#.utf8)
     private static let responseItemBytes: [UInt8] = Array(#"response_item""#.utf8)
+    private static let systemBytes: [UInt8] = Array(#"system""#.utf8)
+    private static let awaySummaryMarker: [UInt8] = Array(#""subtype":"away_summary""#.utf8)
+    private static let turnContextBytes: [UInt8] = Array(#"turn_context""#.utf8)
     private static let codexMessagePayloadMarker: [UInt8] = Array(
         #""payload":{"type":"message","#.utf8
     )

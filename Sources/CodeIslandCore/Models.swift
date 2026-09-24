@@ -605,6 +605,10 @@ public struct SubagentState: Sendable {
     public var toolDescription: String?
     public var startTime: Date = Date()
     public var lastActivity: Date = Date()
+    /// The subagent's own model and effort — never copied from the parent,
+    /// since a Task routinely runs on a different model than its caller.
+    public var model: String?
+    public var reasoningEffort: String?
 
     public init(agentId: String, agentType: String) {
         self.agentId = agentId
