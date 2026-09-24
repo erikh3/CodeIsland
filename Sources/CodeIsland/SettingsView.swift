@@ -587,6 +587,8 @@ private struct BehaviorPage: View {
                 }
             }
 
+            PushNotificationsSection()
+
             Section(l10n["sessions"]) {
                 Picker(selection: $sessionTimeout) {
                     Text(l10n["no_cleanup"]).tag(0)
