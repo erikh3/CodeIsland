@@ -3614,24 +3614,11 @@ private struct ChatMessageRow: View, Equatable {
                 Text("$")
                     .font(.system(size: fontSize, weight: .bold, design: .monospaced))
                     .foregroundStyle(Color(red: 0.85, green: 0.47, blue: 0.34))
-                Text(ChatMessageTextFormatter.inlineMarkdown(compactText(stripDirectives(text))))
-                    .font(.system(size: fontSize, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .lineLimit(aiLineLimit)
-                    .truncationMode(.tail)
+                // Block Markdown when uncapped, a marker-free preview under
+                // the reply-line cap (MarkdownReplyView.swift).
+                AssistantReplyText(text: stripDirectives(text), fontSize: fontSize, lineLimit: aiLineLimit)
             }
         }
-    }
-
-    private func compactText(_ text: String) -> String {
-        text.components(separatedBy: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .reduce(into: [String]()) { result, line in
-                if line.isEmpty && (result.last?.isEmpty ?? true) { return }
-                result.append(line)
-            }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
