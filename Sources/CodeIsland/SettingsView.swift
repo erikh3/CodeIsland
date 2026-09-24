@@ -1056,12 +1056,15 @@ private struct AppearancePage: View {
                     Text("12pt").tag(12)
                     Text("13pt").tag(13)
                 }
-                Picker(l10n["ai_reply_lines"], selection: $aiMessageLines) {
+                Picker(selection: $aiMessageLines) {
                     Text(l10n["1_line_default"]).tag(1)
                     Text(l10n["2_lines"]).tag(2)
                     Text(l10n["3_lines"]).tag(3)
                     Text(l10n["5_lines"]).tag(5)
                     Text(l10n["unlimited"]).tag(0)
+                } label: {
+                    Text(l10n["ai_reply_lines"])
+                    Text(l10n["ai_reply_lines_desc"])
                 }
                 Toggle(l10n["show_agent_details"], isOn: $showAgentDetails)
                 Toggle(l10n["show_tool_status"], isOn: $showToolStatus)
@@ -1104,6 +1107,11 @@ private struct AppearancePreview: View {
     private var fs: CGFloat { CGFloat(fontSize) }
     private let green = Color(red: 0.3, green: 0.85, blue: 0.4)
     private let aiColor = Color(red: 0.85, green: 0.47, blue: 0.34)
+    private static let sampleReply = """
+        Found the issue in `auth.ts`:
+        - token refresh was **skipping the expiry check**
+        - stale sessions were never invalidated
+        """
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
@@ -1147,16 +1155,17 @@ private struct AppearancePreview: View {
                             .foregroundStyle(.white.opacity(0.9))
                             .lineLimit(1)
                     }
-                    // AI reply
+                    // AI reply — Markdown, so the preview shows what the
+                    // line cap does to it: a flattened line, or full blocks.
                     HStack(alignment: .top, spacing: 4) {
                         Text("$")
                             .font(.system(size: fs, weight: .bold, design: .monospaced))
                             .foregroundStyle(aiColor)
-                        Text("I've analyzed the codebase and found the issue in the authentication module. The token validation was skipping the expiry check when refreshing sessions.")
-                            .font(.system(size: fs, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.85))
-                            .lineLimit(lineLimit > 0 ? lineLimit : nil)
-                            .truncationMode(.tail)
+                        AssistantReplyText(
+                            text: Self.sampleReply,
+                            fontSize: fs,
+                            lineLimit: lineLimit > 0 ? lineLimit : nil
+                        )
                     }
                     // Working indicator
                     HStack(spacing: 4) {
