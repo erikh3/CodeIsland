@@ -280,6 +280,30 @@ final class AppStateCoworkWatchTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(appState.sessions[key]).status, .waitingApproval)
     }
 
+    func testMetadataUpdateNeverRevivesAWaitSettledAtLaunch() throws {
+        let appState = AppState()
+        let request = CoworkAuditFixture.permissionRequest(id: "r", tool: "Bash", input: #"{"command":"rm x"}"#)
+        let openCard = audit([CoworkAuditFixture.userPrompt, request])
+        let launchedAt = Date(timeIntervalSinceNow: -30)
+        appState.applyCoworkLaunchSnapshot(
+            [update(audit: openCard, lastActivity: launchedAt.addingTimeInterval(-60), isLive: false)],
+            claudeDesktopRunning: true,
+            claudeDesktopLaunchedAt: launchedAt
+        )
+        XCTAssertEqual(try XCTUnwrap(appState.sessions[key]).status, .idle)
+
+        // A generated title (or a model switch) re-saves the metadata. The
+        // watcher's folded audit still holds the card that died with the old
+        // Claude Desktop, and the update carries it along.
+        var renamed = metadata()
+        renamed.title = "Renamed task"
+        appState.applyCoworkUpdate(update(metadata: renamed, audit: openCard, isLive: false))
+        let card = try XCTUnwrap(appState.sessions[key])
+        XCTAssertEqual(card.sessionTitle, "Renamed task", "metadata still applies")
+        XCTAssertEqual(card.status, .idle, "only audit activity moves the turn state")
+        XCTAssertTrue(appState.displayOnlyWaitingSessionIds(kind: .approval).isEmpty)
+    }
+
     func testOnlyACoworkPermissionWaitOutlivesTheSilenceTimeout() {
         XCTAssertTrue(AppState.isCoworkWaitingOnDesktop(key: key, status: .waitingApproval))
         XCTAssertTrue(AppState.isCoworkWaitingOnDesktop(key: key, status: .waitingQuestion))

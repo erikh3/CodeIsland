@@ -141,6 +141,11 @@ extension AppState {
     /// Apply one watcher update. Only a launch rebuild or live audit activity
     /// may open a card: a metadata-only change (a generated title, a re-save)
     /// for a session the idle sweep already collected is history, not activity.
+    ///
+    /// The same two are the only ones that move the turn state. A metadata-only
+    /// update still carries the watcher's folded audit, which may hold a turn
+    /// or permission card the island has since settled — one that died with a
+    /// restarted Claude Desktop — and must not bring it back.
     func applyCoworkUpdate(_ update: CoworkSessionWatcher.SessionUpdate, isLaunch: Bool = false) {
         let key = Self.coworkSessionKey(update.sessionId)
         let metadata = update.metadata
@@ -153,12 +158,15 @@ extension AppState {
             return
         }
         let isNew = sessions[key] == nil
-        guard !isNew || isLaunch || update.isLive else { return }
+        let movesTurnState = isLaunch || update.isLive
+        guard !isNew || movesTurnState else { return }
         let waitBefore = displayOnlyWaitKind(forSession: key)
 
         var snapshot = sessions[key] ?? SessionSnapshot(startTime: metadata.createdAt ?? Date())
         Self.applyCoworkMetadata(&snapshot, metadata: metadata, transcriptPath: update.transcriptPath)
-        Self.applyCoworkAuditState(&snapshot, state: update.audit)
+        if movesTurnState {
+            Self.applyCoworkAuditState(&snapshot, state: update.audit)
+        }
         if update.isLive {
             snapshot.lastActivity = Date()
         } else if isNew, let lastActivity = update.lastActivity {
@@ -173,7 +181,7 @@ extension AppState {
         noteDisplayOnlyWait(
             sessionId: key,
             was: waitBefore,
-            asking: DisplayOnlyWait.content(forCowork: update.audit),
+            asking: movesTurnState ? DisplayOnlyWait.content(forCowork: update.audit) : nil,
             announce: update.isLive && !isLaunch
         )
 
