@@ -46,6 +46,31 @@ enum NotchHoverInteraction {
     static let prehoverWidthDelta: CGFloat = 7
     static let prehoverScale: CGFloat = 1.004
 
+    /// User-tunable range for `expandDelay` (Settings → Behavior). Below 0.1s
+    /// every pass of the pointer toward the menu bar would pop the panel open;
+    /// past 1s the island stops feeling like it responds to hover at all.
+    static let expandDelayRange: ClosedRange<TimeInterval> = 0.1...1.0
+    static let expandDelayStep: TimeInterval = 0.05
+
+    /// The stored preference, clamped into `expandDelayRange`. A value written
+    /// by hand (`defaults write`) or a corrupt one must never yield a zero or
+    /// negative timer interval, so non-finite input falls back to the default.
+    static func expandDelay(forSetting raw: Double) -> TimeInterval {
+        guard raw.isFinite else { return expandDelay }
+        return min(max(raw, expandDelayRange.lowerBound), expandDelayRange.upperBound)
+    }
+
+    /// Whether an elapsed hover delay may still open the session list. A card
+    /// the island opened during the delay (an approval, or a question the user
+    /// just clicked open) is waiting on the user; swapping it for the list
+    /// would hide the one thing that needs an answer.
+    static func hoverExpansionMayReplace(_ surface: IslandSurface) -> Bool {
+        switch surface {
+        case .approvalCard, .questionCard: return false
+        default: return true
+        }
+    }
+
     static func nextPhase(from phase: NotchHoverPhase, event: NotchHoverEvent) -> NotchHoverPhase {
         switch (phase, event) {
         case (.collapsed, .mouseEntered):
@@ -101,6 +126,7 @@ struct NotchPanelView: View {
     @AppStorage(SettingsKey.hapticOnHover) private var hapticOnHover = SettingsDefaults.hapticOnHover
     @AppStorage(SettingsKey.hapticIntensity) private var hapticIntensity = SettingsDefaults.hapticIntensity
     @AppStorage(SettingsKey.showSessionRecap) private var showSessionRecap = SettingsDefaults.showSessionRecap
+    @AppStorage(SettingsKey.hoverExpandDelay) private var hoverExpandDelay = SettingsDefaults.hoverExpandDelay
 
     /// Delayed hover: prevents accidental expansion when mouse passes through
     @State private var hoverTimer: Timer?
@@ -382,10 +408,14 @@ struct NotchPanelView: View {
                     }
                     // Delay full expansion to avoid accidental triggers
                     hoverTimer?.invalidate()
-                    hoverTimer = Timer.scheduledTimer(withTimeInterval: NotchHoverInteraction.expandDelay, repeats: false) { _ in
+                    hoverTimer = Timer.scheduledTimer(
+                        withTimeInterval: NotchHoverInteraction.expandDelay(forSetting: hoverExpandDelay),
+                        repeats: false
+                    ) { _ in
                         Task { @MainActor in
                             // Guard: mouse may have left during the delay
                             guard isHovered else { return }
+                            guard NotchHoverInteraction.hoverExpansionMayReplace(appState.surface) else { return }
                             if hapticOnHover {
                                 let performer = NSHapticFeedbackManager.defaultPerformer
                                 switch hapticIntensity {

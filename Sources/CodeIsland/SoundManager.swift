@@ -135,8 +135,7 @@ class SoundManager {
             return
         }
         if sound.isPlaying { sound.stop() }
-        let volume = defaults.integer(forKey: SettingsKey.soundVolume)
-        sound.volume = Float(volume) / 100.0
+        sound.volume = SoundVolumeCurve.amplitude(forPercent: defaults.integer(forKey: SettingsKey.soundVolume))
         sound.play()
     }
 
@@ -148,8 +147,7 @@ class SoundManager {
             return
         }
         if sound.isPlaying { sound.stop() }
-        let volume = defaults.integer(forKey: SettingsKey.soundVolume)
-        sound.volume = Float(volume) / 100.0
+        sound.volume = SoundVolumeCurve.amplitude(forPercent: defaults.integer(forKey: SettingsKey.soundVolume))
         sound.play()
     }
 

@@ -42,6 +42,7 @@ enum SettingsKey {
     static let trackClaudeDesktopCowork = "trackClaudeDesktopCowork"
     static let hapticOnHover = "hapticOnHover"
     static let hapticIntensity = "hapticIntensity"      // 1=light, 2=medium, 3=strong
+    static let hoverExpandDelay = "hoverExpandDelay"    // seconds the pointer rests before the island opens (0.1–1.0)
     static let sessionTimeout = "sessionTimeout"
 
     // Display
@@ -175,6 +176,7 @@ struct SettingsDefaults {
     static let trackClaudeDesktopCowork = true
     static let hapticOnHover = false
     static let hapticIntensity = 1          // 1=light
+    static let hoverExpandDelay = NotchHoverInteraction.expandDelay
     static let sessionTimeout = 30
 
     static let maxPanelHeight = 560
@@ -275,6 +277,7 @@ class SettingsManager {
             SettingsKey.trackClaudeDesktopCowork: SettingsDefaults.trackClaudeDesktopCowork,
             SettingsKey.hapticOnHover: SettingsDefaults.hapticOnHover,
             SettingsKey.hapticIntensity: SettingsDefaults.hapticIntensity,
+            SettingsKey.hoverExpandDelay: SettingsDefaults.hoverExpandDelay,
             SettingsKey.sessionTimeout: SettingsDefaults.sessionTimeout,
             SettingsKey.maxPanelHeight: SettingsDefaults.maxPanelHeight,
             SettingsKey.maxVisibleSessions: SettingsDefaults.maxVisibleSessions,

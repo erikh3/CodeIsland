@@ -394,6 +394,7 @@ private struct BehaviorPage: View {
     @AppStorage(SettingsKey.pluginSessionMode) private var pluginSessionMode = SettingsDefaults.pluginSessionMode
     @AppStorage(SettingsKey.hapticOnHover) private var hapticOnHover = SettingsDefaults.hapticOnHover
     @AppStorage(SettingsKey.hapticIntensity) private var hapticIntensity = SettingsDefaults.hapticIntensity
+    @AppStorage(SettingsKey.hoverExpandDelay) private var hoverExpandDelay = SettingsDefaults.hoverExpandDelay
     @AppStorage(SettingsKey.sessionTimeout) private var sessionTimeout = SettingsDefaults.sessionTimeout
     @AppStorage(SettingsKey.rotationInterval) private var rotationInterval = SettingsDefaults.rotationInterval
     @AppStorage(SettingsKey.maxToolHistory) private var maxToolHistory = SettingsDefaults.maxToolHistory
@@ -492,6 +493,29 @@ private struct BehaviorPage: View {
                         appState?.followUps.settingsChanged()
                     }
                     Text(l10n["follow_up_reminders_desc"])
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    let delay = NotchHoverInteraction.expandDelay(forSetting: hoverExpandDelay)
+                    HStack {
+                        Text(l10n["hover_expand_delay"])
+                        Spacer()
+                        Text(String(format: l10n["hover_expand_delay_value"], delay))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { NotchHoverInteraction.expandDelay(forSetting: hoverExpandDelay) },
+                            set: { hoverExpandDelay = NotchHoverInteraction.expandDelay(forSetting: $0) }
+                        ),
+                        in: NotchHoverInteraction.expandDelayRange,
+                        step: NotchHoverInteraction.expandDelayStep
+                    )
+                    .accessibilityLabel(Text(l10n["hover_expand_delay"]))
+                    .accessibilityValue(Text(String(format: l10n["hover_expand_delay_value"], delay)))
+                    Text(l10n["hover_expand_delay_desc"])
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }
@@ -942,6 +966,13 @@ private struct CLIStatusRow: View {
 
 // MARK: - Appearance Page
 
+/// Card text sizes offered in Settings. The panel keeps a fixed width
+/// (≤ 620pt) and each card header stays on one row, so the range stops at
+/// 16pt rather than growing without bound.
+enum ContentFontSize {
+    static let choices = Array(10...16)
+}
+
 private struct AppearancePage: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKey.maxVisibleSessions) private var maxVisibleSessions = SettingsDefaults.maxVisibleSessions
@@ -1055,10 +1086,10 @@ private struct AppearancePage: View {
 
             Section(l10n["content"]) {
                 Picker(l10n["content_font_size"], selection: $contentFontSize) {
-                    Text("10pt").tag(10)
-                    Text(l10n["11pt_default"]).tag(11)
-                    Text("12pt").tag(12)
-                    Text("13pt").tag(13)
+                    ForEach(ContentFontSize.choices, id: \.self) { size in
+                        Text(size == SettingsDefaults.contentFontSize ? l10n["11pt_default"] : "\(size)pt")
+                            .tag(size)
+                    }
                 }
                 Picker(selection: $aiMessageLines) {
                     Text(l10n["1_line_default"]).tag(1)
@@ -1389,7 +1420,9 @@ private struct SoundPage: View {
                                 set: { soundVolume = Int($0) }
                             ),
                             in: 0...100,
-                            step: 5
+                            // 1 % steps: the low end is tapered (SoundVolumeCurve),
+                            // so single percents are audibly different there.
+                            step: 1
                         )
                         Image(systemName: "speaker.wave.3.fill")
                             .font(.system(size: 10))
