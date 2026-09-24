@@ -52,8 +52,32 @@ struct PersistedSession: Codable {
 }
 
 enum SessionPersistence {
-    private static let dirPath = FileManager.default.homeDirectoryForCurrentUser.path + "/.codeisland"
+    static let dirPath = directory(
+        environment: ProcessInfo.processInfo.environment,
+        isRunningTests: RuntimeEnvironment.isRunningTests
+    )
     private static let filePath = dirPath + "/sessions.json"
+
+    /// Where sessions.json lives: `~/.codeisland`, unless `CODEISLAND_SESSIONS_DIR`
+    /// names another folder (as `CODEISLAND_SOCKET_PATH` does for the socket).
+    /// A test process defaults to a folder of its own under the temp dir: a
+    /// test's AppState used to overwrite the user's real session list from its
+    /// 2 s save timer, and `startSessionDiscovery` restored it into the test and
+    /// then deleted it.
+    static func directory(
+        environment: [String: String],
+        isRunningTests: Bool,
+        home: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> String {
+        if let override = environment["CODEISLAND_SESSIONS_DIR"], !override.isEmpty {
+            return override
+        }
+        if isRunningTests {
+            return (NSTemporaryDirectory() as NSString)
+                .appendingPathComponent("codeisland-tests-\(getpid())")
+        }
+        return home + "/.codeisland"
+    }
 
     /// Whether a card is written out for the next launch. Not a remote one,
     /// and not a Claude Desktop Cowork card: those are rebuilt from Claude

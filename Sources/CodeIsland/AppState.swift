@@ -3521,6 +3521,14 @@ final class AppState {
         return roots
     }
 
+    /// What a discovery scan runs. The real scan reads every process and the
+    /// agents' session stores under ~, and each session it returns gets a
+    /// process monitor — and the orphan reaper — on one of the user's real
+    /// CLIs. A test process scans nothing unless a test installs a scanner.
+    nonisolated(unsafe) static var discoveryScanner: @Sendable () -> [DiscoveredSession] = {
+        RuntimeEnvironment.isRunningTests ? [] : findDiscoveredSessions()
+    }
+
     private func requestDiscoveryScan() {
         if discoveryScanTask != nil {
             pendingDiscoveryRescan = true
@@ -3529,7 +3537,7 @@ final class AppState {
 
         pendingDiscoveryRescan = false
         discoveryScanTask = Task.detached { [weak self] in
-            let discovered = Self.findDiscoveredSessions()
+            let discovered = Self.discoveryScanner()
             guard !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
