@@ -629,11 +629,10 @@ struct TerminalActivator {
             end tell
         end try
         """
-        // Use /usr/bin/osascript to run AppleScript out-of-process (tmuxcc uses the same approach).
-        // This avoids relying on NSAppleScript execution inside the app process.
-        // Already on a background queue (see DispatchQueue.global wrap above) — call the
-        // _Sync variant to skip an extra dispatch hop.
-        runOsaScriptSync(script)
+        // Out of process like every other activation script (see AppleScriptRunner).
+        // Already on a background queue (see DispatchQueue.global wrap above), so
+        // launch directly instead of paying runAppleScript's extra dispatch hop.
+        AppleScriptRunner.osascript.launch(script)
         } // end DispatchQueue.global async
     }
 
@@ -1340,31 +1339,13 @@ struct TerminalActivator {
         return "Terminal"
     }
 
+    /// Fire-and-forget, off the caller's queue as before, so a click on the main
+    /// thread never waits for osascript to spawn. Out of process rather than
+    /// NSAppleScript, which is main-thread-only — see AppleScriptRunner.
     private static func runAppleScript(_ source: String) {
         DispatchQueue.global(qos: .userInitiated).async {
-            if let script = NSAppleScript(source: source) {
-                var error: NSDictionary?
-                script.executeAndReturnError(&error)
-            }
+            AppleScriptRunner.osascript.launch(source)
         }
-    }
-
-    private static func runOsaScript(_ source: String) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            runOsaScriptSync(source)
-        }
-    }
-
-    /// Run osascript on the current queue (no extra dispatch). Use from
-    /// callers that are already on a background queue to avoid the double
-    /// hop activateGhostty would otherwise pay (#139 review).
-    private static func runOsaScriptSync(_ source: String) {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-e", source]
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
-        try? proc.run()
     }
 
     /// Escape special characters for AppleScript string interpolation
