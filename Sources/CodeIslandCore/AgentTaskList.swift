@@ -57,8 +57,10 @@ public struct AgentTaskItem: Codable, Equatable, Sendable, Identifiable {
     /// Stable row identity. Assigned once and never rewritten, so a TaskCreate
     /// draft that later learns its provider id keeps its SwiftUI identity.
     public let id: String
-    /// Provider task id (Claude `TaskCreate` result). nil for snapshot-style
-    /// lists (TodoWrite / update_plan) and for a create whose result is pending.
+    /// Provider task id: Claude's `TaskCreate` result, or the row id a
+    /// snapshot list carries (Cursor `todo_write` rows have one, so a later
+    /// `merge: true` call can address them). nil for rows without one and for
+    /// a create whose result is pending.
     public var taskId: String?
     /// tool_use id of the TaskCreate call that introduced the row. It is the
     /// only key shared by the call (PreToolUse / transcript `tool_use`) and its
@@ -95,11 +97,27 @@ public struct AgentTaskDraft: Equatable, Sendable {
     public var title: String
     public var activeForm: String?
     public var status: AgentTaskStatus
+    /// The row's own id when the tool sends one (Cursor `todo_write`).
+    public var rowId: String?
 
-    public init(title: String, activeForm: String? = nil, status: AgentTaskStatus) {
+    public init(title: String, activeForm: String? = nil, status: AgentTaskStatus, rowId: String? = nil) {
         self.title = title
         self.activeForm = activeForm
         self.status = status
+        self.rowId = rowId
+    }
+}
+
+/// One row of a `todo_write` call with `merge: true` (Cursor): only the fields
+/// it carries change, on the row with the same id. Cursor's partial updates
+/// send just `{id, status}`.
+public struct AgentTaskRowPatch: Equatable, Sendable {
+    public var rowId: String?
+    public var change: AgentTaskChange
+
+    public init(rowId: String?, change: AgentTaskChange) {
+        self.rowId = rowId
+        self.change = change
     }
 }
 
@@ -156,6 +174,9 @@ public enum AgentTaskEvent: Equatable, Sendable {
     case opFailed(opId: String)
     /// A full-list snapshot replaced the checklist (TodoWrite / update_plan).
     case replace(opId: String?, items: [AgentTaskDraft])
+    /// A partial snapshot merged into the checklist by row id (Cursor
+    /// `todo_write` with `merge: true`); rows it doesn't mention stay.
+    case merge(opId: String?, rows: [AgentTaskRowPatch])
 
     /// Whether this event can put rows on a list that starts out empty. A
     /// transcript whose only events are prompts, failures (any failing tool
@@ -163,7 +184,7 @@ public enum AgentTaskEvent: Equatable, Sendable {
     /// so replaying it must not replace what hooks or persistence built.
     public var buildsList: Bool {
         switch self {
-        case .create, .created, .update, .replace: return true
+        case .create, .created, .update, .replace, .merge: return true
         case .newTurn, .createdPerText, .opFailed: return false
         }
     }
@@ -178,6 +199,8 @@ public enum AgentTaskEvent: Equatable, Sendable {
         case .update(let opId, _, _, _): return opId.map { "u|\($0)" }
         case .opFailed(let opId): return "f|\(opId)"
         case .replace(let opId, _): return opId.map { "w|\($0)" }
+        // One call is either a replace or a merge, so they share the key.
+        case .merge(let opId, _): return opId.map { "w|\($0)" }
         }
     }
 }
@@ -315,6 +338,7 @@ public struct AgentTaskList: Sendable {
             items = drafts.prefix(Self.maxItems).enumerated().map { index, draft in
                 AgentTaskItem(
                     id: "step:\(index)",
+                    taskId: draft.rowId,
                     title: Self.cleanTitle(draft.title),
                     activeForm: draft.activeForm.map(Self.cleanTitle),
                     status: draft.status
@@ -322,6 +346,9 @@ public struct AgentTaskList: Sendable {
             }
             parkedChanges.removeAll()
             clearUndoJournal()
+
+        case let .merge(_, rows):
+            applyMerge(rows)
         }
 
         let changed = items != before
@@ -454,6 +481,29 @@ public struct AgentTaskList: Sendable {
         if let activeForm = change.activeForm.map(Self.cleanTitle) { items[index].activeForm = activeForm }
         if let opId, items[index] != before {
             journal(opId, UndoEntry(before: before, after: items[index], index: index))
+        }
+    }
+
+    private mutating func applyMerge(_ rows: [AgentTaskRowPatch]) {
+        for row in rows {
+            if let rowId = row.rowId, let index = items.firstIndex(where: { $0.taskId == rowId }) {
+                applyChange(row.change, opId: nil, at: index)
+                continue
+            }
+            // A row the list doesn't have yet needs at least a title; an
+            // `{id, status}` patch for a row we never saw has nothing to show.
+            guard !row.change.isDeletion,
+                  let title = row.change.title.map(Self.cleanTitle), !title.isEmpty,
+                  items.count < Self.maxItems else { continue }
+            var slot = items.count
+            while items.contains(where: { $0.id == "step:\(slot)" }) { slot += 1 }
+            items.append(AgentTaskItem(
+                id: "step:\(slot)",
+                taskId: row.rowId,
+                title: title,
+                activeForm: row.change.activeForm.map(Self.cleanTitle),
+                status: row.change.status ?? .pending
+            ))
         }
     }
 

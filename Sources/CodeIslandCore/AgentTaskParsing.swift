@@ -53,6 +53,11 @@ enum AgentTaskTool: Equatable {
             guard change != AgentTaskChange() else { return [] }
             return [.update(opId: opId, taskId: taskId, change: change, expectedFrom: nil)]
         case .todoSnapshot:
+            // Cursor's todo_write can send only the rows that changed.
+            if AgentTaskParsing.flag(input["merge"]) {
+                guard let rows = AgentTaskParsing.rowPatches(from: input["todos"]) else { return [] }
+                return [.merge(opId: opId, rows: rows)]
+            }
             guard let drafts = AgentTaskParsing.drafts(from: input["todos"]) else { return [] }
             return [.replace(opId: opId, items: drafts)]
         case .planSnapshot:
@@ -153,9 +158,18 @@ enum AgentTaskParsing {
         return change
     }
 
-    /// Rows of a whole-list snapshot. nil when `value` is not a list at all
-    /// (malformed call); an empty array is a real "list cleared".
-    static func drafts(from value: Any?) -> [AgentTaskDraft]? {
+    /// A boolean argument, tolerating `"true"` / `1` from loosely typed callers.
+    static func flag(_ value: Any?) -> Bool {
+        if let bool = value as? Bool { return bool }
+        if let string = value as? String { return string.lowercased() == "true" }
+        return false
+    }
+
+    private static let rowTitleKeys = ["content", "subject", "step", "title", "description", "text", "task"]
+
+    /// The rows of a list argument, which arrives as an array from hooks and
+    /// as a JSON string from Codex rollouts. nil when it is not a list.
+    private static func rowObjects(from value: Any?) -> [[String: Any]]? {
         let array: [Any]
         if let list = value as? [Any] {
             array = list
@@ -167,11 +181,14 @@ enum AgentTaskParsing {
         } else {
             return nil
         }
-        return array.compactMap { element in
-            guard let row = element as? [String: Any],
-                  let title = string(row, ["content", "subject", "step", "title", "description", "text", "task"]) else {
-                return nil
-            }
+        return array.compactMap { $0 as? [String: Any] }
+    }
+
+    /// Rows of a whole-list snapshot. nil when `value` is not a list at all
+    /// (malformed call); an empty array is a real "list cleared".
+    static func drafts(from value: Any?) -> [AgentTaskDraft]? {
+        rowObjects(from: value)?.compactMap { row in
+            guard let title = string(row, rowTitleKeys) else { return nil }
             let status: AgentTaskStatus
             switch AgentTaskStatus.parse(row["status"]) {
             case .status(let parsed): status = parsed
@@ -181,8 +198,27 @@ enum AgentTaskParsing {
             return AgentTaskDraft(
                 title: title,
                 activeForm: string(row, ["activeForm", "active_form"]),
-                status: status
+                status: status,
+                rowId: idString(row["id"])
             )
+        }
+    }
+
+    /// Rows of a `merge: true` list update. Unlike a snapshot row, any field
+    /// may be missing — `{id, status}` is the common case.
+    static func rowPatches(from value: Any?) -> [AgentTaskRowPatch]? {
+        rowObjects(from: value)?.compactMap { row in
+            var change = AgentTaskChange()
+            switch AgentTaskStatus.parse(row["status"]) {
+            case .status(let status): change.status = status
+            case .removed: change.isDeletion = true
+            case .unknown: break
+            }
+            change.title = string(row, rowTitleKeys)
+            change.activeForm = string(row, ["activeForm", "active_form"])
+            let rowId = idString(row["id"])
+            guard rowId != nil || change.title != nil, change != AgentTaskChange() else { return nil }
+            return AgentTaskRowPatch(rowId: rowId, change: change)
         }
     }
 

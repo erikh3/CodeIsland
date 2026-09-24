@@ -161,6 +161,61 @@ final class AgentTaskListTests: XCTestCase {
         XCTAssertTrue(sessions["s1"]!.agentTasks.isEmpty)
     }
 
+    func testCursorTodoWriteMergeUpdatesRowsByIdInsteadOfReplacingTheList() {
+        func todoWrite(_ opId: String, merge: Bool, _ todos: [[String: Any]]) -> [String: Any] {
+            [
+                "hook_event_name": "preToolUse",
+                "tool_name": "todo_write",
+                "tool_use_id": opId,
+                "tool_input": ["merge": merge, "todos": todos],
+            ]
+        }
+        var sessions: [String: SessionSnapshot] = [:]
+        reduce(&sessions, todoWrite("w1", merge: false, [
+            ["id": "1", "content": "Scan the repo", "status": "in_progress"],
+            ["id": "2", "content": "Fix the bug", "status": "pending"],
+            ["id": "3", "content": "Run tests", "status": "pending"],
+        ]))
+        XCTAssertEqual(sessions["s1"]!.agentTasks.items.map(\.taskId), ["1", "2", "3"])
+
+        // Cursor's partial update: only ids and statuses.
+        reduce(&sessions, todoWrite("w2", merge: true, [
+            ["id": "1", "status": "completed"],
+            ["id": "2", "status": "in_progress"],
+        ]))
+        var tasks = sessions["s1"]!.agentTasks
+        XCTAssertEqual(tasks.items.map(\.title), ["Scan the repo", "Fix the bug", "Run tests"])
+        XCTAssertEqual(tasks.items.map(\.status), [.completed, .inProgress, .pending])
+
+        // A merge can rename a row, add one, and cancel one.
+        reduce(&sessions, todoWrite("w3", merge: true, [
+            ["id": "2", "content": "Fix the parser bug"],
+            ["id": "4", "content": "Update docs", "status": "pending"],
+            ["id": "3", "status": "cancelled"],
+            ["id": "99", "status": "completed"],
+        ]))
+        tasks = sessions["s1"]!.agentTasks
+        XCTAssertEqual(tasks.items.map(\.title), ["Scan the repo", "Fix the parser bug", "Update docs"])
+        XCTAssertEqual(tasks.items.map(\.status), [.completed, .inProgress, .pending])
+        XCTAssertEqual(Set(tasks.items.map(\.id)).count, 3, "row identities stay unique")
+
+        // merge:false is still a whole-list replacement.
+        reduce(&sessions, todoWrite("w4", merge: false, [["id": "9", "content": "Fresh", "status": "pending"]]))
+        XCTAssertEqual(sessions["s1"]!.agentTasks.items.map(\.title), ["Fresh"])
+    }
+
+    func testMergeOfIdOnlyRowsIntoAnEmptyListShowsNothing() {
+        var list = AgentTaskList()
+        list.apply(.merge(opId: "w1", rows: [
+            AgentTaskRowPatch(rowId: "1", change: AgentTaskChange(status: .completed)),
+        ]), now: t0)
+        XCTAssertTrue(list.isEmpty)
+        XCTAssertEqual(
+            AgentTaskParsing.rowPatches(from: [["id": 7, "status": "done"], ["status": "pending"], "junk"]),
+            [AgentTaskRowPatch(rowId: "7", change: AgentTaskChange(status: .completed))]
+        )
+    }
+
     func testCodexUpdatePlanFromRolloutLine() {
         let line = codexPlanLine(callId: "call_p1", steps: [
             ("Inspect intro", "completed"), ("Rewrite framing", "in_progress"), ("Compile", "pending"),
