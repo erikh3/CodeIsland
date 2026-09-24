@@ -43,9 +43,16 @@ public enum ConfigPathIdentity {
 
     /// `FileManager.createFile` at `writeTarget(for: path)`: the same atomic
     /// replace as before, but a symlinked config file keeps its link.
+    ///
+    /// When the link's target cannot be written — a read-only store such as
+    /// a Nix / home-manager generation, or a folder that is gone — the write
+    /// falls back to what it always did and replaces the link itself, so the
+    /// hooks still get installed. Keeping writable links is the only change.
     @discardableResult
     public static func write(_ data: Data, to path: String, fileManager: FileManager = .default) -> Bool {
-        fileManager.createFile(atPath: writeTarget(for: path), contents: data)
+        let target = writeTarget(for: path)
+        if fileManager.createFile(atPath: target, contents: data) { return true }
+        return target != path && fileManager.createFile(atPath: path, contents: data)
     }
 
     // MARK: - Resolution

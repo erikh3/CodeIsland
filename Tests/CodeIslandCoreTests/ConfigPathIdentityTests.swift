@@ -109,6 +109,28 @@ final class ConfigPathIdentityTests: XCTestCase {
         XCTAssertEqual(try String(contentsOfFile: shared, encoding: .utf8), #"{"hooks":{}}"#)
     }
 
+    /// A link into a read-only store (Nix / home-manager) cannot be written
+    /// through; the write then replaces the link as it always did, so the
+    /// hooks still land.
+    func testALinkIntoAReadOnlyFolderFallsBackToReplacingTheLink() throws {
+        let store = try mkdir("store")
+        let target = store + "/settings.json"
+        XCTAssertTrue(fm.createFile(atPath: target, contents: Data("{}".utf8)))
+        try fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: store)
+        defer { try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: store) }
+        _ = try mkdir("claude")
+        let settings = try link("claude/settings.json", to: target)
+        guard !fm.createFile(atPath: store + "/probe", contents: Data()) else {
+            throw XCTSkip("running with permissions that ignore the read-only folder")
+        }
+
+        XCTAssertTrue(ConfigPathIdentity.write(Data(#"{"hooks":{}}"#.utf8), to: settings))
+
+        XCTAssertFalse(isSymlink(settings))
+        XCTAssertEqual(try String(contentsOfFile: settings, encoding: .utf8), #"{"hooks":{}}"#)
+        XCTAssertEqual(try String(contentsOfFile: target, encoding: .utf8), "{}", "the store is untouched")
+    }
+
     func testAPlainFileIsWrittenInPlace() throws {
         let file = try mkdir("plain") + "/hooks.json"
         XCTAssertEqual(ConfigPathIdentity.writeTarget(for: file), file, "missing file: itself")
