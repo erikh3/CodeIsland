@@ -1555,6 +1555,8 @@ struct ConfigInstaller {
 
     /// Minimal-diff write of a single top-level key, preserving user comments / key order / escaping.
     /// Creates the file fresh if `originalText` is nil. Returns false on any failure (caller-side #89 guard).
+    /// A symlinked config file (dotfiles, a settings.json shared between
+    /// accounts) is written at its target, so the link survives.
     private static func writeJSONWithKey(
         cli: CLIConfig,
         originalText: String?,
@@ -1569,7 +1571,7 @@ struct ConfigInstaller {
         guard let merged = JSONMinimalEditor.setTopLevelValue(in: source, key: key, value: value) else {
             return false
         }
-        return fm.createFile(atPath: cli.fullPath, contents: Data(merged.utf8))
+        return ConfigPathIdentity.write(Data(merged.utf8), to: cli.fullPath, fileManager: fm)
     }
 
     // MARK: - External CLIs (use bridge binary directly)
@@ -2600,14 +2602,15 @@ struct ConfigInstaller {
               let repaired = CodexPermissionRules.repairingOrphanedMCPToolTables(contents) else {
             return false
         }
-        return (try? repaired.write(toFile: configPath, atomically: true, encoding: .utf8)) != nil
+        return ConfigPathIdentity.write(Data(repaired.utf8), to: configPath, fileManager: fm)
     }
 
     /// Ensure hooks = true under [features] in $CODEX_HOME/config.toml
     /// (or ~/.codex/config.toml when unset) so Codex actually fires hook events.
     /// `codexHome` is overridden for extra Codex roots registered in Settings —
     /// each root has its own config.toml, and a hooks.json without the flag
-    /// next to it is never read.
+    /// next to it is never read. A symlinked config.toml is edited at its
+    /// target and stays a symlink.
     @discardableResult
     static func enableCodexHooksConfig(fm: FileManager, codexHome: String = ConfigInstaller.codexHome()) -> Bool {
         let configPath = codexHome + "/config.toml"
@@ -2640,7 +2643,7 @@ struct ConfigInstaller {
         // Already set to true (non-commented) — don't touch beyond legacy cleanup.
         if contents.range(of: hooksTruePattern, options: .regularExpression) != nil {
             if hasLegacyHooks {
-                return fm.createFile(atPath: configPath, contents: contents.data(using: .utf8))
+                return ConfigPathIdentity.write(Data(contents.utf8), to: configPath, fileManager: fm)
             }
             return true
         }
@@ -2652,7 +2655,7 @@ struct ConfigInstaller {
                 with: "hooks = true",
                 options: .regularExpression
             )
-            return fm.createFile(atPath: configPath, contents: contents.data(using: .utf8))
+            return ConfigPathIdentity.write(Data(contents.utf8), to: configPath, fileManager: fm)
         }
 
         // Not present — insert into [features] section or create it
@@ -2667,7 +2670,7 @@ struct ConfigInstaller {
             lines.append("hooks = true")
         }
         let result = lines.joined(separator: "\n")
-        return fm.createFile(atPath: configPath, contents: result.data(using: .utf8))
+        return ConfigPathIdentity.write(Data(result.utf8), to: configPath, fileManager: fm)
     }
 
     // MARK: - Kimi Code CLI (TOML hooks)
@@ -2876,7 +2879,8 @@ struct ConfigInstaller {
             merged = JSONMinimalEditor.setTopLevelValue(in: originalText, key: cli.configKey, value: hooks)
         }
         if let merged, let data = merged.data(using: .utf8) {
-            fm.createFile(atPath: cli.fullPath, contents: data)
+            // Through a symlinked config file, not over it.
+            ConfigPathIdentity.write(data, to: cli.fullPath, fileManager: fm)
         }
     }
 

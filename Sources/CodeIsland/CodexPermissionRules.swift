@@ -126,8 +126,8 @@ struct CodexPermissionRules {
 
             let separator = existing.isEmpty || existing.hasSuffix("\n") ? "" : "\n"
             let updated = existing + separator + block
-            try updated.write(toFile: rulesPath, atomically: true, encoding: .utf8)
-            return true
+            // A symlinked rules file (dotfiles) is written at its target.
+            return ConfigPathIdentity.write(Data(updated.utf8), to: rulesPath, fileManager: fileManager)
         } catch {
             return false
         }
@@ -152,8 +152,8 @@ struct CodexPermissionRules {
                 tablePath: ["mcp_servers", declaredID, "tools", toolName],
                 comment: String(Self.mcpToolApprovalComment.dropFirst(2))
             )
-            try updated.write(toFile: configPath, atomically: true, encoding: .utf8)
-            return true
+            // A symlinked config.toml (dotfiles) is written at its target.
+            return ConfigPathIdentity.write(Data(updated.utf8), to: configPath, fileManager: fileManager)
         } catch {
             return false
         }
