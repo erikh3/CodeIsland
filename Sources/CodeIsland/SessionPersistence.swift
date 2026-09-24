@@ -40,6 +40,10 @@ struct PersistedSession: Codable {
     /// still hold a lexicographically sorted list from the pre-cap `Set.sorted()`
     /// encoder — restore keeps all entries (no fake-recency trim).
     let closedSubagentIds: [String]?
+    /// The agent's checklist, so a relaunch mid-plan keeps showing progress
+    /// before the transcript backfill finishes. nil when empty (and in files
+    /// written before the field existed).
+    var agentTasks: AgentTaskList? = nil
 }
 
 enum SessionPersistence {
@@ -80,7 +84,8 @@ enum SessionPersistence {
                 startTime: s.startTime,
                 lastActivity: s.lastActivity,
                 transcriptPath: s.transcriptPath,
-                closedSubagentIds: s.closedSubagentIds.isEmpty ? nil : s.closedSubagentIds
+                closedSubagentIds: s.closedSubagentIds.isEmpty ? nil : s.closedSubagentIds,
+                agentTasks: s.agentTasks.isEmpty ? nil : s.agentTasks
             )
         }
         do {

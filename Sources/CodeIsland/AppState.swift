@@ -172,6 +172,10 @@ final class AppState {
     /// that was closed and subsequently re-created.
     @ObservationIgnored
     var attachedTranscriptTokens: [String: UUID] = [:]
+    /// Attach-time checklist scans still running off the main actor, keyed by
+    /// session. See AppState+AgentTasks.
+    @ObservationIgnored
+    var pendingAgentTaskBackfills: [String: PendingAgentTaskBackfill] = [:]
     /// Watches active session transcripts for appended assistant lines. Lazily
     /// constructed so the delta handler can safely capture `self`.
     @ObservationIgnored
@@ -3146,6 +3150,9 @@ final class AppState {
             snapshot.transcriptPath = p.transcriptPath
             if let closed = p.closedSubagentIds, !closed.isEmpty {
                 snapshot.restoreClosedSubagentIds(closed)
+            }
+            if let agentTasks = p.agentTasks {
+                snapshot.agentTasks = agentTasks
             }
             // Restore persisted cliPid only if the process is still alive — avoids
             // stale sessions reappearing briefly after the app or IDE restarts (#46).

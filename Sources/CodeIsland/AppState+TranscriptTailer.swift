@@ -93,9 +93,19 @@ extension AppState {
             }
         }
 
-        attachedTranscriptTokens[sessionId] = transcriptTailer.attach(
+        // Checklist history is rebuilt off the main actor from the bytes the
+        // tailer will not see: sized now, before attach picks its offset.
+        let agentTaskBackfillEnd = Self.transcriptFileSize(path)
+        let attachmentToken = transcriptTailer.attach(
             sessionId: sessionId,
             filePath: path
+        )
+        attachedTranscriptTokens[sessionId] = attachmentToken
+        startAgentTaskBackfill(
+            sessionId: sessionId,
+            path: path,
+            endOffset: agentTaskBackfillEnd,
+            attachmentToken: attachmentToken
         )
     }
 
@@ -179,6 +189,7 @@ extension AppState {
     func detachTranscriptTailer(sessionId: String) {
         attachedTranscriptPaths.removeValue(forKey: sessionId)
         attachedTranscriptTokens.removeValue(forKey: sessionId)
+        pendingAgentTaskBackfills.removeValue(forKey: sessionId)
         transcriptTailer.detach(sessionId: sessionId)
     }
 
@@ -255,6 +266,13 @@ extension AppState {
                 session.liveCodexOutput = normalizedIncoming
                 mutated = true
             }
+        }
+
+        // Checklist progress from the transcript: the only channel for Codex
+        // update_plan, and the backstop when a Claude hook is missed.
+        if !delta.taskEvents.isEmpty,
+           applyAgentTaskTranscriptEvents(delta.taskEvents, sessionId: delta.sessionId, to: &session) {
+            mutated = true
         }
 
         // Cursor question tool has no hook channel (#265) — the transcript tail is
