@@ -50,6 +50,7 @@ final class PushNotifierTests: XCTestCase {
         notifier.defaults = defaults
         notifier.transport = transport
         notifier.presence = { [unowned self] in self.presence }
+        notifier.armsCatchUpTimer = false
         defaults.set(true, forKey: SettingsKey.pushEnabled)
         configureBark()
     }
@@ -58,6 +59,7 @@ final class PushNotifierTests: XCTestCase {
         let notifier = PushNotifier.shared
         notifier.transport = URLSessionPushTransport.shared
         notifier.presence = { PushPresence.current() }
+        notifier.armsCatchUpTimer = true
         notifier.clock = Date.init
         notifier.defaults = .standard
         notifier.resetForTesting()
@@ -137,6 +139,117 @@ final class PushNotifierTests: XCTestCase {
         appState.denyPermission(expectedSessionId: "push-present")
         _ = try await awaitValue(of: response)
         XCTAssertTrue(transport.requests.isEmpty)
+    }
+
+    // MARK: Catch-up of held-back requests
+
+    private func queuePermission(_ appState: AppState, session: String, command: String) async throws -> Task<Data, Never> {
+        let event = try makeEvent([
+            "hook_event_name": "PermissionRequest",
+            "session_id": session,
+            "tool_name": "Bash",
+            "tool_input": ["command": command],
+        ])
+        let response = Task<Data, Never> {
+            await withCheckedContinuation { appState.handlePermissionRequest(event, continuation: $0) }
+        }
+        await Task.yield()
+        return response
+    }
+
+    /// Walked off without locking: the approval that arrives 30 s later is
+    /// held back as "present", and goes to the phone once the screen locks.
+    func testApprovalHeldBackWhilePresentIsPushedWhenTheScreenLocks() async throws {
+        presence = PushPresenceSnapshot(idleSeconds: 30)
+        let appState = AppState()
+        let response = try await queuePermission(appState, session: "push-held", command: "make deploy")
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .skipped(.userPresent))
+        XCTAssertTrue(PushNotifier.shared.hasHeldBackRequests)
+        XCTAssertNotNil(PushNotifier.shared.catchUpWakeDate, "one idle timer while something is held back")
+
+        presence = PushPresenceSnapshot(screenLocked: true, idleSeconds: 31)
+        PushNotifier.shared.userLeft()
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark]))
+        await waitForRequests(1)
+        XCTAssertEqual(sentBodies().first?["body"] as? String, "make deploy")
+        XCTAssertFalse(PushNotifier.shared.hasHeldBackRequests)
+        XCTAssertNil(PushNotifier.shared.catchUpWakeDate)
+
+        // At most once per request: the next departure pushes nothing.
+        PushNotifier.shared.userLeft()
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(transport.requests.count, 1)
+
+        appState.denyPermission(expectedSessionId: "push-held")
+        _ = await response.value
+    }
+
+    /// No lock: the timer looks when idle time could reach the threshold,
+    /// and looks again later if the person touched the Mac meanwhile.
+    func testIdleTimerCatchesUpOnceTheIdleThresholdIsReached() async throws {
+        let start = Date(timeIntervalSinceReferenceDate: 500_000)
+        PushNotifier.shared.clock = { start }
+        presence = PushPresenceSnapshot(idleSeconds: 20)
+        let threshold = PushNotifier.shared.idleThreshold
+        let appState = AppState()
+        let response = try await queuePermission(appState, session: "push-idle", command: "rm -rf dist")
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .skipped(.userPresent))
+        XCTAssertEqual(PushNotifier.shared.catchUpWakeDate, start.addingTimeInterval(threshold - 20 + 1))
+
+        presence = PushPresenceSnapshot(idleSeconds: 2)  // back at the keyboard
+        PushNotifier.shared.catchUpIfAway()
+        XCTAssertTrue(transport.requests.isEmpty)
+        XCTAssertEqual(PushNotifier.shared.catchUpWakeDate, start.addingTimeInterval(threshold - 2 + 1))
+
+        presence = PushPresenceSnapshot(idleSeconds: threshold + 1)
+        PushNotifier.shared.catchUpIfAway()
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark]))
+        XCTAssertNil(PushNotifier.shared.catchUpWakeDate)
+        await waitForRequests(1)
+
+        appState.denyPermission(expectedSessionId: "push-idle")
+        _ = await response.value
+    }
+
+    /// Answered at the Mac: out of the set, the timer goes, nothing is sent.
+    func testAnsweredHeldBackRequestIsDroppedWithItsTimer() async throws {
+        presence = PushPresenceSnapshot(idleSeconds: 5)
+        let appState = AppState()
+        let response = try await queuePermission(appState, session: "push-answered", command: "ls")
+        XCTAssertTrue(PushNotifier.shared.hasHeldBackRequests)
+
+        appState.approvePermission(expectedSessionId: "push-answered")
+        _ = await response.value
+        for _ in 0..<3 { await Task.yield() }
+        XCTAssertFalse(PushNotifier.shared.hasHeldBackRequests)
+        XCTAssertNil(PushNotifier.shared.catchUpWakeDate)
+
+        presence = PushPresenceSnapshot(screenLocked: true)
+        PushNotifier.shared.userLeft()
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertTrue(transport.requests.isEmpty)
+    }
+
+    /// Only waiting approvals / questions are caught up; a finished turn
+    /// skipped while present arms nothing, and neither does push switched off.
+    func testOnlyBlockingRequestsAreHeldBack() async throws {
+        presence = PushPresenceSnapshot(idleSeconds: 5)
+        let appState = AppState()
+        appState.handleEvent(try makeEvent([
+            "hook_event_name": "Stop",
+            "session_id": "push-held-stop",
+            "last_assistant_message": "Done.",
+        ]))
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .skipped(.userPresent))
+        XCTAssertFalse(PushNotifier.shared.hasHeldBackRequests)
+        XCTAssertNil(PushNotifier.shared.catchUpWakeDate)
+
+        defaults.set(false, forKey: SettingsKey.pushEnabled)
+        let response = try await queuePermission(appState, session: "push-held-off", command: "ls")
+        XCTAssertFalse(PushNotifier.shared.hasHeldBackRequests)
+        XCTAssertNil(PushNotifier.shared.catchUpWakeDate)
+        appState.denyPermission(expectedSessionId: "push-held-off")
+        _ = await response.value
     }
 
     func testDisabledPushNeverDecidesAnything() async throws {

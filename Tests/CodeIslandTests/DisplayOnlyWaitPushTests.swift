@@ -47,6 +47,7 @@ final class DisplayOnlyWaitPushTests: XCTestCase {
         notifier.defaults = defaults
         notifier.transport = transport
         notifier.presence = { [unowned self] in self.presence }
+        notifier.armsCatchUpTimer = false
         defaults.set(true, forKey: SettingsKey.pushEnabled)
         var bark = PushChannelConfig(kind: .bark)
         bark.enabled = true
@@ -59,6 +60,7 @@ final class DisplayOnlyWaitPushTests: XCTestCase {
         let notifier = PushNotifier.shared
         notifier.transport = URLSessionPushTransport.shared
         notifier.presence = { PushPresence.current() }
+        notifier.armsCatchUpTimer = true
         notifier.clock = Date.init
         notifier.defaults = .standard
         notifier.resetForTesting()
@@ -136,6 +138,22 @@ final class DisplayOnlyWaitPushTests: XCTestCase {
         ))
         XCTAssertEqual(PushNotifier.shared.lastDecision, .skipped(.userPresent))
         XCTAssertTrue(transport.requests.isEmpty)
+    }
+
+    /// Skipped while present, pushed once the screen locks — still waiting.
+    func testWaitHeldBackWhilePresentIsPushedWhenTheScreenLocks() async throws {
+        presence = PushPresenceSnapshot(idleSeconds: 2)
+        let appState = makeAppState()
+        appState.applyCoworkUpdate(coworkUpdate(
+            coworkAudit(.permissionRequested(id: "r", toolName: "Bash", detail: "ls")), permissionsRequested: 1
+        ))
+        XCTAssertTrue(PushNotifier.shared.hasHeldBackRequests)
+
+        presence = PushPresenceSnapshot(screenLocked: true)
+        PushNotifier.shared.userLeft()
+        XCTAssertEqual(PushNotifier.shared.lastDecision, .sent([.bark]))
+        await waitForRequests(1)
+        XCTAssertEqual(sentBodies().first?["body"] as? String, "ls\n\(answerIn("Claude Desktop"))")
     }
 
     func testChannelWithoutApprovalsSkipsIt() {

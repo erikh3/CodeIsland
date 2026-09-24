@@ -59,10 +59,13 @@ final class PushNotifier: ObservableObject {
     private(set) var lastDecision: PushDecision?
     private var deduplicator = PushDeduplicator()
 
-    /// Approvals / questions pushed and not yet seen answered. Each holds
-    /// its dedupe slot until `requestsChanged` finds it gone, so a replay
-    /// stays one push while the same request waits, and the next one after
-    /// it is answered is news even seconds later.
+    /// Approvals / questions not yet seen answered, in one of two states:
+    ///
+    /// - pushed: holds its dedupe slot until `requestsChanged` finds it
+    ///   gone, so a replay stays one push while the same request waits, and
+    ///   the next one after it is answered is news even seconds later;
+    /// - held back: skipped because someone was at the Mac (only-when-away,
+    ///   or Smart Suppress). Pushed once when they leave — see Catch-up.
     private var tracked: [String: TrackedRequest] = [:]
     private var pruneScheduled = false
 
@@ -70,7 +73,15 @@ final class PushNotifier: ObservableObject {
         let kind: PushEventKind
         let subject: PushSubject
         let request: PushPendingRequest
+        var heldBack: Bool
     }
+
+    /// When the one catch-up timer fires, nil while none is armed. Armed
+    /// only while something is held back.
+    private(set) var catchUpWakeDate: Date?
+    /// Tests call `catchUpIfAway()` by hand and turn the real timer off.
+    var armsCatchUpTimer = true
+    private var catchUpTask: Task<Void, Never>?
 
     private init() {}
 
@@ -85,14 +96,105 @@ final class PushNotifier: ObservableObject {
         Task { @MainActor [weak self] in self?.forgetAnsweredRequests() }
     }
 
-    /// Drops every tracked request that is no longer waiting, freeing its
-    /// dedupe slot.
+    /// Drops every tracked request that is no longer waiting: a pushed one
+    /// frees its dedupe slot, a held-back one needs no catch-up any more.
     func forgetAnsweredRequests() {
         pruneScheduled = false
         for (id, entry) in tracked where entry.request.current() == nil {
             tracked[id] = nil
             deduplicator.forget(kind: entry.kind, sessionId: entry.subject.sessionId, requestKey: entry.request.key)
         }
+        if !hasHeldBackRequests { disarmCatchUpTimer() }
+    }
+
+    // MARK: Catch-up
+
+    /// An approval arrives 30 s after the user walked off without locking:
+    /// "only when away" sees 30 s of idle, and it is skipped. Without a
+    /// catch-up it would never reach the phone (follow-up reminders are off
+    /// by default). So a held-back request is pushed once, as soon as the
+    /// person is away: at the lock screen / screen saver / display sleep
+    /// (`userLeft`), or when idle time reaches the threshold — checked by a
+    /// single timer that exists only while something is held back.
+    var hasHeldBackRequests: Bool { tracked.values.contains { $0.heldBack } }
+
+    /// Lock screen, screen saver or display sleep just began.
+    func userLeft() {
+        guard hasHeldBackRequests else { return }
+        catchUpHeldBack()
+    }
+
+    /// The catch-up timer: push what was held back if the person is away by
+    /// now, else look again when they next could be.
+    func catchUpIfAway() {
+        catchUpWakeDate = nil
+        catchUpTask = nil
+        guard hasHeldBackRequests else { return }
+        let snapshot = presence()
+        if snapshot.isAway(idleThreshold: idleThreshold) {
+            catchUpHeldBack()
+        } else {
+            armCatchUpTimer(presence: snapshot)
+        }
+    }
+
+    /// Each held-back request still waiting is pushed with what it asks now;
+    /// one pushed is an ordinary pushed request from then on, so it is never
+    /// caught up twice.
+    private func catchUpHeldBack() {
+        for (id, entry) in tracked where entry.heldBack {
+            guard let content = entry.request.current() else {
+                tracked[id] = nil
+                continue
+            }
+            let decision = decide(
+                content,
+                subject: entry.subject,
+                smartSuppressed: false,
+                isSubagent: false,
+                interrupted: false,
+                request: entry.request
+            )
+            lastDecision = decision
+            switch decision {
+            case .sent, .skipped(.duplicate):
+                tracked[id]?.heldBack = false
+            case .skipped(.userPresent), .skipped(.smartSuppressed):
+                break  // back already; wait for the next departure
+            default:
+                tracked[id] = nil  // switched off, or no channel takes it any more
+            }
+        }
+        if hasHeldBackRequests {
+            armCatchUpTimer(presence: presence())
+        } else {
+            disarmCatchUpTimer()
+        }
+    }
+
+    private func holdBack(_ id: String, _ entry: TrackedRequest, presence snapshot: PushPresenceSnapshot) {
+        guard tracked[id] == nil else { return }
+        tracked[id] = entry
+        armCatchUpTimer(presence: snapshot)
+    }
+
+    /// One timer, due when the idle time could first reach the threshold.
+    private func armCatchUpTimer(presence snapshot: PushPresenceSnapshot) {
+        guard catchUpWakeDate == nil else { return }
+        let delay = max(idleThreshold - snapshot.idleSeconds, 0) + 1
+        catchUpWakeDate = clock().addingTimeInterval(delay)
+        guard armsCatchUpTimer else { return }
+        catchUpTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.catchUpIfAway()
+        }
+    }
+
+    private func disarmCatchUpTimer() {
+        catchUpTask?.cancel()
+        catchUpTask = nil
+        catchUpWakeDate = nil
     }
 
     private static func trackingId(_ kind: PushEventKind, _ sessionId: String, _ key: String) -> String {
@@ -185,19 +287,25 @@ final class PushNotifier: ObservableObject {
             isSubagent: isSubagent,
             interrupted: interrupted
         )
-        if let reason = PushGate.evaluate(gate) { return skip(reason, kind, subject) }
+        let request = kind == .permission || kind == .question ? request : nil
+        let trackingId = request.map { Self.trackingId(kind, subject.sessionId, $0.key) }
+        if let reason = PushGate.evaluate(gate) {
+            if let request, let trackingId, reason == .userPresent || reason == .smartSuppressed {
+                holdBack(
+                    trackingId,
+                    TrackedRequest(kind: kind, subject: subject, request: request, heldBack: true),
+                    presence: gate.presence
+                )
+            }
+            return skip(reason, kind, subject)
+        }
 
         let now = clock()
-        let request = kind == .permission || kind == .question ? request : nil
         if let reason = deduplicator.admit(kind: kind, sessionId: subject.sessionId, requestKey: request?.key, now: now) {
             return skip(reason, kind, subject)
         }
-        if let request {
-            tracked[Self.trackingId(kind, subject.sessionId, request.key)] = TrackedRequest(
-                kind: kind,
-                subject: subject,
-                request: request
-            )
+        if let request, let trackingId {
+            tracked[trackingId] = TrackedRequest(kind: kind, subject: subject, request: request, heldBack: false)
         }
 
         // Rendered once per detail level; team chats default to headlines only.
@@ -287,6 +395,7 @@ final class PushNotifier: ObservableObject {
         lastDecision = nil
         tracked = [:]
         pruneScheduled = false
+        disarmCatchUpTimer()
     }
 }
 

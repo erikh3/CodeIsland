@@ -59,8 +59,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Lock / screen saver / display sleep → event sounds hold off.
         SceneMuteMonitor.shared.start()
         // Back at the screen: follow-ups held back meanwhile go out now.
+        // Gone from it: approvals / questions a push skipped while the user
+        // was still there go to the phone now.
         SceneMuteMonitor.shared.onQuietChanged = { [weak appState] isQuiet in
-            if !isQuiet { appState?.followUps.wake() }
+            if isQuiet {
+                PushNotifier.shared.userLeft()
+            } else {
+                appState?.followUps.wake()
+            }
         }
         // Follow-up reminders also reach the phone / chat push channels.
         appState.connectPushToFollowUps()
