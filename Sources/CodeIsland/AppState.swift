@@ -467,14 +467,14 @@ final class AppState {
         //    events for >180s shouldn't be force-flipped to idle here — it'll then be
         //    swept by Section 4. Remote session lifecycle is driven by remote-end hooks
         //    and SSH connection state in RemoteManager, not by local timeouts. (#121)
-        //    A Claude Desktop Cowork card waiting on a permission card is skipped too:
-        //    that wait is read from Claude Desktop's own session store, which stays
-        //    silent for as long as the card is left open.
+        //    Claude Desktop Cowork cards are skipped too and settled on their own
+        //    clock right after: their session store stays silent through a long
+        //    tool run and for as long as a permission card is left open.
         for (key, session) in sessions
             where processMonitors[key] == nil
             && session.status != .idle
             && !session.isRemote
-            && !Self.isCoworkWaitingOnDesktop(key: key, status: session.status) {
+            && !key.hasPrefix(Self.coworkSessionPrefix) {
             let elapsed = -session.lastActivity.timeIntervalSinceNow
             let threshold: TimeInterval
             switch session.status {
@@ -487,6 +487,7 @@ final class AppState {
                 sessions[key]?.toolDescription = nil
             }
         }
+        settleCoworkCards()
 
         // 2b. Some CLIs keep their parent process alive across requests, so a missed Stop hook
         // can leave the UI stuck in bare "thinking" forever after an interrupt. If we've had no

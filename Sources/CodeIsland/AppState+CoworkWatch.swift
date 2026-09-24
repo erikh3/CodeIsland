@@ -24,13 +24,26 @@ extension AppState {
         return String(key.dropFirst(coworkSessionPrefix.count))
     }
 
-    /// A Cowork card waiting on a permission card in Claude Desktop. The idle
-    /// cleanup's "no events for 5 minutes, the connection must have dropped"
-    /// rule must not flip it: the store stays silent for exactly as long as the
-    /// card is left open, and archiving, deleting or quitting Claude Desktop
-    /// each clear the card through their own path.
-    nonisolated static func isCoworkWaitingOnDesktop(key: String, status: AgentStatus) -> Bool {
-        key.hasPrefix(coworkSessionPrefix) && (status == .waitingApproval || status == .waitingQuestion)
+    /// A turn with no audit or transcript line for this long is settled idle.
+    /// Nothing is written while a tool runs, so the generic 3-minute "a tool
+    /// that quiet must have been missed" rule would flip a long build.
+    nonisolated static let coworkTurnSilenceTimeout: TimeInterval = 30 * 60
+    /// A permission card or question left open this long is settled idle.
+    /// The store is silent for exactly as long as the card is up, so this is
+    /// only the backstop for a wait nothing will ever close: the VM died, the
+    /// CLI was killed, or Claude Desktop dropped the request without logging
+    /// a response or a result. (Archiving, deleting or quitting Claude Desktop
+    /// clear the card through their own paths.)
+    nonisolated static let coworkWaitSilenceTimeout: TimeInterval = 4 * 60 * 60
+
+    /// How long a Cowork card in `status` may stay silent before the sweep
+    /// settles it; nil when there is nothing to settle.
+    nonisolated static func coworkSilenceTimeout(status: AgentStatus) -> TimeInterval? {
+        switch status {
+        case .idle: return nil
+        case .processing, .running: return coworkTurnSilenceTimeout
+        case .waitingApproval, .waitingQuestion: return coworkWaitSilenceTimeout
+        }
     }
 
     static func isCoworkTrackingEnabled(_ defaults: UserDefaults = .standard) -> Bool {
@@ -121,21 +134,42 @@ extension AppState {
         guard claudeDesktopRunning else { return }
         for update in updates {
             applyCoworkUpdate(update, isLaunch: true)
-            let key = Self.coworkSessionKey(update.sessionId)
             if let launchedAt = claudeDesktopLaunchedAt,
                let lastActivity = update.lastActivity,
-               lastActivity < launchedAt,
-               var snapshot = sessions[key],
-               snapshot.status != .idle {
-                let waitBefore = displayOnlyWaitKind(forSession: key)
-                snapshot.status = .idle
-                snapshot.currentTool = nil
-                snapshot.toolDescription = nil
-                sessions[key] = snapshot
-                noteDisplayOnlyWait(sessionId: key, was: waitBefore)
+               lastActivity < launchedAt {
+                settleCoworkCard(Self.coworkSessionKey(update.sessionId))
             }
         }
         refreshDerivedState()
+    }
+
+    // MARK: - Turns Claude Desktop will never finish
+
+    /// Settle a Cowork card's turn or wait idle: Claude Desktop will never
+    /// log its end. Keeps the card's age, so the idle sweep collects it on the
+    /// usual clock.
+    func settleCoworkCard(_ key: String) {
+        guard var snapshot = sessions[key], snapshot.status != .idle else { return }
+        let waitBefore = displayOnlyWaitKind(forSession: key)
+        snapshot.status = .idle
+        snapshot.currentTool = nil
+        snapshot.toolDescription = nil
+        sessions[key] = snapshot
+        noteDisplayOnlyWait(sessionId: key, was: waitBefore)
+    }
+
+    /// Cleanup-sweep pass for Cowork cards, which the generic silence rule
+    /// skips: a turn or wait is settled once it has been silent past
+    /// `coworkSilenceTimeout`.
+    func settleCoworkCards(now: Date = Date()) {
+        for (key, session) in sessions
+            where key.hasPrefix(Self.coworkSessionPrefix) && session.status != .idle {
+            let timedOut = Self.coworkSilenceTimeout(status: session.status)
+                .map { now.timeIntervalSince(session.lastActivity) > $0 } ?? false
+            if timedOut {
+                settleCoworkCard(key)
+            }
+        }
     }
 
     /// Apply one watcher update. Only a launch rebuild or live audit activity

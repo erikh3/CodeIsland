@@ -304,13 +304,56 @@ final class AppStateCoworkWatchTests: XCTestCase {
         XCTAssertTrue(appState.displayOnlyWaitingSessionIds(kind: .approval).isEmpty)
     }
 
-    func testOnlyACoworkPermissionWaitOutlivesTheSilenceTimeout() {
-        XCTAssertTrue(AppState.isCoworkWaitingOnDesktop(key: key, status: .waitingApproval))
-        XCTAssertTrue(AppState.isCoworkWaitingOnDesktop(key: key, status: .waitingQuestion))
-        // A silent "thinking" card may be an interrupted turn: let it settle.
-        XCTAssertFalse(AppState.isCoworkWaitingOnDesktop(key: key, status: .processing))
-        XCTAssertFalse(AppState.isCoworkWaitingOnDesktop(key: key, status: .running))
-        XCTAssertFalse(AppState.isCoworkWaitingOnDesktop(key: cliSessionId, status: .waitingApproval))
+    // MARK: - Settling what Claude Desktop will never finish
+
+    private func waitingCard(in appState: AppState) {
+        let request = CoworkAuditFixture.permissionRequest(id: "r", tool: "Bash", input: #"{"command":"rm x"}"#)
+        appState.applyCoworkUpdate(update(
+            audit: audit([CoworkAuditFixture.userPrompt, request]),
+            permissionsRequested: 1
+        ))
+        XCTAssertEqual(appState.sessions[key]?.status, .waitingApproval)
+    }
+
+    func testSilenceTimeoutsForCoworkCards() {
+        XCTAssertNil(AppState.coworkSilenceTimeout(status: .idle))
+        // A long build writes nothing to the store for as long as it runs.
+        XCTAssertEqual(AppState.coworkSilenceTimeout(status: .running), 30 * 60)
+        XCTAssertEqual(AppState.coworkSilenceTimeout(status: .processing), 30 * 60)
+        // A card left open is silent too; hours bound one nothing will close.
+        XCTAssertEqual(AppState.coworkSilenceTimeout(status: .waitingApproval), 4 * 60 * 60)
+        XCTAssertEqual(AppState.coworkSilenceTimeout(status: .waitingQuestion), 4 * 60 * 60)
+    }
+
+    func testLongRunningToolOutlivesTheGenericTimeout() throws {
+        let appState = AppState()
+        appState.applyCoworkUpdate(update(audit: audit([
+            CoworkAuditFixture.userPrompt,
+            CoworkAuditFixture.assistantToolUse,
+        ])))
+        let started = try XCTUnwrap(appState.sessions[key]).lastActivity
+
+        // Well past the 3-minute rule for a quiet tool.
+        appState.settleCoworkCards(now: started.addingTimeInterval(20 * 60))
+        XCTAssertEqual(appState.sessions[key]?.status, .running)
+        XCTAssertEqual(appState.sessions[key]?.currentTool, "Bash")
+
+        appState.settleCoworkCards(now: started.addingTimeInterval(31 * 60))
+        XCTAssertEqual(appState.sessions[key]?.status, .idle)
+        XCTAssertNil(appState.sessions[key]?.currentTool)
+    }
+
+    func testAnOpenPermissionCardIsSettledAfterHoursOfSilence() throws {
+        let appState = AppState()
+        waitingCard(in: appState)
+        let asked = try XCTUnwrap(appState.sessions[key]).lastActivity
+
+        appState.settleCoworkCards(now: asked.addingTimeInterval(3 * 60 * 60))
+        XCTAssertEqual(appState.sessions[key]?.status, .waitingApproval, "still plausibly waiting")
+
+        appState.settleCoworkCards(now: asked.addingTimeInterval(4 * 60 * 60 + 1))
+        XCTAssertEqual(appState.sessions[key]?.status, .idle)
+        XCTAssertTrue(appState.displayOnlyWaitingSessionIds(kind: .approval).isEmpty)
     }
 
     func testLaunchSnapshotShowsNothingWhileClaudeDesktopIsClosed() {
