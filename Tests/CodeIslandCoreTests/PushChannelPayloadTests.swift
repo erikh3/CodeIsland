@@ -151,6 +151,34 @@ final class PushChannelPayloadTests: XCTestCase {
         XCTAssertEqual(request.headers["Authorization"], "Bearer tk_abc")
     }
 
+    /// JSON POSTed to /<topic> is published as the text of a message there,
+    /// with a 200 — so a topic in Server is never kept in the URL.
+    func testNtfyTopicInBothPlacesPostsToTheRootOrIsAConfigProblem() throws {
+        let (request, body) = try build(permission, channel(.ntfy) {
+            $0.endpoint = "https://ntfy.sh/alerts"
+            $0.target = "alerts"
+        })
+        XCTAssertEqual(request.url.absoluteString, "https://ntfy.sh/")
+        XCTAssertEqual(body["topic"] as? String, "alerts")
+
+        let prefixed = try build(permission, channel(.ntfy) {
+            $0.endpoint = "https://example.com/ntfy/alerts"
+            $0.target = "alerts"
+        }).0
+        XCTAssertEqual(prefixed.url.absoluteString, "https://example.com/ntfy")
+
+        let conflicting = channel(.ntfy) {
+            $0.endpoint = "https://ntfy.sh/alerts"
+            $0.target = "builds"
+        }
+        XCTAssertEqual(conflicting.problem, .ntfyTopicMismatch)
+        XCTAssertFalse(conflicting.accepts(.permission))
+        XCTAssertNil(channel(.ntfy) {
+            $0.endpoint = "https://ntfy.sh/"
+            $0.target = "builds"
+        }.problem)
+    }
+
     func testNtfyCapsTheMessageInBytes() throws {
         var message = completion
         message.body = String(repeating: "汉", count: 3_000)  // 9 000 bytes

@@ -52,6 +52,8 @@ public enum PushConfigProblem: String, Error, Sendable {
     case missingBotToken
     case missingChatId
     case invalidURL
+    /// ntfy: Server already ends in a topic, and Topic names another one.
+    case ntfyTopicMismatch
 }
 
 /// One channel's settings. A flat record rather than one type per service:
@@ -320,18 +322,25 @@ public enum PushRequestBuilder {
 
     /// POST {server}/ with `{"topic", "title", "message", "priority"}`.
     /// Auth: `Authorization: Bearer <token>`, or basic auth from the URL.
+    ///
+    /// JSON has to go to the server root: POSTed to `/<topic>`, ntfy
+    /// publishes the whole JSON document as the text of a message to that
+    /// topic and still answers 200. So a topic at the end of Server is taken
+    /// out — it is the topic when Topic is empty, a repeat of it when equal,
+    /// and a contradiction the user has to resolve when not.
     static func ntfy(_ message: PushMessage, _ channel: PushChannelConfig) throws -> PushHTTPRequest {
         let serverText = nonEmpty(channel.endpoint) ?? PushChannelKind.ntfy.defaultEndpoint
         guard let server = PushEndpoint.parse(serverText) else { throw PushConfigProblem.invalidURL }
-        var base = server.url
+        var components = PushEndpoint.pathComponents(of: server.url)
         var topic = nonEmpty(channel.target)
-        if topic == nil {
-            // "https://ntfy.sh/mytopic" pasted whole.
-            let components = PushEndpoint.pathComponents(of: base)
-            if let last = components.last {
+        if let last = components.last {
+            if topic == nil {
+                // "https://ntfy.sh/mytopic" pasted whole.
                 topic = last
-                base = PushEndpoint.replacingPath(of: base, with: components.dropLast())
+            } else if last != topic {
+                throw PushConfigProblem.ntfyTopicMismatch
             }
+            components.removeLast()
         }
         guard let topic else { throw PushConfigProblem.missingTopic }
         let urgent = min(max(channel.priority, 1), 5)
@@ -346,9 +355,7 @@ public enum PushRequestBuilder {
         if let token = nonEmpty(channel.token) {
             authorization = token.lowercased().hasPrefix("bearer ") ? token : "Bearer \(token)"
         }
-        // JSON publishing goes to the server root; a reverse-proxy prefix
-        // ("https://host/ntfy") is the root there, so the path is kept.
-        let url = PushEndpoint.replacingPath(of: base, with: PushEndpoint.pathComponents(of: base))
+        let url = PushEndpoint.replacingPath(of: server.url, with: components)
         return try jsonRequest(url: url, body: body, authorization: authorization)
     }
 

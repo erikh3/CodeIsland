@@ -290,6 +290,7 @@ final class L10n: ObservableObject {
         "push_problem_missingBotToken": "Enter the bot token.",
         "push_problem_missingChatId": "Enter the chat ID.",
         "push_problem_invalidURL": "That address isn't a valid http(s) URL.",
+        "push_problem_ntfyTopicMismatch": "Server ends in a different topic than the Topic field. ntfy reads the last part of the address as the topic — remove it from Server, or clear Topic.",
         "push_storage_note": "Tokens and secrets are kept in CodeIsland's preferences on this Mac and only sent to the service they belong to. Plain http:// works only for addresses on your local network.",
 
         // Appearance
@@ -790,6 +791,7 @@ final class L10n: ObservableObject {
         "push_problem_missingBotToken": "Bot-Token eingeben.",
         "push_problem_missingChatId": "Chat-ID eingeben.",
         "push_problem_invalidURL": "Diese Adresse ist keine gültige http(s)-URL.",
+        "push_problem_ntfyTopicMismatch": "Die Server-Adresse endet auf ein anderes Topic als im Feld „Topic“. ntfy liest den letzten Teil der Adresse als Topic – entferne ihn aus „Server“ oder leere „Topic“.",
         "push_storage_note": "Tokens und Secrets liegen in den CodeIsland-Einstellungen auf diesem Mac und gehen nur an den jeweiligen Dienst. Unverschlüsseltes http:// funktioniert nur für Adressen im lokalen Netz.",
 
         // Appearance
@@ -1294,6 +1296,7 @@ final class L10n: ObservableObject {
         "push_problem_missingBotToken": "请填写 Bot Token。",
         "push_problem_missingChatId": "请填写 Chat ID。",
         "push_problem_invalidURL": "地址不是有效的 http(s) URL。",
+        "push_problem_ntfyTopicMismatch": "服务器地址末尾带着一个与「主题」不同的 topic。ntfy 会把地址最后一段当作 topic——请从服务器地址中删掉它，或清空「主题」。",
         "push_storage_note": "令牌和密钥保存在本机 CodeIsland 的偏好设置中，只会发送给对应的服务。明文 http:// 仅支持局域网地址。",
 
         // Appearance
@@ -1798,6 +1801,7 @@ final class L10n: ObservableObject {
         "push_problem_missingBotToken": "請填寫 Bot Token。",
         "push_problem_missingChatId": "請填寫 Chat ID。",
         "push_problem_invalidURL": "位址不是有效的 http(s) URL。",
+        "push_problem_ntfyTopicMismatch": "伺服器位址結尾帶著一個與「主題」不同的 topic。ntfy 會把位址最後一段當作 topic——請從伺服器位址中刪除它，或清空「主題」。",
         "push_storage_note": "權杖和密鑰儲存在本機 CodeIsland 的偏好設定中，只會傳送給對應的服務。明文 http:// 僅支援區域網路位址。",
 
         // Appearance
@@ -2302,6 +2306,7 @@ final class L10n: ObservableObject {
         "push_problem_missingBotToken": "ボットトークンを入力してください。",
         "push_problem_missingChatId": "チャット ID を入力してください。",
         "push_problem_invalidURL": "有効な http(s) URL ではありません。",
+        "push_problem_ntfyTopicMismatch": "サーバーのアドレスが「トピック」と異なるトピックで終わっています。ntfy はアドレスの最後の部分をトピックとして扱います。サーバーから削除するか、「トピック」を空にしてください。",
         "push_storage_note": "トークンとシークレットはこの Mac の CodeIsland 設定に保存され、該当するサービスにのみ送信されます。暗号化されていない http:// はローカルネットワーク上のアドレスでのみ使えます。",
 
         // Appearance
@@ -2806,6 +2811,7 @@ final class L10n: ObservableObject {
         "push_problem_missingBotToken": "봇 토큰을 입력하세요.",
         "push_problem_missingChatId": "채팅 ID를 입력하세요.",
         "push_problem_invalidURL": "올바른 http(s) URL이 아닙니다.",
+        "push_problem_ntfyTopicMismatch": "서버 주소가 '토픽'과 다른 토픽으로 끝납니다. ntfy는 주소의 마지막 부분을 토픽으로 읽습니다. 서버에서 지우거나 '토픽'을 비우세요.",
         "push_storage_note": "토큰과 시크릿은 이 Mac의 CodeIsland 환경설정에 저장되며 해당 서비스로만 전송됩니다. 암호화되지 않은 http://는 로컬 네트워크 주소에서만 작동합니다.",
 
         // Appearance
@@ -3310,6 +3316,7 @@ final class L10n: ObservableObject {
         "push_problem_missingBotToken": "Bot belirtecini girin.",
         "push_problem_missingChatId": "Sohbet ID'sini girin.",
         "push_problem_invalidURL": "Bu adres geçerli bir http(s) URL'si değil.",
+        "push_problem_ntfyTopicMismatch": "Sunucu adresi, Konu alanındakinden farklı bir konuyla bitiyor. ntfy adresin son kısmını konu olarak okur — bunu Sunucu'dan kaldırın ya da Konu alanını boşaltın.",
         "push_storage_note": "Belirteçler ve gizli anahtarlar bu Mac'teki CodeIsland tercihlerinde saklanır ve yalnızca ait oldukları hizmete gönderilir. Şifresiz http:// yalnızca yerel ağdaki adresler için çalışır.",
 
         // Appearance

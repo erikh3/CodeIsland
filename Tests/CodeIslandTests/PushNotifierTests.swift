@@ -494,7 +494,7 @@ final class PushNotifierTests: XCTestCase {
             XCTAssertNotNil(english["push_channel_\(kind.rawValue)"])
             XCTAssertNotNil(english["push_hint_\(kind.rawValue)"])
         }
-        for problem in [PushConfigProblem.missingDeviceKey, .missingTopic, .missingWebhook, .missingBotToken, .missingChatId, .invalidURL] {
+        for problem in [PushConfigProblem.missingDeviceKey, .missingTopic, .missingWebhook, .missingBotToken, .missingChatId, .invalidURL, .ntfyTopicMismatch] {
             XCTAssertNotNil(english["push_problem_\(problem.rawValue)"])
         }
         for (language, table) in L10n.strings {
