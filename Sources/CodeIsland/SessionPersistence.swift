@@ -115,9 +115,25 @@ enum SessionPersistence {
 
     static func load() -> [PersistedSession] {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: filePath)) else { return [] }
+        return decode(data)
+    }
+
+    /// Decode a sessions file entry by entry: one this build cannot read (a
+    /// newer version's field values after a downgrade, a hand edit) costs that
+    /// session, not every session in the file.
+    static func decode(_ data: Data) -> [PersistedSession] {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode([PersistedSession].self, from: data)) ?? []
+        let entries = (try? decoder.decode([LossyPersistedSession].self, from: data)) ?? []
+        return entries.compactMap(\.session)
+    }
+
+    private struct LossyPersistedSession: Decodable {
+        let session: PersistedSession?
+
+        init(from decoder: Decoder) throws {
+            session = try? PersistedSession(from: decoder)
+        }
     }
 
     static func clear() {

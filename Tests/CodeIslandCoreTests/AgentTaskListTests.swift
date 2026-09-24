@@ -419,6 +419,16 @@ final class AgentTaskListTests: XCTestCase {
         XCTAssertEqual(decoded.completedAt, t0)
     }
 
+    func testUnknownPersistedStatusDecodesAsPending() throws {
+        let json = #"{"items":[{"id":"a","title":"A","status":"in_progress"},{"id":"b","title":"B","status":"awaiting_review"},{"id":"c","title":"C","status":"done"}]}"#
+        let decoded = try JSONDecoder().decode(AgentTaskList.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.items.map(\.status), [.inProgress, .pending, .completed])
+        // Encoding still writes the canonical raw values.
+        let reencoded = String(decoding: try JSONEncoder().encode(decoded), as: UTF8.self)
+        XCTAssertTrue(reencoded.contains(#""status":"in_progress""#))
+        XCTAssertTrue(reencoded.contains(#""status":"completed""#))
+    }
+
     func testStatusVocabularies() {
         XCTAssertEqual(AgentTaskStatus.parse("in-progress"), .status(.inProgress))
         XCTAssertEqual(AgentTaskStatus.parse("DONE"), .status(.completed))

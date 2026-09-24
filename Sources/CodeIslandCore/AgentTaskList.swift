@@ -38,6 +38,18 @@ public enum AgentTaskStatus: String, Codable, Sendable {
             return .unknown
         }
     }
+
+    /// A status this build does not know (written by a newer version and read
+    /// back after a downgrade) decodes as `pending` instead of failing the
+    /// checklist — and with it the whole persisted session.
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        if case .status(let status) = Self.parse(raw) {
+            self = status
+        } else {
+            self = .pending
+        }
+    }
 }
 
 /// One row of an agent's checklist as shown on the session card.
