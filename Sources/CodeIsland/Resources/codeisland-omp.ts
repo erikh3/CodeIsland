@@ -1,5 +1,5 @@
 // CodeIsland pi extension
-// version: v20
+// version: v21
 // OMP-compatible install
 
 /**
@@ -1093,23 +1093,41 @@ export default function codeislandExtension(
   });
 
   pi.on("input", async (event, ctx) => {
-    if ((event as Record<string, unknown>).text?.toString().trim() !== "/clear") return;
+    const text = (event as Record<string, unknown>).text?.toString().trim() ?? "";
     const sessionId = ctx.sessionManager.getSessionId();
     // Only act when the session is already known to CodeIsland — emitting
     // SessionStart for an unseen session would create a phantom card.
     if (!startedSessions.has(`pi-${sessionId}`)) return;
-    // Retain the card by re-emitting SessionStart for the same root identity.
-    // This clears the card's stale content without removing it from the UI.
-    // startedSessions and identityCache are intentionally left intact so
-    // the next lifecycle event sees the session as already started.
     const identity: OmpSessionIdentity = { kind: "root", sessionId };
-    const sessionName = pi.getSessionName();
-    await sendFn(
-      buildEvent(identity, ctx.cwd, {
-        hook_event_name: "SessionStart",
-        ...(sessionName ? { session_title: sessionName } : {}),
-      }),
-    );
+
+    if (text === "/clear") {
+      // Retain the card by re-emitting SessionStart for the same root identity.
+      // This clears the card's stale content without removing it from the UI.
+      // startedSessions and identityCache are intentionally left intact so
+      // the next lifecycle event sees the session as already started.
+      const sessionName = pi.getSessionName();
+      await sendFn(
+        buildEvent(identity, ctx.cwd, {
+          hook_event_name: "SessionStart",
+          ...(sessionName ? { session_title: sessionName } : {}),
+        }),
+      );
+      return;
+    }
+
+    if (text.startsWith("/rename ")) {
+      // Parse the new name directly from the command text — pi.getSessionName()
+      // still holds the old name at input-event time (omp applies /rename after
+      // the input event resolves).
+      const newName = text.slice("/rename ".length).trim();
+      if (!newName) return;
+      await sendFn(
+        buildEvent(identity, ctx.cwd, {
+          hook_event_name: "SessionStart",
+          session_title: newName,
+        }),
+      );
+    }
   });
 
   // ── Agent lifecycle ────────────────────────────────────────────────────────
