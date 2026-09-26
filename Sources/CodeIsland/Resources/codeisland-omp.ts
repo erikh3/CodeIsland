@@ -483,6 +483,72 @@ export function resolveOmpIdentity(
   };
 }
 
+// ── Todo → task-progress bridge ───────────────────────────────────────────────
+
+/** Status vocabulary of OMP's `todo` tool (see pi-coding-agent tools/todo.ts). */
+type OmpTodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
+
+/** One task row inside a todo phase, as carried by the tool result `details`. */
+interface OmpTodoTask {
+  content: string;
+  status: OmpTodoStatus;
+  blocker?: string;
+}
+
+/** A named phase of the todo list (OMP groups tasks into phases). */
+interface OmpTodoPhase {
+  name: string;
+  tasks: OmpTodoTask[];
+}
+
+/**
+ * Collapse OMP's five-state todo vocabulary onto the three states CodeIsland's
+ * checklist understands (`pending` / `in_progress` / `completed`).
+ *
+ * - `abandoned` is settled work the agent gave up on: mapped to `completed` so
+ *   it stays counted in the segmented bar's total and lets a finished list fade
+ *   instead of reading as permanently stuck.
+ * - `blocked` is neither done nor active: mapped to `pending`.
+ */
+function mapTodoStatus(status: string): "pending" | "in_progress" | "completed" {
+  switch (status) {
+    case "in_progress":
+      return "in_progress";
+    case "completed":
+    case "abandoned":
+      return "completed";
+    default:
+      return "pending";
+  }
+}
+
+/**
+ * Flatten OMP's phased todo state into the flat `{ todos: [...] }` snapshot that
+ * CodeIsland's `TodoWrite` path already ingests (→ a full list replace).
+ *
+ * OMP's `todo` tool is op-based (`init` / `start` / `done` / …) and sends only
+ * one op per call, but every result carries the whole post-op state in
+ * `details.phases`, so forwarding that snapshot keeps CodeIsland in sync without
+ * replaying individual ops. Multi-phase lists prefix the phase name onto each
+ * task (`Phase: task`) to preserve the grouping the TUI shows; a single phase
+ * (the default `Tasks` bucket for a flat `items` list) is left bare.
+ *
+ * @returns The snapshot, or `null` when there is nothing to show.
+ */
+export function ompTodoSnapshot(
+  phases: readonly OmpTodoPhase[] | undefined,
+): { todos: { content: string; status: string }[] } | null {
+  if (!phases || phases.length === 0) return null;
+  const multiPhase = phases.length > 1;
+  const todos = phases.flatMap((phase) =>
+    phase.tasks.map((task) => ({
+      content: multiPhase && phase.name ? `${phase.name}: ${task.content}` : task.content,
+      status: mapTodoStatus(task.status),
+    })),
+  );
+  return todos.length > 0 ? { todos } : null;
+}
+
 // ── Extension ─────────────────────────────────────────────────────────────────
 
 export default function codeislandExtension(
@@ -1260,7 +1326,7 @@ export default function codeislandExtension(
     );
   });
 
-  pi.on("tool_result", async (_event, ctx) => {
+  pi.on("tool_result", async (event, ctx) => {
     const resolved = await resolveAndEnsureStart(ctx);
     if (!resolved) return;
     const { sid } = resolved;
@@ -1270,6 +1336,25 @@ export default function codeislandExtension(
     await sendFn(
       buildEvent(resolved.identity, ctx.cwd, { hook_event_name: "PostToolUse" }),
     );
+
+    // The `todo` tool's result carries the whole post-op checklist in
+    // `details.phases`. Forward it as a TodoWrite-shaped PostToolUse so
+    // CodeIsland's task-progress bar can read it (its TodoWrite path reads the
+    // list from `tool_input`). PostToolUse, not PreToolUse: the tool has already
+    // finished, so this must not leave a phantom "running" tool on the card.
+    if (event.toolName === "todo") {
+      const details = event.details as { phases?: OmpTodoPhase[] } | undefined;
+      const snapshot = ompTodoSnapshot(details?.phases);
+      if (snapshot) {
+        await sendFn(
+          buildEvent(resolved.identity, ctx.cwd, {
+            hook_event_name: "PostToolUse",
+            tool_name: "TodoWrite",
+            tool_input: snapshot,
+          }),
+        );
+      }
+    }
   });
 
   // ── Compaction ─────────────────────────────────────────────────────────────
