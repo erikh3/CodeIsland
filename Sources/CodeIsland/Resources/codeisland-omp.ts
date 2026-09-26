@@ -1,5 +1,5 @@
 // CodeIsland pi extension
-// version: v21
+// version: v22
 // OMP-compatible install
 
 /**
@@ -416,57 +416,70 @@ interface OmpRegistryEvent {
 
 interface OmpAgentRegistry {
   get(id: string): OmpAgentRef | undefined;
-  list(): OmpAgentRef[];
   /** Subscribe to lifecycle changes; returns an unsubscribe handle. Absent on older OMP. */
   onChange?(listener: (event: OmpRegistryEvent) => void): () => void;
 }
 
 
-/** Resolves exact OMP ancestry from the process-global agent registry. */
-export function resolveOmpIdentity(
-  sessionManager: OmpSessionManager,
-  entries: readonly Record<string, unknown>[],
+/**
+ * Identity of the agent the current session runs, exposed by OMP as
+ * `ctx.agent` (PR #13314): whether this session is the top-level agent or a
+ * subagent, plus its registry id, agent definition name, task depth and parent.
+ */
+export interface OmpAgentContext {
+  kind: "main" | "sub";
+  id: string;
+  name: string;
+  depth: number;
+  parentId?: string;
+}
+
+/**
+ * Walks the registry parent chain from `startId` up to the top-level `main`
+ * agent and returns its session id. Undefined when the lineage is incomplete
+ * (a parent is not yet registered), signalling the caller to retry later.
+ */
+function resolveRootSessionId(
+  startId: string,
   registry: OmpAgentRegistry,
-): OmpSessionIdentity {
-  const sessionId = sessionManager.getSessionId();
-  const current = registry.list().find((ref) => ref.session?.sessionManager === sessionManager);
-  if (!current) {
-    const isSubagent = entries.some((entry) =>
-      entry?.type === "session_init"
-      && typeof entry.agent === "string"
-      && entry.agent.length > 0
-    );
-    return isSubagent ? { kind: "unresolved" } : { kind: "root", sessionId };
-  }
-  if (current.kind === "main") return { kind: "root", sessionId };
-  if (current.kind !== "sub") return { kind: "unresolved" };
-
-  const agentType = entries.find((entry) =>
-    entry?.type === "session_init"
-    && typeof entry.agent === "string"
-    && entry.agent.length > 0
-  )?.agent;
-  if (typeof agentType !== "string") return { kind: "unresolved" };
-
-  const visited = new Set<string>([current.id]);
-  let ancestor = current;
+): string | undefined {
+  const visited = new Set<string>([startId]);
+  let ancestor = registry.get(startId);
+  if (!ancestor) return undefined;
   while (ancestor.kind !== "main") {
     const parentId = ancestor.parentId;
-    if (!parentId || visited.has(parentId)) return { kind: "unresolved" };
+    if (!parentId || visited.has(parentId)) return undefined;
     visited.add(parentId);
     const parent = registry.get(parentId);
-    if (!parent) return { kind: "unresolved" };
+    if (!parent) return undefined;
     ancestor = parent;
   }
+  return ancestor.session?.sessionManager.getSessionId();
+}
 
-  const rootSessionId = ancestor.session?.sessionManager.getSessionId();
+/**
+ * Resolves OMP ancestry from the running agent's identity (`ctx.agent`).
+ *
+ * A `main` agent is the top-level session (root). A `sub` agent routes to its
+ * top-level session id, resolved by walking the registry parent chain, since
+ * `ctx.agent` carries only the immediate parent's registry id, not session ids.
+ * Returns `unresolved` when that chain is not yet fully registered.
+ */
+export function resolveOmpIdentity(
+  sessionManager: OmpSessionManager,
+  registry: OmpAgentRegistry,
+  agent: OmpAgentContext,
+): OmpSessionIdentity {
+  const sessionId = sessionManager.getSessionId();
+  if (agent.kind === "main") return { kind: "root", sessionId };
+  const rootSessionId = resolveRootSessionId(agent.id, registry);
   if (!rootSessionId) return { kind: "unresolved" };
   return {
     kind: "subagent",
     sessionId,
     rootSessionId,
-    agentId: current.id,
-    agentType,
+    agentId: agent.id,
+    agentType: agent.name,
   };
 }
 
@@ -547,15 +560,11 @@ export default function codeislandExtension(
     return payload;
   }
 
-  function resolveIdentityFromCtx(ctx: { sessionManager: { getSessionId(): string; getSessionFile(): string | null; getEntries(): readonly Record<string, unknown>[] } }): OmpSessionIdentity {
+  function resolveIdentityFromCtx(ctx: { sessionManager: { getSessionId(): string }; agent: OmpAgentContext }): OmpSessionIdentity {
     const sessionId = ctx.sessionManager.getSessionId();
     const cached = identityCache.get(sessionId);
     if (cached) return cached;
-    const resolved = resolveOmpIdentity(
-      ctx.sessionManager,
-      ctx.sessionManager.getEntries(),
-      agentRegistry,
-    );
+    const resolved = resolveOmpIdentity(ctx.sessionManager, agentRegistry, ctx.agent);
     if (resolved.kind === "subagent") {
       identityCache.set(sessionId, resolved);
     }
@@ -567,7 +576,7 @@ export default function codeislandExtension(
    * Returns `null` when identity is unresolved (caller should return early).
    */
   async function resolveAndEnsureStart(
-    ctx: { sessionManager: { getSessionId(): string; getSessionFile(): string | null; getEntries(): readonly Record<string, unknown>[] }; cwd: string },
+    ctx: { sessionManager: { getSessionId(): string }; agent: OmpAgentContext; cwd: string },
   ): Promise<{ identity: OmpSessionIdentity & { kind: "root" | "subagent" }; sid: string } | null> {
     const identity = resolveIdentityFromCtx(ctx);
     if (identity.kind === "unresolved") return null;
@@ -1055,16 +1064,9 @@ export default function codeislandExtension(
   // ── Session lifecycle ──────────────────────────────────────────────────────
 
   pi.on("session_start", async (_event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    const identity = resolveOmpIdentity(
-      ctx.sessionManager,
-      ctx.sessionManager.getEntries(),
-      agentRegistry,
-    );
-    if (identity.kind === "subagent") {
-      identityCache.set(sessionId, identity);
-    }
-    await ensureSessionStarted(identity, ctx.cwd);
+    // resolveAndEnsureStart resolves via ctx.agent (falling back to the
+    // registry), caches confirmed subagents, and emits the start event.
+    await resolveAndEnsureStart(ctx);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {

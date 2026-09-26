@@ -50,14 +50,38 @@ function registry(refs: RegistryRef[]): FakeRegistry {
   };
 }
 
+/** Mirrors OmpAgentContext (ctx.agent) without importing it from the dynamic module. */
+type AgentCtx = { kind: "main" | "sub"; id: string; name: string; depth: number; parentId?: string };
+
 describe("resolveOmpIdentity", () => {
-  test("classifies the registered main session as root", () => {
+  test("classifies a main agent as root without consulting the registry", () => {
     const sessionManager = { getSessionId: () => "root-session" };
     expect(resolveOmpIdentity(
       sessionManager,
-      [],
-      registry([{ id: "Main", kind: "main", session: { sessionManager } }]),
+      registry([]),
+      { kind: "main", id: "Main", name: "main", depth: 0 },
     )).toEqual({ kind: "root", sessionId: "root-session" });
+  });
+
+  test("routes a subagent to the top-level session using its registry id", () => {
+    const rootManager = { getSessionId: () => "root-session" };
+    const childManager = { getSessionId: () => "child-session" };
+    const refs: RegistryRef[] = [
+      { id: "Main", kind: "main", session: { sessionManager: rootManager } },
+      { id: "ReviewerA", kind: "sub", parentId: "Main", session: { sessionManager: childManager } },
+    ];
+    // The agent name comes from ctx.agent, not from session_init entries.
+    expect(resolveOmpIdentity(
+      childManager,
+      registry(refs),
+      { kind: "sub", id: "ReviewerA", name: "reviewer", depth: 1, parentId: "Main" },
+    )).toEqual({
+      kind: "subagent",
+      sessionId: "child-session",
+      rootSessionId: "root-session",
+      agentId: "ReviewerA",
+      agentType: "reviewer",
+    });
   });
 
   test("routes a nested subagent to the top-level session", () => {
@@ -69,11 +93,10 @@ describe("resolveOmpIdentity", () => {
       { id: "ParentScout", kind: "sub", parentId: "Main", session: { sessionManager: parentManager } },
       { id: "ParentScout.ChildReviewer", kind: "sub", parentId: "ParentScout", session: { sessionManager: childManager } },
     ];
-
     expect(resolveOmpIdentity(
       childManager,
-      [{ type: "session_init", agent: "reviewer" }],
       registry(refs),
+      { kind: "sub", id: "ParentScout.ChildReviewer", name: "reviewer", depth: 2, parentId: "ParentScout" },
     )).toEqual({
       kind: "subagent",
       sessionId: "nested-session",
@@ -83,12 +106,12 @@ describe("resolveOmpIdentity", () => {
     });
   });
 
-  test("leaves incomplete subagent lineage unresolved", () => {
+  test("leaves a subagent unresolved when its registry lineage is incomplete", () => {
     const childManager = { getSessionId: () => "child-session" };
     expect(resolveOmpIdentity(
       childManager,
-      [{ type: "session_init", agent: "task" }],
-      registry([{ id: "Child", kind: "sub", parentId: "missing", session: { sessionManager: childManager } }]),
+      registry([{ id: "ReviewerA", kind: "sub", parentId: "missing", session: { sessionManager: childManager } }]),
+      { kind: "sub", id: "ReviewerA", name: "reviewer", depth: 1, parentId: "missing" },
     )).toEqual({ kind: "unresolved" });
   });
 });
@@ -154,6 +177,7 @@ function makeRootCtx(sessionId: string, cwd = "/project"): Record<string, unknow
   return {
     cwd,
     hasUI: true,
+    agent: { kind: "main", id: "Main", name: "main", depth: 0 } satisfies AgentCtx,
     sessionManager: {
       getSessionId: () => sessionId,
       getSessionFile: () => null,
@@ -170,16 +194,17 @@ function makeRootCtx(sessionId: string, cwd = "/project"): Record<string, unknow
 
 function makeChildCtx(
   sessionId: string,
-  entries: Record<string, unknown>[],
+  agent: AgentCtx,
   cwd = "/project",
 ): Record<string, unknown> & { sessionManager: RegistrySessionManager; hasUI: boolean } {
   return {
     cwd,
     hasUI: true,
+    agent,
     sessionManager: {
       getSessionId: () => sessionId,
       getSessionFile: () => null,
-      getEntries: () => entries,
+      getEntries: () => [],
     },
     modelRegistry: {},
     model: {},
@@ -224,7 +249,7 @@ describe("lifecycle event wire contract", () => {
 
   test("session_shutdown emits no SessionEnd after child identity cached by a non-start handler", async () => {
     const sent: Record<string, unknown>[] = [];
-    const ctx = makeChildCtx("child-cache-sid", [{ type: "session_init", agent: "scout" }]);
+    const ctx = makeChildCtx("child-cache-sid", { kind: "sub", id: "Scout", name: "scout", depth: 1, parentId: "Main" });
     const sessionManager = ctx.sessionManager;
     const rootManager = { getSessionId: () => "root-provider-id" };
     const refs: RegistryRef[] = [
@@ -243,7 +268,7 @@ describe("lifecycle event wire contract", () => {
 
   test("unresolved registry lineage does not emit on before_agent_start retry", async () => {
     const sent: Record<string, unknown>[] = [];
-    const ctx = makeChildCtx("child-sid", [{ type: "session_init", agent: "task" }]);
+    const ctx = makeChildCtx("child-sid", { kind: "sub", id: "Child", name: "task", depth: 1, parentId: "missing" });
     const refs: RegistryRef[] = [
       { id: "Child", kind: "sub", parentId: "missing", session: { sessionManager: ctx.sessionManager } },
     ];
@@ -256,7 +281,7 @@ describe("lifecycle event wire contract", () => {
 
   test("unresolved Ask child executes native Ask without any CodeIsland bridge request", async () => {
     const sent: Record<string, unknown>[] = [];
-    const ctx = makeChildCtx("child-ask-sid", [{ type: "session_init", agent: "task" }]);
+    const ctx = makeChildCtx("child-ask-sid", { kind: "sub", id: "Child", name: "task", depth: 1, parentId: "missing" });
     const refs: RegistryRef[] = [
       { id: "Child", kind: "sub", parentId: "missing", session: { sessionManager: ctx.sessionManager } },
     ];
@@ -288,7 +313,7 @@ describe("registry-driven SubagentStop", () => {
   // handle to fire registry lifecycle events for that child's ref.
   async function startedSubagent(agentId = "Parent.Child") {
     const sent: Record<string, unknown>[] = [];
-    const ctx = makeChildCtx("nested-session", [{ type: "session_init", agent: "reviewer" }]);
+    const ctx = makeChildCtx("nested-session", { kind: "sub", id: agentId, name: "reviewer", depth: 2, parentId: "Parent" });
     const rootManager = { getSessionId: () => "root-provider-id" };
     const parentManager = { getSessionId: () => "parent-provider-id" };
     const childRef: RegistryRef = { id: agentId, kind: "sub", parentId: "Parent", session: { sessionManager: ctx.sessionManager }, status: "running" };
@@ -397,7 +422,7 @@ describe("session event emission", () => {
 
   test("nested child session_start emits the top-level parent ID", async () => {
     const sent: Record<string, unknown>[] = [];
-    const ctx = makeChildCtx("nested-session", [{ type: "session_init", agent: "reviewer" }]);
+    const ctx = makeChildCtx("nested-session", { kind: "sub", id: "Parent.Child", name: "reviewer", depth: 2, parentId: "Parent" });
     const childManager = ctx.sessionManager;
     const rootManager = { getSessionId: () => "root-provider-id" };
     const parentManager = { getSessionId: () => "parent-provider-id" };
@@ -419,7 +444,7 @@ describe("session event emission", () => {
 
   test("child session_shutdown emits no SessionEnd", async () => {
     const sent: Record<string, unknown>[] = [];
-    const ctx = makeChildCtx("child-session", [{ type: "session_init", agent: "scout" }]);
+    const ctx = makeChildCtx("child-session", { kind: "sub", id: "Child", name: "scout", depth: 1, parentId: "Main" });
     const childManager = ctx.sessionManager;
     const rootManager = { getSessionId: () => "root-provider-id" };
     const refs: RegistryRef[] = [
