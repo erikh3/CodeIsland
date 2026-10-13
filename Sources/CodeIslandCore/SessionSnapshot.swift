@@ -95,6 +95,13 @@ public struct SessionSnapshot: Sendable {
     public var status: AgentStatus = .idle
     public var currentTool: String?
     public var toolDescription: String?
+    /// The most recent tool's human-readable intent (the omp `i`/`intent`
+    /// argument). Unlike ``toolDescription``, this is NOT cleared on
+    /// `PostToolUse`, `Stop`, or `UserPromptSubmit` — it persists until the
+    /// next `PreToolUse` carrying an intent overwrites it. This lets the card
+    /// keep showing the last known intent through the model-generation gap
+    /// between turns instead of blanking back to bare "thinking".
+    public var lastToolIntent: String?
     public var lastActivity: Date = Date()
     public var cwd: String?
     public var model: String?
@@ -224,6 +231,11 @@ public struct SessionSnapshot: Sendable {
     /// card is swept like a hook-only one. Persisted: a restored card is
     /// bound to the daemon again.
     public var hermesChatElsewhere = false
+    /// True when the current `waitingApproval` status was set by a Herdr subscription
+    /// event, not a `PermissionRequest` from the hook flow. Used by `AppState` to avoid
+    /// clearing a Herdr-driven blocked state on unrelated activity events.
+    /// Never written by `reduceEvent`; owned exclusively by `AppState`.
+    public var herdrBlocked: Bool = false
 
     public init(startTime: Date = Date()) {
         self.startTime = startTime
@@ -1079,6 +1091,10 @@ public func reduceEvent(
     let sessionId = event.sessionId ?? "default"
     let eventName = EventNormalizer.normalize(event.eventName)
     var effects: [SideEffect] = []
+    // True when a top-level (separate-mode) OMP child Stop arrives. Derived once
+    // as a pure let — suppresses completion enqueue and Stop sound.
+    let isOmpSubagentStop = eventName == "Stop"
+        && (event.rawJSON["_omp_subagent"] as? Bool) == true
 
     // Ensure session exists
     if sessions[sessionId] == nil {
@@ -1189,6 +1205,10 @@ public func reduceEvent(
         sessions[sessionId]?.status = .processing
         sessions[sessionId]?.currentTool = nil
         sessions[sessionId]?.toolDescription = nil
+        // `lastToolIntent` is intentionally NOT cleared here. omp keeps the last
+        // tool's intent visible through the model-generation gap at the start of
+        // a turn (it shows "Working…" beside the prior summary, never a blank).
+        // The first PreToolUse of the new turn overwrites it.
         // Separate-mode Cursor Task Stop self-tombstones; a new prompt means relaunch.
         if let source = sessions[sessionId]?.source,
            source == "cursor" || source == "cursor-cli" {
@@ -1220,6 +1240,9 @@ public func reduceEvent(
             sessions[sessionId]?.status = .running
             sessions[sessionId]?.currentTool = event.activityLabel
             sessions[sessionId]?.toolDescription = event.toolDescription
+            if let intent = event.toolIntent {
+                sessions[sessionId]?.lastToolIntent = intent
+            }
         }
     case "PostToolUse":
         if let tool = sessions[sessionId]?.currentTool {
@@ -1432,7 +1455,8 @@ public func reduceEvent(
             sessions[sessionId]?.currentTool = nil
             sessions[sessionId]?.toolDescription = nil
             // A Hermes gateway chat's turn settles its card without a completion.
-            if !HermesHookPayload.isQuiet(event) {
+            // OMP subagent stops fold into the parent session — no completion either.
+            if !isOmpSubagentStop, !HermesHookPayload.isQuiet(event) {
                 effects.append(.enqueueCompletion(sessionId: sessionId))
             }
         }
@@ -1612,7 +1636,9 @@ public func reduceEvent(
     // Trigger sound for this event. A single failed tool stays silent; only a
     // turn that died (StopFailure) rings the error sound. See EventSoundRouting.
     // A Hermes gateway chat's start, prompt and turn end stay silent.
-    if let sound = EventSoundRouting.soundEvent(rawEventName: event.eventName, normalizedEventName: eventName),
+    // OMP subagent stops stay silent (folded into the parent session).
+    if !isOmpSubagentStop,
+       let sound = EventSoundRouting.soundEvent(rawEventName: event.eventName, normalizedEventName: eventName),
        !HermesHookPayload.isQuiet(event) {
         effects.append(.playSound(sound))
     }
@@ -2295,6 +2321,13 @@ private func handleSubagentEvent(
             sessions[sessionId]?.status = .processing
             sessions[sessionId]?.subagents[agentId]?.status = .processing
         }
+        return true
+
+    case "PreCompact", "PostCompact":
+        // Compaction events from a merged child — update child lastActivity but do not
+        // touch parent status/toolDescription or emit sound.
+        sessions[sessionId]?.subagents[agentId]?.lastActivity = Date()
+        sessions[sessionId]?.lastActivity = Date()
         return true
 
     default:
