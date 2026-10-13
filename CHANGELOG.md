@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased]
+
+### English
+- OMP identity, rename, and session card lifecycle: `/new`, resume, fork, and startup identity changes each replace the existing card in place; `/fresh` keeps the same card when the root session ID is unchanged; `/rename` is forwarded as a new SessionStart with the updated title so the card name tracks it live. CodeIsland removes stale duplicate OMP cards that share one Herdr pane. Restart any already-running OMP processes after a CodeIsland update to load the new extension.
+- OMP per-tool thinking: the `i`/`intent` argument OMP passes on every tool call surfaces as the live tool description. The last known intent persists through the model-generation gap between turns so the card never blanks back to bare "thinking".
+- OMP task children follow the Agent Sub-Sessions setting (separate / merge / hide): separate cards show the child's own name and stay readable after it finishes; merged mode keeps approval and question cards actionable; the completion indicator fires only when the root session ends.
+- OMP root session checklist: the `todo` tool's phased task list forwards as a segmented progress bar. Multi-phase lists prefix the phase name onto each item to preserve the grouping OMP shows; a single phase is left bare. Completed items fade in the bar; an explicit empty `todo` snapshot clears the bar entirely.
+- OMP 18.3 and later: a nested `omp` launched through `bash` is recognized by process ancestry and follows the same Agent Sub-Sessions setting; independent OMP processes remain separate root sessions.
+- OMP extension supplies its own `AskUserQuestion` terminal renderer, fixing the rendering gap introduced in OMP 18.2.x when OMP moved the built-in renderer to an internal package and stopped exporting it. The shadow Ask tool races the island against OMP's terminal Ask renderer; whichever receives an answer first wins and cancels the other.
+- Herdr presence-aware focus: CodeIsland subscribes to Herdr's pane status stream for each OMP session. A Herdr-reported waiting state is preserved and not overwritten by unrelated hook activity. Click-to-jump focuses the exact live agent pane before raising its hosting terminal; jump validation and smart suppression query Herdr directly. Pane and server identity survive hook reinstalls and app restarts. Falls back to ordinary terminal activation when Herdr is unavailable or the target is stale.
+- Webhook forwarding cancels queued delivery when an approval or question is answered, when a completion card is viewed or its session is opened, and when the session starts another turn. Request acknowledgements remain scoped to the session, agent, and tool call.
+- Webhook forwarding can wait for keyboard, mouse, and trackpad input to go idle for a configurable interval before sending; a locked login session bypasses the wait and sends queued events immediately. A separate main-session-only filter excludes subagent and child-session activity. The toolbar button shows an arc ring filling toward the threshold while waiting, then plays a brief ring animation when delivery activates.
+- The notch toolbar has a webhook on/off toggle next to the sound control. Webhook settings moved to their own Settings page.
+- A question card collapses on an outside click; an approval card does not (it blocks until answered or dismissed).
+- App entry point switched from SwiftUI Scene to an explicit AppKit `NSApplication` + `AppDelegate` launch path, fixing launch failures in certain build configurations.
+- Build script: `ARM_DIR` is computed from `swift build --show-bin-path` instead of a hardcoded path, and the bundle copy loop no longer stops after the first bundle.
+
+### 中文
+- OMP 身份、重命名与会话卡片生命周期：`/new`、恢复、分叉和启动时的身份变更，各自在原位替换现有卡片；根会话 ID 不变时 `/fresh` 保留同一卡片；`/rename` 以包含新标题的 SessionStart 形式转发，卡片名称实时更新。CodeIsland 移除同一 Herdr 面板上的过期重复 OMP 卡片。CodeIsland 更新后请重启正在运行的 OMP 进程以加载新扩展。
+- OMP 每次工具调用的思考状态：OMP 传入的 `i`/`intent` 参数作为实时工具描述显示在卡片上。最近一次的 intent 在回合间的模型生成空隙中保留，卡片不会回退到空白的"thinking"。
+- OMP 的 task 子会话遵循「Agent 子会话」设置（独立 / 合并 / 隐藏）：独立卡片显示子会话自身名称，子会话结束后依然可读；合并模式保持审批与提问卡片可操作；完成指示器仅在根会话结束时触发。
+- OMP 根会话任务清单：`todo` 工具的分阶段任务列表以分段进度条的形式转发。多阶段列表在每项内容前加上阶段名以保留 OMP 显示的分组；单阶段列表保持原样。已完成项在进度条中渐隐；显式传入空 `todo` 快照则完全清空进度条。
+- Oh My Pi 18.3 及更高版本：通过 `bash` 启动的嵌套 `omp` 按进程祖先关系识别，并遵循同一个 Agent 子会话设置；彼此独立的 OMP 进程仍保持独立根会话。
+- OMP 扩展提供了自己的 `AskUserQuestion` 终端渲染器，修复了 OMP 18.2.x 将内置渲染器迁移到内部包并停止导出后产生的渲染缺失问题。shadow Ask 工具会让刘海与 OMP 的终端 Ask 渲染器并行竞速；先收到答案的一方获胜，另一方取消。
+- Herdr 在线状态感知聚焦：CodeIsland 为每个 OMP 会话订阅 Herdr 的面板状态流。Herdr 上报的等待状态会保留，不被无关的 hook 活动覆盖。点击跳转会先聚焦对应的活跃 Agent 面板再唤起宿主终端；跳转验证和智能抑制改为直接查询 Herdr。面板和服务器身份在 hook 重装与应用重启后得以保留。Herdr 不可用或目标过期时退回普通终端跳转逻辑。
+- 答复审批或提问、查看完成卡片或打开对应会话、会话开始下一轮时，会取消待发的 Webhook 投递。请求确认按会话、Agent 和工具调用分别匹配。
+- Webhook 转发可以等到键盘、鼠标、触控板在可配置时长内都没有操作再发送；锁定登录会话时跳过等待、立即发送队列中的事件。单独的仅主会话过滤器可排除子代理和子会话活动。工具栏按钮在等待时以圆弧进度环显示剩余时长，投递激活时播放短暂的环形亮起动画。
+- 灵动岛工具栏在声音控件旁新增 Webhook 开关。Webhook 设置迁移至独立的设置页面。
+- 提问卡片在面板外点击时收起；审批卡片不收起（必须作答或手动关闭）。
+- 应用入口从 SwiftUI Scene 改为显式 AppKit `NSApplication` + `AppDelegate` 启动路径，修复了部分构建配置下的启动失败。
+- 构建脚本：`ARM_DIR` 改为从 `swift build --show-bin-path` 动态获取，bundle 复制循环不再在第一个 bundle 后停止。
+
 ## [v1.0.38] - 2026-10-11
 
 ### English
