@@ -18,6 +18,36 @@ enum NotchWidthMetrics {
         if hasNotch { return Swift.max(notchW, scaled) }
         return scaled
     }
+
+    /// Width of the idle indicator bar. When hovered, the right wing expands
+    /// to show 4 toolbar buttons (sound, webhook, settings, quit) at 22pt
+    /// each with 4pt gaps, plus padding — symmetric with the left mascot wing.
+    ///
+    /// The QUIT? pill replaces the power icon and can be wider than 22pt; the
+    /// width must accommodate the pill so the bar never clips. `maxQuitPillWidth`
+    /// defaults to the widest known localized text ("BEENDEN?" ≈ 66pt, from
+    /// `QuitConfirmButton.pillWidth`).
+    static func idlePanelWidth(
+        notchWidth: CGFloat,
+        compactWingWidth: CGFloat,
+        hovered: Bool,
+        maxQuitPillWidth: CGFloat = 68
+    ) -> CGFloat {
+        let collapsedWidth = notchWidth + compactWingWidth * 2
+        guard hovered else { return collapsedWidth }
+        // Normal (unarmed): count + gap + 4 icon buttons + gaps + trailing padding.
+        let toolbarNormal: CGFloat = 4 * 22 + 3 * 4
+        let rightNormal: CGFloat = 13 + 8 + toolbarNormal + 6
+        // Armed QUIT?: count text hidden; 3 icon buttons + pill + 3 gaps + trailing padding.
+        let toolbarArmed: CGFloat = 3 * 22 + 3 * 4 + maxQuitPillWidth
+        let rightArmed: CGFloat = toolbarArmed + 6
+        let rightContentWidth: CGFloat = max(rightNormal, rightArmed)
+        let leftContentWidth = compactWingWidth
+        let sideWidth = max(leftContentWidth, rightContentWidth)
+        return notchWidth + sideWidth * 2
+    }
+
+
 }
 
 // MARK: - Hover interaction state machine
@@ -130,6 +160,7 @@ struct NotchPanelView: View {
     @AppStorage(SettingsKey.showSessionRecap) private var showSessionRecap = SettingsDefaults.showSessionRecap
     @AppStorage(SettingsKey.hoverExpandDelay) private var hoverExpandDelay = SettingsDefaults.hoverExpandDelay
     @AppStorage(SettingsKey.showProjectName) private var showProjectName = SettingsDefaults.showProjectName
+    @AppStorage(SettingsKey.webhookEnabled) private var webhookEnabled = SettingsDefaults.webhookEnabled
 
     /// Delayed hover: prevents accidental expansion when mouse passes through
     @State private var hoverTimer: Timer?
@@ -195,7 +226,13 @@ struct NotchPanelView: View {
     /// Total panel width — adapts based on state and screen geometry
     private var panelWidth: CGFloat {
         let nw = effectiveNotchW
-        if showIdleIndicator { return idleHovered ? nw + compactWingWidth * 2 + 80 : nw + compactWingWidth * 2 }
+        if showIdleIndicator {
+            return min(NotchWidthMetrics.idlePanelWidth(
+                notchWidth: nw,
+                compactWingWidth: compactWingWidth,
+                hovered: idleHovered
+            ), maxPanelWidth)
+        }
         if !isActive { return hasNotch ? nw - 20 : nw }
         if shouldShowExpanded { return min(max(nw + 200, 580), maxPanelWidth) }
         return collapsedBarWidth + quotaReserve.extraWidth + rightWingReserve
@@ -227,7 +264,9 @@ struct NotchPanelView: View {
         let extra: CGFloat = appState.status == .idle ? 0 : 20
         // Reserve space for tool status — proportional to screen width
         let toolExtra: CGFloat = displayedToolStatus ? (hasNotch ? screenWidth * 0.03 : screenWidth * 0.04) : 0
-        return extra + toolExtra
+        // Reserve space for the webhook status button on notch displays.
+        let webhookExtra: CGFloat = webhookEnabled && hasNotch ? 28 : 0
+        return extra + toolExtra + webhookExtra
     }
 
     /// Room for the plan-limit chip in the collapsed bar; `.none` whenever the
@@ -263,7 +302,7 @@ struct NotchPanelView: View {
                         } else {
                             Spacer(minLength: 0)
                         }
-                        CompactRightWing(appState: appState, expanded: shouldShowExpanded, hasNotch: hasNotch)
+                        CompactRightWing(appState: appState, expanded: shouldShowExpanded, hasNotch: hasNotch, showWebhookStatus: webhookEnabled)
                     }
                     .frame(height: notchHeight)
                     // Recap on hover while collapsed — shows whenever hover
@@ -296,7 +335,8 @@ struct NotchPanelView: View {
                         notchW: effectiveNotchW,
                         notchHeight: notchHeight,
                         hasNotch: hasNotch,
-                        hovered: idleHovered
+                        hovered: idleHovered,
+                        appState: appState
                     )
                 } else {
                     // Idle: just the notch shell
@@ -455,6 +495,9 @@ struct NotchPanelView: View {
                     // Completion card: mark entered on hover-in, block collapse until entered
                     if hovering {
                         appState.completionHasBeenEntered = true
+                        if case .completionCard(let sessionId) = appState.surface {
+                            appState.webhookForwarder?.acknowledgeCompletion(sessionId: sessionId)
+                        }
                     } else if appState.completionHasBeenEntered || appState.deferCollapseOnMouseLeave {
                         // Mouse entered then left — allow collapse (immediate or deferred)
                         hoverTimer?.invalidate()
@@ -763,6 +806,7 @@ private struct CompactRightWing: View {
     var appState: AppState
     let expanded: Bool
     let hasNotch: Bool
+    let showWebhookStatus: Bool
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
     @AppStorage(SettingsKey.showToolStatus) private var showToolStatus = SettingsDefaults.showToolStatus
@@ -796,8 +840,18 @@ private struct CompactRightWing: View {
     var body: some View {
         HStack(spacing: 6) {
             if expanded {
-                ExpandedHeaderControls(soundEnabled: $soundEnabled)
+                ExpandedHeaderControls(appState: appState, soundEnabled: $soundEnabled)
             } else {
+                // Webhook status button — shown collapsed on notch when enabled,
+                // anchored at the leading edge of the wing so it doesn't overlap
+                // the notch. Only draws when enabled; takes no space when off.
+                if showWebhookStatus {
+                    WebhookStatusButton(appState: appState)
+                    if hasNotch {
+                        Spacer(minLength: 0)
+                    }
+                }
+
                 // Quiet hours active — explains why event sounds are silent.
                 if inQuietHours {
                     Image(systemName: "moon.fill")
@@ -876,9 +930,15 @@ private struct CompactRightWing: View {
             }
         }
         .padding(.trailing, 6)
-        // Its natural width, reported so the collapsed bar can make room for
-        // it clear of the notch (CompactRightWingLayout).
-        .fixedSize(horizontal: true, vertical: false)
+        // On notch displays with webhook enabled the wing holds a fixed slot
+        // for the status button so it doesn't overlap the notch cutout.
+        .frame(
+            width: !expanded && showWebhookStatus && hasNotch ? 96 : nil,
+            alignment: .leading
+        )
+        // Its natural width when the webhook slot isn't needed; otherwise the
+        // fixed frame above sizes it and fixedSize must not override that.
+        .fixedSize(horizontal: expanded || !showWebhookStatus || !hasNotch, vertical: false)
         .background(GeometryReader { geo in
             Color.clear.preference(key: CompactRightWingWidthKey.self, value: expanded ? 0 : geo.size.width)
         })
@@ -1035,7 +1095,15 @@ private struct CompactToolStatus: View {
                 .truncationMode(.tail)
                 .help(liveOutput)
             } else if displayStatus == .processing {
-                TypingIndicator(fontSize: 11, label: L10n.shared["typing_thinking"], bright: true)
+                let thinkingLabel: String = {
+                    guard let intent = displaySession?.lastToolIntent, !intent.isEmpty else {
+                        return "🧠 \(L10n.shared["typing_thinking"])"
+                    }
+                    let maxLen = 48
+                    let clipped = intent.count > maxLen ? String(intent.prefix(maxLen)) + "…" : intent
+                    return "🧠 \(clipped)"
+                }()
+                TypingIndicator(fontSize: 11, label: thinkingLabel, bright: true)
                     .id("thinking-\(appState.rotatingSessionId ?? "")")
             }
         }
@@ -1110,8 +1178,149 @@ struct NotchIconButton: View {
     }
 }
 
-/// The expanded header's buttons: sound, Settings, and Quit, which asks once.
+/// The toggle button shown in the toolbar that controls and reflects webhook-forwarding
+/// state. When enabled it shows a ring-fill progress arc while waiting for the inactivity
+/// cooldown, then a brief pulse to confirm activation. Reduce Motion skips all animation;
+/// the polling task cancels immediately when `webhookEnabled` turns false so there is no
+/// permanent overhead while the feature is off.
+private struct WebhookStatusButton: View {
+    var appState: AppState
+    @AppStorage(SettingsKey.webhookEnabled) private var webhookEnabled = SettingsDefaults.webhookEnabled
+    @ObservedObject private var l10n = L10n.shared
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+    @State private var deliveryState: WebhookDeliveryState? = nil
+    @State private var hovering = false
+    @State private var activationEffect = 0
+
+    private var effectiveDeliveryState: WebhookDeliveryState {
+        deliveryState ?? .active
+    }
+
+    private var isWaiting: Bool {
+        guard webhookEnabled else { return false }
+        if case .waitingForInactivity = effectiveDeliveryState { return true }
+        return false
+    }
+
+    private var trimValue: Double {
+        if case .waitingForInactivity(let p, _) = effectiveDeliveryState { return p }
+        return 0
+    }
+
+    private var tooltip: String {
+        guard webhookEnabled else { return l10n["enable_webhook_tooltip"] }
+        if case .waitingForInactivity(_, let s) = effectiveDeliveryState {
+            return String(format: l10n["webhook_status_waiting"], s)
+        }
+        return l10n["webhook_status_active"]
+    }
+
+    private func updateDeliveryState(_ next: WebhookDeliveryState) {
+        let previous = deliveryState
+        deliveryState = next
+        guard let previous,
+              case .waitingForInactivity = previous,
+              next == .active else { return }
+        activationEffect += 1
+    }
+
+    var body: some View {
+        Button {
+            webhookEnabled.toggle()
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(Color.white.opacity(hovering ? 0.2 : 0.08))
+                if webhookEnabled {
+                    if isWaiting {
+                        // Background ring
+                        Circle()
+                            .stroke(Color.white.opacity(0.16), lineWidth: 2)
+                            .frame(width: 20, height: 20)
+                        // Progress arc filling from top; Reduce Motion: no animation
+                        Circle()
+                            .trim(from: 0, to: trimValue)
+                            .stroke(Color.white.opacity(0.75),
+                                    style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                            .frame(width: 20, height: 20)
+                            .rotationEffect(.degrees(-90))
+                            .animation(
+                                accessibilityReduceMotion ? nil : .linear(duration: 0.1),
+                                value: trimValue
+                            )
+                    }
+                    // Activation pulse: a brief ring fade confirms waiting→active.
+                    // Reduce Motion: skip the keyframe animation entirely.
+                    if !accessibilityReduceMotion {
+                        Circle()
+                            .stroke(Color.white.opacity(hovering ? 1.0 : 0.95), lineWidth: 2)
+                            .frame(width: 20, height: 20)
+                            .keyframeAnimator(initialValue: 0.0, trigger: activationEffect) { content, opacity in
+                                content.opacity(opacity)
+                            } keyframes: { _ in
+                                KeyframeTrack {
+                                    MoveKeyframe(1.0)
+                                    CubicKeyframe(0.0, duration: 0.72)
+                                }
+                            }
+                    }
+                }
+                Image(systemName: webhookEnabled
+                    ? "antenna.radiowaves.left.and.right"
+                    : "antenna.radiowaves.left.and.right.slash")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(
+                        isWaiting ? 0.45 : (hovering ? 1.0 : 0.85)))
+                    .scaleEffect(accessibilityReduceMotion ? 1.0 : (isWaiting ? 0.82 : 1.0))
+                    .animation(
+                        accessibilityReduceMotion ? nil : .easeOut(duration: 0.72),
+                        value: isWaiting
+                    )
+                    // Activation pulse on the icon; skipped with Reduce Motion
+                    .keyframeAnimator(
+                        initialValue: 0.0,
+                        trigger: accessibilityReduceMotion ? 0 : activationEffect
+                    ) { content, pulse in
+                        content.overlay {
+                            Image(systemName: "antenna.radiowaves.left.and.right")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color.white.opacity(0.65 * pulse))
+                                .scaleEffect(0.82 + 0.18 * pulse)
+                        }
+                    } keyframes: { _ in
+                        KeyframeTrack {
+                            CubicKeyframe(1.0, duration: 0.36)
+                            CubicKeyframe(0.0, duration: 0.36)
+                        }
+                    }
+            }
+            .frame(width: 22, height: 22)
+            .contentShape(Circle())
+            .scaleEffect(hovering ? 1.1 : 1.0)
+        }
+        .buttonStyle(.plain)
+        .onHover { h in withAnimation(NotchAnimation.micro) { hovering = h } }
+        .help(tooltip)
+        .accessibilityLabel(tooltip)
+        // The task cancels when webhookEnabled changes (id: webhookEnabled);
+        // no polling overhead while the feature is disabled.
+        .task(id: webhookEnabled) {
+            deliveryState = nil
+            guard webhookEnabled else { return }
+            while !Task.isCancelled {
+                if let forwarder = appState.webhookForwarder {
+                    updateDeliveryState(await forwarder.currentDeliveryState())
+                }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+    }
+}
+
+
+/// The expanded header's buttons: sound, webhook status, Settings, and Quit, which asks once.
 private struct ExpandedHeaderControls: View {
+    var appState: AppState
     @Binding var soundEnabled: Bool
     @StateObject private var quit = QuitConfirmation()
     @ObservedObject private var l10n = L10n.shared
@@ -1123,6 +1332,7 @@ private struct ExpandedHeaderControls: View {
             NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
                 soundEnabled.toggle()
             }
+            WebhookStatusButton(appState: appState)
             NotchIconButton(icon: "gearshape", tooltip: l10n["settings"]) {
                 SettingsWindowController.shared.show()
             }
@@ -1264,6 +1474,7 @@ private struct IdleIndicatorBar: View {
     let notchHeight: CGFloat
     let hasNotch: Bool
     let hovered: Bool
+    var appState: AppState
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
     @AppStorage(SettingsKey.defaultSource) private var defaultSource = SettingsDefaults.defaultSource
@@ -1296,6 +1507,7 @@ private struct IdleIndicatorBar: View {
                         NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
                             soundEnabled.toggle()
                         }
+                        WebhookStatusButton(appState: appState)
                         NotchIconButton(icon: "gearshape", tooltip: l10n["settings"]) {
                             SettingsWindowController.shared.show()
                         }
@@ -1303,6 +1515,7 @@ private struct IdleIndicatorBar: View {
                     }
                 }
                 .padding(.trailing, 6)
+                .fixedSize(horizontal: true, vertical: false)
                 .transition(.opacity)
             }
         }
@@ -4040,6 +4253,18 @@ func approvalInlineSummary(tool: String, toolDescription: String?, toolInput: [S
     return nil
 }
 
+/// One-line summary for a native Ask question shown in the session-list card
+/// while the question is still queued. Shows `"header: question"` when both
+/// are present and different; otherwise shows the question text alone.
+func questionInlineSummary(_ question: QuestionPayload) -> String? {
+    let text = question.question.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return nil }
+    let header = question.header?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let header, !header.isEmpty, header != text else { return text }
+    return "\(header): \(text)"
+}
+
+
 private struct SessionCard: View {
     var appState: AppState
     let sessionId: String
@@ -4081,6 +4306,13 @@ private struct SessionCard: View {
             && !showsExternalCursorQuestion
             && appState.pendingQuestion(forSession: sessionId) != nil
             && appState.surface.questionSessionId != sessionId
+    }
+    /// One-line summary of the native Ask question queued for this session,
+    /// shown on the card instead of the generic thinking/tool indicator.
+    /// `nil` when no native question is pending for this session.
+    private var queuedQuestionSummary: String? {
+        appState.pendingQuestion(forSession: sessionId)
+            .flatMap { questionInlineSummary($0.question) }
     }
     private var cardStatus: SessionCardStatus { SessionCardStatus(session) }
     /// The completion card is a full card whatever the density.
@@ -4255,7 +4487,7 @@ private struct SessionCard: View {
     @ViewBuilder
     private var chatAndLiveRows: some View {
         let live = liveRow
-        if !session.recentMessages.isEmpty || live != nil {
+        if !session.recentMessages.isEmpty || live != nil || queuedQuestionSummary != nil {
             VStack(alignment: .leading, spacing: 3) {
                 // Chat messages (detailed mode only)
                 let visibleMessages = session.status != .idle
@@ -4278,8 +4510,25 @@ private struct SessionCard: View {
                     )
                 }
 
-                // What the agent is doing right now.
-                if let live {
+                // A native Ask request is still in the question queue while the
+                // session-list card is visible. Show the actual prompt instead of
+                // reducing it to a generic indicator.
+                if let question = queuedQuestionSummary {
+                    HStack(alignment: .top, spacing: 5) {
+                        Text("?")
+                            .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color(red: 1.0, green: 0.6, blue: 0.2))
+                        Text(question)
+                            .font(.system(size: fontSize, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.85))
+                            .lineLimit(2)
+                            .truncationMode(.tail)
+                    }
+                }
+
+                // What the agent is doing right now — suppressed when a native
+                // question prompt is already shown above.
+                if let live, queuedQuestionSummary == nil {
                     liveRowView(live)
                 }
             }
@@ -4293,18 +4542,24 @@ private struct SessionCard: View {
             HStack(alignment: .center, spacing: 6) {
                 SessionToolChip(tool: tool, color: cardStatus.color, fontSize: fontSize)
                 if let detail = session.toolDescription, !detail.isEmpty {
-                    MorphText(
-                        text: detail,
-                        font: .system(size: fontSize, design: .monospaced),
-                        color: .white.opacity(0.75),
-                        streamsRapidly: SessionSnapshot.rapidStreamingSources
-                            .contains(session.source)
-                    )
-                    .truncationMode(.tail)
+                    let toolLabel: String = {
+                        let maxLen = 60
+                        return detail.count > maxLen ? String(detail.prefix(maxLen)) + "…" : detail
+                    }()
+                    // Active-tool description shimmers across its rendered width.
+                    TypingIndicator(fontSize: fontSize, label: toolLabel)
                 }
             }
         case .thinking:
-            TypingIndicator(fontSize: fontSize, label: L10n.shared["typing_thinking"])
+            let thinkingLabel: String = {
+                guard let intent = session.lastToolIntent, !intent.isEmpty else {
+                    return "🧠 \(L10n.shared["typing_thinking"])"
+                }
+                let maxLen = 60
+                let clipped = intent.count > maxLen ? String(intent.prefix(maxLen)) + "…" : intent
+                return "🧠 \(clipped)"
+            }()
+            TypingIndicator(fontSize: fontSize, label: thinkingLabel)
         }
     }
 
@@ -4617,6 +4872,7 @@ private struct SessionCard: View {
                 await MainActor.run {
                     switch appState.surface {
                     case .sessionList, .completionCard:
+                        appState.webhookForwarder?.acknowledgeCompletion(sessionId: sessionId)
                         withAnimation(NotchAnimation.close) {
                             appState.surface = .collapsed
                         }
@@ -5430,7 +5686,8 @@ private struct TypingIndicator: View {
     var label: String? = nil
     var bright: Bool = false
     var color: Color? = nil
-    @State private var phase: CGFloat = -60
+    @State private var phase: CGFloat = 0
+    @State private var animating = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -5441,40 +5698,56 @@ private struct TypingIndicator: View {
             let midOpacity: Double = bright ? 0.5 : 0.3
             let bandWidth: CGFloat = bright ? 80 : 60
             let duration: Double = 2.5
-            let endPhase: CGFloat = bright ? 100 : 80
-            let startPhase: CGFloat = bright ? -80 : -60
+            let font = Font.system(size: fontSize, design: .monospaced)
 
             Text(label)
-                .font(.system(size: fontSize, design: .monospaced))
+                .font(font)
                 .foregroundStyle(baseColor.opacity(baseOpacity))
                 .overlay(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .clear, location: 0),
-                            .init(color: .white.opacity(midOpacity), location: bright ? 0.35 : 0.4),
-                            .init(color: .white.opacity(peakOpacity), location: 0.5),
-                            .init(color: .white.opacity(midOpacity), location: bright ? 0.65 : 0.6),
-                            .init(color: .clear, location: 1),
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                    .frame(width: bandWidth)
-                    .offset(x: phase)
+                    // Measure the rendered label so the highlight band sweeps the
+                    // full width edge-to-edge. Reduce Motion: no animation, static text.
+                    GeometryReader { geo in
+                        let width = geo.size.width
+                        if !reduceMotion {
+                            LinearGradient(
+                                stops: [
+                                    .init(color: .clear, location: 0),
+                                    .init(color: .white.opacity(midOpacity), location: bright ? 0.35 : 0.4),
+                                    .init(color: .white.opacity(peakOpacity), location: 0.5),
+                                    .init(color: .white.opacity(midOpacity), location: bright ? 0.65 : 0.6),
+                                    .init(color: .clear, location: 1),
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                            .frame(width: bandWidth)
+                            .offset(x: phase)
+                            .onAppear {
+                                guard width > 0, !animating else { return }
+                                animating = true
+                                phase = -bandWidth
+                                withAnimation(.easeInOut(duration: duration).repeatForever(autoreverses: false)) {
+                                    phase = width
+                                }
+                            }
+                            .onChange(of: width) { _, newWidth in
+                                // Label text changed length (e.g. new tool intent);
+                                // restart the sweep across the new width.
+                                guard newWidth > 0 else { return }
+                                phase = -bandWidth
+                                withAnimation(.easeInOut(duration: duration).repeatForever(autoreverses: false)) {
+                                    phase = newWidth
+                                }
+                            }
+                        }
+                    }
                     .mask(
                         Text(label)
-                            .font(.system(size: fontSize, design: .monospaced))
+                            .font(font)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     )
                 )
-                .onAppear {
-                    phase = startPhase
-                    // Reduce Motion: the label stays, the endless shimmer goes.
-                    guard !reduceMotion else { return }
-                    withAnimation(.easeInOut(duration: duration).repeatForever(autoreverses: false)) {
-                        phase = endPhase
-                    }
-                }
-                .onDisappear { phase = startPhase }
+                .onDisappear { animating = false }
         }
     }
 }

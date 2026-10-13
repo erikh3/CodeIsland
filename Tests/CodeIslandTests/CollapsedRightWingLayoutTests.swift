@@ -82,6 +82,23 @@ final class CollapsedRightWingLayoutTests: XCTestCase {
         await drain(state)
     }
 
+    func testWebhookEnabledWithBadgesStillClearsPhysicalNotch() async throws {
+        // With webhook forwarding on, the right wing has a fixed 96pt slot on
+        // notch displays. That slot plus question badge + glance dot must not
+        // intrude under the physical notch cutout.
+        suite.set(true, forKey: SettingsKey.webhookEnabled)
+        for (glance, chip) in [(false, false), (true, false), (true, true)] {
+            let state = try await collapsedState(glance: glance, chip: chip)
+            let g = try renderedGeometry(state)
+            let name = "webhook glance=\(glance) chip=\(chip)"
+            XCTAssertNil(g.intrusion, "\(name): the right wing draws under the notch at \(g.intrusion ?? 0)pt")
+            XCTAssertLessThanOrEqual(g.barRight, 620, "\(name): bar overflows panel")
+            await drain(state)
+        }
+        suite.removeObject(forKey: SettingsKey.webhookEnabled)
+    }
+
+
     // MARK: - Fixture
 
     private func collapsedState(glance: Bool, chip: Bool) async throws -> AppState {
