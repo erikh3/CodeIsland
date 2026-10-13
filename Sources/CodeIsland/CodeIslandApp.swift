@@ -1,13 +1,14 @@
-import SwiftUI
+import AppKit
 
 @main
-struct CodeIslandApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @ObservedObject private var l10n = L10n.shared
-
-    var body: some Scene {
-        Settings {
-            EmptyView()
+enum CodeIslandApp {
+    @MainActor
+    static func main() {
+        let application = NSApplication.shared
+        let appDelegate = AppDelegate()
+        application.delegate = appDelegate
+        withExtendedLifetime(appDelegate) {
+            application.run()
         }
     }
 }
