@@ -992,11 +992,15 @@ enum SessionLiveOutputDisplay {
 /// text.
 struct CompactContextLabel: View {
     let text: String
+    /// Pass `true` when `text` is a session title (may contain PUA/emoji glyphs).
+    var isSessionTitle: Bool = false
 
     static let fontSize: CGFloat = 11
     static let maxWidth: CGFloat = 120
 
     /// The label's widest extent: its text's width, up to `maxWidth`.
+    /// Width is measured against the monospaced font regardless of glyph type —
+    /// a conservative approximation that avoids per-render font switching.
     static func width(for text: String) -> CGFloat {
         let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .medium)
         // A point of slack: Text truncates a label measured to the exact width.
@@ -1005,13 +1009,25 @@ struct CompactContextLabel: View {
     }
 
     var body: some View {
-        Text(text)
-            .font(.system(size: Self.fontSize, weight: .medium, design: .monospaced))
-            .foregroundStyle(.white.opacity(0.8))
-            .lineLimit(1)
-            .truncationMode(.tail)
-            // minWidth 0 keeps it shrinkable when the bar is narrower still.
-            .frame(minWidth: 0, maxWidth: Self.width(for: text), alignment: .leading)
+        Group {
+            if isSessionTitle {
+                SessionTitleText(
+                    title: text,
+                    fontSize: Self.fontSize,
+                    weight: .medium,
+                    color: .white.opacity(0.8),
+                    hashPrefix: false
+                )
+            } else {
+                Text(text)
+                    .font(.system(size: Self.fontSize, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+        }
+        .lineLimit(1)
+        .truncationMode(.tail)
+        // minWidth 0 keeps it shrinkable when the bar is narrower still.
+        .frame(minWidth: 0, maxWidth: Self.width(for: text), alignment: .leading)
     }
 }
 
@@ -1041,6 +1057,10 @@ private struct CompactToolStatus: View {
             showProjectName: showProjectName
         )
     }
+    /// True when the center label is a session title (not a project folder name).
+    private var projectLabelIsSessionTitle: Bool {
+        !showProjectName && displaySession?.sessionLabel != nil
+    }
 
     @State private var shownTool: String?
     @State private var shownDesc: String?
@@ -1062,7 +1082,7 @@ private struct CompactToolStatus: View {
         HStack(spacing: 5) {
             // Project name — shown whenever the session is not idle
             if isWorking, let project = projectName {
-                CompactContextLabel(text: project)
+                CompactContextLabel(text: project, isSessionTitle: projectLabelIsSessionTitle)
                     .id("center-project-\(displaySessionId ?? "")")
                     .transition(.opacity)
             }
@@ -2121,12 +2141,25 @@ private struct NotchCardContextRow: View {
                 sessionLabel: session?.sessionLabel,
                 showProjectName: showProjectName
             ) {
-                Text(label)
-                    .font(.system(size: type.body, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .layoutPriority(2)
+                let isSessionLabel = !showProjectName && session?.sessionLabel != nil
+                Group {
+                    if isSessionLabel {
+                        SessionTitleText(
+                            title: label,
+                            fontSize: type.body,
+                            weight: .bold,
+                            color: .white.opacity(0.9),
+                            hashPrefix: false
+                        )
+                    } else {
+                        Text(label)
+                            .font(.system(size: type.body, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.9))
+                    }
+                }
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(2)
             }
             if let branch = branchLabel {
                 HStack(spacing: 2) {
@@ -3980,9 +4013,21 @@ private struct SessionIdentityLine: View {
                     color: projectColor
                 )
                 .layoutPriority(2)
+            } else if headline.kind == .sessionTitle {
+                // AI-generated title: may contain PUA avatar glyphs (SymbolsNF)
+                // or emoji — render with per-run fonts in one text flow.
+                SessionTitleText(
+                    title: headline.text,
+                    fontSize: projectFontSize,
+                    weight: .bold,
+                    color: projectColor,
+                    hashPrefix: false
+                )
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(2)
             } else {
-                // Project name hidden: no folder link and no path tooltip either,
-                // or hovering the card would still reveal it.
+                // .agent (no title yet) — plain source label, no glyph expected
                 Text(headline.text)
                     .font(.system(size: projectFontSize, weight: .bold, design: .monospaced))
                     .foregroundStyle(projectColor)
@@ -4008,12 +4053,16 @@ private struct SessionIdentityLine: View {
             }
 
             if let sessionLabel = headline.trailingSessionLabel {
-                Text("#\(sessionLabel)")
-                    .font(.system(size: sessionFontSize, weight: .medium, design: .monospaced))
-                    .foregroundStyle(sessionColor)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .layoutPriority(1)
+                SessionTitleText(
+                    title: sessionLabel,
+                    fontSize: sessionFontSize,
+                    weight: .medium,
+                    color: sessionColor,
+                    hashPrefix: true
+                )
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(1)
 
                 if showsShortId {
                     Text("·")
@@ -4733,12 +4782,25 @@ private struct SessionCard: View {
             HStack(spacing: 8) {
                 MascotView(source: session.mascotSource, status: session.status, size: 18)
                     .frame(width: 22)
-                Text(session.headline(showProjectName: showProjectName).text)
-                    .font(.system(size: fontSize, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.92))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(width: compactProjectWidth, alignment: .leading)
+                let compactHeadline = session.headline(showProjectName: showProjectName)
+                Group {
+                    if compactHeadline.kind == .sessionTitle {
+                        SessionTitleText(
+                            title: compactHeadline.text,
+                            fontSize: fontSize,
+                            weight: .bold,
+                            color: .white.opacity(0.92),
+                            hashPrefix: false
+                        )
+                    } else {
+                        Text(compactHeadline.text)
+                            .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.92))
+                    }
+                }
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: compactProjectWidth, alignment: .leading)
                 Text(status.label)
                     .font(.system(size: CompactSessionRowMetrics.statusFontSize(fontSize), weight: .bold, design: .monospaced))
                     .foregroundStyle(status.color)

@@ -16,6 +16,7 @@
 - A question card collapses on an outside click; an approval card does not (it blocks until answered or dismissed).
 - App entry point switched from SwiftUI Scene to an explicit AppKit `NSApplication` + `AppDelegate` launch path, fixing launch failures in certain build configurations.
 - Build script: `ARM_DIR` is computed from `swift build --show-bin-path` instead of a hardcoded path, and the bundle copy loop no longer stops after the first bundle.
+- Session titles with a leading avatar glyph or emoji omit the `#` prefix; plain titles keep it. Nerd Fonts glyphs use the bundled Symbols Nerd Font, loaded once per process, while title text retains the existing system font.
 
 ### 中文
 - OMP 身份、重命名与会话卡片生命周期：`/new`、恢复、分叉和启动时的身份变更，各自在原位替换现有卡片；根会话 ID 不变时 `/fresh` 保留同一卡片；`/rename` 以包含新标题的 SessionStart 形式转发，卡片名称实时更新。CodeIsland 移除同一 Herdr 面板上的过期重复 OMP 卡片。CodeIsland 更新后请重启正在运行的 OMP 进程以加载新扩展。
@@ -31,6 +32,7 @@
 - 提问卡片在面板外点击时收起；审批卡片不收起（必须作答或手动关闭）。
 - 应用入口从 SwiftUI Scene 改为显式 AppKit `NSApplication` + `AppDelegate` 启动路径，修复了部分构建配置下的启动失败。
 - 构建脚本：`ARM_DIR` 改为从 `swift build --show-bin-path` 动态获取，bundle 复制循环不再在第一个 bundle 后停止。
+- 以头像字形或 emoji 开头的会话标题省略 `#` 前缀；纯文字标题保持不变。Nerd Fonts 字形使用随包附带、每个进程只加载一次的 Symbols Nerd Font，标题文字继续使用原有系统字体。
 
 ## [v1.0.38] - 2026-10-11
 
