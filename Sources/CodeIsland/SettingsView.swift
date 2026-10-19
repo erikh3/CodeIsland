@@ -145,10 +145,10 @@ private struct WebhooksPage: View {
                     .foregroundStyle(.secondary)
                 Toggle(l10n["webhook_enable"], isOn: $webhookEnabled)
                 if webhookEnabled {
-                    TextField(l10n["webhook_url_placeholder"], text: $webhookURL)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                        .autocorrectionDisabled(true)
+                    WebhookTextField(
+                        text: $webhookURL,
+                        placeholder: l10n["webhook_url_placeholder"]
+                    )
                     Toggle(isOn: $webhookMainSessionsOnly) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(l10n["webhook_main_sessions_only"])
@@ -222,10 +222,10 @@ private struct WebhooksPage: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    TextField(l10n["webhook_filter_placeholder"], text: $webhookEventFilter)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                        .autocorrectionDisabled(true)
+                    WebhookTextField(
+                        text: $webhookEventFilter,
+                        placeholder: l10n["webhook_filter_placeholder"]
+                    )
                     Text(l10n["webhook_filter_hint"])
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -233,6 +233,64 @@ private struct WebhooksPage: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+private struct WebhookTextField: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    func makeNSView(context: Context) -> WebhookNSTextField {
+        let field = WebhookNSTextField()
+        field.isBezeled = true
+        field.bezelStyle = .roundedBezel
+        field.alignment = .left
+        field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        field.delegate = context.coordinator
+        field.onTextChanged = { context.coordinator.text = $0 }
+        return field
+    }
+
+    func updateNSView(_ field: WebhookNSTextField, context: Context) {
+        field.placeholderString = placeholder
+        if field.stringValue != text, field.currentEditor() == nil {
+            field.stringValue = text
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        @Binding var text: String
+
+        init(text: Binding<String>) {
+            _text = text
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            text = field.stringValue
+        }
+    }
+}
+
+private final class WebhookNSTextField: NSTextField {
+    var onTextChanged: ((String) -> Void)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "v",
+           let pastedText = NSPasteboard.general.string(forType: .string),
+           let editor = currentEditor() {
+            let selectedRange = editor.selectedRange
+            stringValue = (stringValue as NSString).replacingCharacters(in: selectedRange, with: pastedText)
+            editor.selectedRange = NSRange(location: selectedRange.location + (pastedText as NSString).length, length: 0)
+            onTextChanged?(stringValue)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 }
 

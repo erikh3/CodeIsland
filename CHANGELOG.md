@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### English
+- Webhook URL and event-filter placeholder text is now inside the editable field instead of appearing as an uneditable Form label.
 - OMP identity, rename, and session card lifecycle: `/new`, resume, fork, and startup identity changes each replace the existing card in place; `/fresh` keeps the same card when the root session ID is unchanged; `/rename` is forwarded as a new SessionStart with the updated title so the card name tracks it live. CodeIsland removes stale duplicate OMP cards that share one Herdr pane. Restart any already-running OMP processes after a CodeIsland update to load the new extension.
 - OMP per-tool thinking: the `i`/`intent` argument OMP passes on every tool call surfaces as the live tool description. The last known intent persists through the model-generation gap between turns so the card never blanks back to bare "thinking".
 - OMP task children follow the Agent Sub-Sessions setting (separate / merge / hide): separate cards show the child's own name and stay readable after it finishes; merged mode keeps approval and question cards actionable; the completion indicator fires only when the root session ends.
@@ -19,6 +20,7 @@
 - Session titles with a leading avatar glyph or emoji omit the `#` prefix; plain titles keep it. Nerd Fonts glyphs use the bundled Symbols Nerd Font, loaded once per process, while title text retains the existing system font.
 
 ### 中文
+- Webhook URL 和事件过滤器的占位文字现在显示在可编辑输入框内，不再被当成不可编辑的 Form 标签。
 - OMP 身份、重命名与会话卡片生命周期：`/new`、恢复、分叉和启动时的身份变更，各自在原位替换现有卡片；根会话 ID 不变时 `/fresh` 保留同一卡片；`/rename` 以包含新标题的 SessionStart 形式转发，卡片名称实时更新。CodeIsland 移除同一 Herdr 面板上的过期重复 OMP 卡片。CodeIsland 更新后请重启正在运行的 OMP 进程以加载新扩展。
 - OMP 每次工具调用的思考状态：OMP 传入的 `i`/`intent` 参数作为实时工具描述显示在卡片上。最近一次的 intent 在回合间的模型生成空隙中保留，卡片不会回退到空白的"thinking"。
 - OMP 的 task 子会话遵循「Agent 子会话」设置（独立 / 合并 / 隐藏）：独立卡片显示子会话自身名称，子会话结束后依然可读；合并模式保持审批与提问卡片可操作；完成指示器仅在根会话结束时触发。
