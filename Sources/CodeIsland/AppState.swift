@@ -47,6 +47,8 @@ final class AppState {
     }
 
     var sessions: [String: SessionSnapshot] = [:]
+    @ObservationIgnored
+    private var herdrSubscriptions: [String: HerdrSubscription] = [:]
     var activeSessionId: String?
     var permissionQueue: [PermissionRequest] = [] {
         didSet {
@@ -84,6 +86,8 @@ final class AppState {
     @ObservationIgnored
     var questionTerminalFrontmostDetector: (SessionSnapshot) -> Bool =
         TerminalVisibilityDetector.isTerminalFrontmostForSession
+    @ObservationIgnored
+    var webhookForwarder: WebhookForwarder?
 
     func recordHookEvent(
         source: String?,
@@ -917,6 +921,9 @@ final class AppState {
             }
         }
         sessions.removeValue(forKey: sessionId)
+        if let sub = herdrSubscriptions.removeValue(forKey: sessionId) {
+            sub.cancel()
+        }
         noteDisplayOnlyWait(sessionId: sessionId, was: displayOnlyWaitBefore)
         stopMonitor(sessionId)
         detachTranscriptTailer(sessionId: sessionId)
@@ -934,6 +941,70 @@ final class AppState {
         startRotationIfNeeded()
         refreshDerivedState()
         scheduleSave()
+    }
+
+    // MARK: - Herdr blocked-state sync
+
+    /// Applies a status change delivered by a ``HerdrSubscription`` for the given session.
+    ///
+    /// Additive: Herdr-driven `waitingApproval` always wins. Herdr-driven clear only takes
+    /// effect when no `PermissionRequest` or question is pending in the hook-event queues
+    /// and the current `waitingApproval` was itself set by Herdr (guarded by `herdrBlocked`).
+    @MainActor
+    private func applyHerdrStatusChange(_ change: HerdrSubscription.StatusChange, sessionId: String) {
+        guard sessions[sessionId] != nil else { return }
+        guard let status = change.status else { return } // unknown -> no-op
+
+        switch status {
+        case .waitingApproval:
+            sessions[sessionId]?.status = .waitingApproval
+            sessions[sessionId]?.toolDescription = change.label
+            sessions[sessionId]?.herdrBlocked = true
+            refreshDerivedState()
+
+        case .running, .idle:
+            guard sessions[sessionId]?.herdrBlocked == true else { return }
+            let stillHasPermission = permissionQueue.contains { ($0.event.sessionId ?? "default") == sessionId }
+            let stillHasQuestion = questionQueue.contains { ($0.event.sessionId ?? "default") == sessionId }
+            guard !stillHasPermission && !stillHasQuestion else { return }
+            sessions[sessionId]?.herdrBlocked = false
+            sessions[sessionId]?.status = status
+            if status == .idle { sessions[sessionId]?.toolDescription = nil }
+            refreshDerivedState()
+
+        default:
+            break
+        }
+    }
+
+    // MARK: - Same-pane OMP root supersession
+
+    /// On a new OMP SessionStart that arrives on the same Herdr pane+socket as an
+    /// existing root session, remove the older root so the panel doesn't accumulate
+    /// stale cards. Only fires for root OMP events (`_omp_subagent` absent/false).
+    private func removeSupersededOmpRootSessions(for event: HookEvent, sessionId: String) {
+        guard EventNormalizer.normalize(event.eventName) == "SessionStart",
+              (event.rawJSON["_source"] as? String)?.lowercased() == "pi",
+              event.rawJSON["_omp_subagent"] as? Bool != true,
+              let paneId = event.rawJSON["_herdr_pane_id"] as? String,
+              let socketPath = event.rawJSON["_herdr_socket_path"] as? String,
+              !paneId.isEmpty,
+              !socketPath.isEmpty else {
+            return
+        }
+
+        let supersededIds: [String] = sessions.compactMap { existingId, session in
+            guard existingId != sessionId,
+                  session.source.lowercased() == "pi",
+                  session.herdrPaneId == paneId,
+                  session.herdrSocketPath == socketPath else {
+                return nil
+            }
+            return existingId
+        }
+        for supersededId in supersededIds {
+            removeSession(supersededId)
+        }
     }
 
     // MARK: - Compact bar mascot rotation
@@ -1519,6 +1590,9 @@ final class AppState {
 
         let sessionId = event.sessionId ?? "default"
         let normalizedEventName = EventNormalizer.normalize(event.eventName)
+        if normalizedEventName == "UserPromptSubmit" {
+            webhookForwarder?.acknowledgeSessionActivity(sessionId: sessionId)
+        }
 
         // Account chatter, not session activity. CodeBuddy fires
         // Notification(auth_success) as the CLI boots — before SessionStart and
@@ -1562,6 +1636,8 @@ final class AppState {
             return
         }
 
+        removeSupersededOmpRootSessions(for: event, sessionId: sessionId)
+
         if sessions[sessionId] == nil {
             sessions[sessionId] = SessionSnapshot()
         }
@@ -1570,6 +1646,12 @@ final class AppState {
         let wasWaiting = prevStatus == .waitingApproval || prevStatus == .waitingQuestion
         let displayOnlyWaitBefore = displayOnlyWaitKind(forSession: sessionId)
         let cwdBeforeReduce = sessions[sessionId]?.cwd
+        // Capture whether Herdr owns this session's blocked state, and the label
+        // to restore, before reduceEvent clears toolDescription. Using an explicit
+        // Bool avoids the String?? Optional.some(nil) promotion that caused every
+        // non-blocked session to be treated as blocked.
+        let isHerdrBlocked: Bool = sessions[sessionId]?.herdrBlocked == true
+        let herdrBlockedLabel: String? = isHerdrBlocked ? sessions[sessionId]?.toolDescription : nil
 
         // Cache PreToolUse payloads so downstream events sharing tool_use_id can be
         // correlated, and drain queue entries whose agent already moved on.
@@ -1580,8 +1662,21 @@ final class AppState {
         // answered in the terminal: its card goes, answered with no decision — never allow.
         resolveOrphanPermissionsOnActivity(event)
 
-        let reduction = reduceHookEvent(sessions: &sessions, event: event, maxHistory: maxHistory,
+        var reduction = reduceHookEvent(sessions: &sessions, event: event, maxHistory: maxHistory,
                                         replyCompletePlaceholder: L10n.shared["reply_complete_placeholder"])
+        // If Herdr owns this session's blocked state, reduceHookEvent must not clear it.
+        // UserPromptSubmit and Stop unconditionally set status (and clear toolDescription)
+        // in reduceHookEvent; restore both here. Also suppress the completion card:
+        // it must not show while the user still needs to act on Herdr.
+        if isHerdrBlocked {
+            if sessions[sessionId]?.status != .waitingApproval {
+                sessions[sessionId]?.status = .waitingApproval
+            }
+            if sessions[sessionId]?.toolDescription == nil {
+                sessions[sessionId]?.toolDescription = herdrBlockedLabel
+            }
+            reduction.facts.endedTurn = false
+        }
         // Whose turn this was is read off the session as the event left it,
         // before the Cursor fold below can rebrand, fold or drop the card.
         let attentionSubject = AttentionSubject(sessions[sessionId])
@@ -1644,6 +1739,7 @@ final class AppState {
                 let stillHasPermission = permissionQueue.contains { $0.event.sessionId == sessionId }
                 let stillHasQuestion = questionQueue.contains { $0.event.sessionId == sessionId }
                 if !stillHasPermission && !stillHasQuestion,
+                   sessions[sessionId]?.herdrBlocked != true,
                    sessions[sessionId]?.status == .waitingApproval
                     || sessions[sessionId]?.status == .waitingQuestion {
                     sessions[sessionId]?.status = (normalizedEventName == "Stop") ? .idle : .processing
@@ -1728,6 +1824,23 @@ final class AppState {
             was: displayOnlyWaitBefore,
             asking: Self.displayOnlyWaitAsk(forHookEvent: event, normalizedEventName: normalizedEventName)
         )
+
+        // Herdr blocked-state sync: start subscription on SessionStart, stop on removal.
+        // Only when _herdr_socket_path and _herdr_pane_id are present (i.e. omp inside Herdr).
+        if normalizedEventName == "SessionStart" {
+            if let socketPath = event.rawJSON["_herdr_socket_path"] as? String,
+               let paneId = event.rawJSON["_herdr_pane_id"] as? String,
+               !socketPath.isEmpty, !paneId.isEmpty {
+                herdrSubscriptions[sessionId]?.cancel()
+                herdrSubscriptions[sessionId] = HerdrSubscription(
+                    socketPath: socketPath,
+                    paneId: paneId,
+                    onStatusChange: { [weak self] change in
+                        self?.applyHerdrStatusChange(change, sessionId: sessionId)
+                    }
+                )
+            }
+        }
 
         scheduleSave()
         startRotationIfNeeded()
@@ -2062,6 +2175,7 @@ final class AppState {
         let pending = permissionQueue.remove(at: index)
         let sessionId = pending.event.sessionId ?? "default"
         dismissedPermissionSessionIds.remove(sessionId)
+        webhookForwarder?.acknowledgeRequest(pending.event, kind: .permission)
         let responseData: Data
         if always, CodexPermissionRules.isCodexEvent(pending.event) {
             if CodexPermissionRules.alwaysSavesRule(for: pending.event) {
@@ -2235,6 +2349,73 @@ final class AppState {
         answerQuestion(answer, expectedSessionId: expectedSessionId)
     }
 
+    /// Find an existing session whose source matches and whose CLI PID equals
+    /// the supplied ppid. Used by HookServer to merge plugin-proxied events
+    /// into their main session. (#123)
+    ///
+    /// Live routing requires recent activity to guard against macOS PID reuse.
+    /// Restore cleanup disables that check only after validating the persisted
+    /// process start time, so a live nested OMP process can be reconciled even
+    /// when its parent has been quiet for more than five minutes.
+    func findSessionId(
+        forSource source: String,
+        ppid: Int,
+        excluding excludedSessionId: String? = nil,
+        requireActive: Bool = false,
+        requireRecent: Bool = true
+    ) -> String? {
+        guard let processId = pid_t(exactly: ppid), processId > 0 else { return nil }
+        let normalized = SessionSnapshot.normalizedSupportedSource(source)
+        let cutoff = Date().addingTimeInterval(-300)
+        return sessions
+            .filter { sessionId, snap in
+                let snapSource = SessionSnapshot.normalizedSupportedSource(snap.source)
+                return snapSource == normalized
+                    && snap.remoteHostId == nil
+                    && snap.cliPid == processId
+                    && (!requireRecent || snap.lastActivity >= cutoff)
+                    && sessionId != excludedSessionId
+                    && (!requireActive || snap.status != .idle)
+            }
+            .sorted { lhs, rhs in
+                let lhsActive = lhs.value.status != .idle
+                let rhsActive = rhs.value.status != .idle
+                if lhsActive != rhsActive { return lhsActive }
+                return lhs.value.startTime < rhs.value.startTime
+            }
+            .first?.key
+    }
+
+    /// Finds the nearest recent session of the same provider in a process's
+    /// parent chain. OMP's supervised process broker sits between a parent OMP
+    /// session and a nested OMP process, so same-PID matching cannot link them.
+    func findAncestorSessionId(
+        forSource source: String,
+        processId: pid_t,
+        excluding excludedSessionId: String? = nil,
+        requireActive: Bool = false,
+        requireRecent: Bool = true,
+        parentPidLookup: (pid_t) -> pid_t? = ProcessTable.parentPid(of:)
+    ) -> String? {
+        guard processId > 0 else { return nil }
+        var current = parentPidLookup(processId)
+        var visited = Set<pid_t>()
+        for _ in 0..<32 {
+            guard let pid = current, pid > 1, visited.insert(pid).inserted else { break }
+            if let match = findSessionId(
+                forSource: source,
+                ppid: Int(pid),
+                excluding: excludedSessionId,
+                requireActive: requireActive,
+                requireRecent: requireRecent
+            ) {
+                return match
+            }
+            current = parentPidLookup(pid)
+        }
+        return nil
+    }
+
     func findSessionId(providerSessionId: String) -> String? {
         SubsessionCards.cardId(forProviderSessionId: providerSessionId, in: sessions)
     }
@@ -2268,6 +2449,7 @@ final class AppState {
         let pending = permissionQueue.remove(at: index)
         let sessionId = pending.event.sessionId ?? "default"
         dismissedPermissionSessionIds.remove(sessionId)
+        webhookForwarder?.acknowledgeRequest(pending.event, kind: .permission)
         let response = #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}"#
         pending.continuation.resume(returning: Data(response.utf8))
         // Folded Task deny must not idle the whole parent chat card.
@@ -2527,6 +2709,7 @@ final class AppState {
                 ?? pending.question.header ?? "answer"
             pending.resolveCodexAppServer([answerKey: [answer]])
             let sessionId = pending.event.sessionId ?? "default"
+            webhookForwarder?.acknowledgeRequest(pending.event, kind: .question)
             sessions[sessionId]?.status = .processing
             showNextPending()
             refreshDerivedState()
@@ -2562,6 +2745,7 @@ final class AppState {
             responseData = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
         }
         pending.resolution.resumeHook(returning: responseData)
+        webhookForwarder?.acknowledgeRequest(pending.event, kind: .question)
         let sessionId = pending.event.sessionId ?? "default"
         resolveMergedSubagentAfterUI(
             sessionId: sessionId,
@@ -2629,6 +2813,7 @@ final class AppState {
             }
             pending.resolveCodexAppServer(answersByKey)
             let sessionId = pending.event.sessionId ?? "default"
+            webhookForwarder?.acknowledgeRequest(pending.event, kind: .question)
             sessions[sessionId]?.status = .processing
             showNextPending()
             refreshDerivedState()
@@ -2688,6 +2873,7 @@ final class AppState {
             responseData = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
         }
         pending.resolution.resumeHook(returning: responseData)
+        webhookForwarder?.acknowledgeRequest(pending.event, kind: .question)
         let sessionId = pending.event.sessionId ?? "default"
         resolveMergedSubagentAfterUI(
             sessionId: sessionId,
@@ -2781,6 +2967,7 @@ final class AppState {
             }
             pending.resolution.resumeHook(returning: responseData)
         }
+        webhookForwarder?.acknowledgeRequest(pending.event, kind: .question)
         let sessionId = pending.event.sessionId ?? "default"
         resolveMergedSubagentAfterUI(
             sessionId: sessionId,
@@ -3198,11 +3385,42 @@ final class AppState {
         SessionPersistence.clear()
         _ = applyCodexSubsessionModeToKnownSessions()
         _ = applyCursorSubsessionModeToKnownSessions()
+        removeRestoredNestedOmpSessions()
         if activeSessionId == nil {
             activeSessionId = sessions.first(where: { $0.value.status != .idle })?.key
                 ?? sessions.keys.sorted().first
         }
         refreshDerivedState()
+    }
+
+    /// Drop duplicate OMP root cards persisted before supervised child
+    /// processes were recognized as sub-sessions. Separate mode intentionally
+    /// keeps both cards.
+    func removeRestoredNestedOmpSessions(
+        parentPidLookup: (pid_t) -> pid_t? = ProcessTable.parentPid(of:)
+    ) {
+        let mode = UserDefaults.standard.string(forKey: SettingsKey.pluginSessionMode)
+            ?? SettingsDefaults.pluginSessionMode
+        guard mode == "merge" || mode == "hide" else { return }
+
+        let nestedIds = sessions.compactMap { sessionId, session -> String? in
+            guard session.source == "pi",
+                  let processId = session.cliPid,
+                  findAncestorSessionId(
+                    forSource: "pi",
+                    processId: processId,
+                    excluding: sessionId,
+                    requireActive: false,
+                    requireRecent: false,
+                    parentPidLookup: parentPidLookup
+                  ) != nil else {
+                return nil
+            }
+            return sessionId
+        }
+        for sessionId in nestedIds {
+            removeSession(sessionId)
+        }
     }
 
     /// Idle snapshots with no live process are usually discarded on restore.

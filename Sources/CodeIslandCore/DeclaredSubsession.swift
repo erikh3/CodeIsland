@@ -18,7 +18,8 @@ public enum DeclaredSubsession {
     /// Filed like `session_id` (remote and Codex Desktop namespaces), so it
     /// names the parent's card exactly.
     public static func parentSessionId(in raw: [String: Any]) -> String? {
-        guard let parent = SubsessionRouter.nonEmptyString(raw[parentKey]) else { return nil }
+        let parentValue = raw[parentKey] ?? ((raw["_omp_subagent"] as? Bool) == true ? raw["_omp_parent_session_id"] : nil)
+        guard let parent = SubsessionRouter.nonEmptyString(parentValue) else { return nil }
         // A session cannot be its own parent: a malformed declaration.
         if parent == SubsessionRouter.sessionId(in: raw) { return nil }
         return HookEvent.cardSessionId(forRawSessionId: parent, in: raw)

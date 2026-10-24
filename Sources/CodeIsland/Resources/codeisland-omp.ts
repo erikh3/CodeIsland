@@ -1,5 +1,5 @@
 // CodeIsland pi extension
-// version: v10
+// version: v22
 // OMP-compatible install
 
 /**
@@ -457,9 +457,210 @@ export function classifyCodeIslandAskResponse(
   };
 }
 
+// ── Child identity resolution ────────────────────────────────────────────────
+
+/**
+ * Discriminated union for OMP session identity.
+ *
+ * - `root`: top-level OMP session
+ * - `subagent`: confirmed task child routed to its top-level session
+ * - `unresolved`: registry lineage is incomplete; the caller should retry
+ */
+export type OmpSessionIdentity =
+  | { kind: "root"; sessionId: string }
+  | { kind: "subagent"; sessionId: string; rootSessionId: string; agentId: string; agentType: string; parentAgentId: string }
+  | { kind: "unresolved" };
+
+interface OmpSessionManager {
+  getSessionId(): string;
+}
+
+interface OmpRegistrySession {
+  sessionManager: OmpSessionManager;
+}
+
+interface OmpAgentRef {
+  id: string;
+  kind: "main" | "sub" | "advisor";
+  parentId?: string;
+  session: OmpRegistrySession | null;
+  /** Lifecycle state: running | idle (live) | parked (disposed) | aborted (killed). */
+  status?: "running" | "idle" | "parked" | "aborted";
+}
+
+/** Registry lifecycle notification (subset of OMP's RegistryEvent). */
+interface OmpRegistryEvent {
+  type: "registered" | "status_changed" | "metadata_changed" | "removed";
+  ref: OmpAgentRef;
+}
+
+interface OmpAgentRegistry {
+  get(id: string): OmpAgentRef | undefined;
+  /** Subscribe to lifecycle changes; returns an unsubscribe handle. Absent on older OMP. */
+  onChange?(listener: (event: OmpRegistryEvent) => void): () => void;
+}
+
+
+/**
+ * Identity of the agent the current session runs, exposed by OMP as
+ * `ctx.agent` (PR #13314): whether this session is the top-level agent or a
+ * subagent, plus its registry id, agent definition name, task depth and parent.
+ */
+export interface OmpAgentContext {
+  kind: "main" | "sub";
+  id: string;
+  name: string;
+  depth: number;
+  parentId?: string;
+}
+
+/**
+ * Walks the registry parent chain from `startId` up to the top-level `main`
+ * agent and returns its session id. Undefined when the lineage is incomplete
+ * (a parent is not yet registered), signalling the caller to retry later.
+ */
+function resolveRootSessionId(
+  startId: string,
+  registry: OmpAgentRegistry,
+): string | undefined {
+  const visited = new Set<string>([startId]);
+  let ancestor = registry.get(startId);
+  if (!ancestor) return undefined;
+  while (ancestor.kind !== "main") {
+    const parentId = ancestor.parentId;
+    if (!parentId || visited.has(parentId)) return undefined;
+    visited.add(parentId);
+    const parent = registry.get(parentId);
+    if (!parent) return undefined;
+    ancestor = parent;
+  }
+  return ancestor.session?.sessionManager.getSessionId();
+}
+
+/**
+ * Resolves OMP ancestry from the running agent's identity (`ctx.agent`).
+ *
+ * A `main` agent is the top-level session (root). A `sub` agent routes to its
+ * top-level session id, resolved by walking the registry parent chain, since
+ * `ctx.agent` carries only the immediate parent's registry id, not session ids.
+ * Returns `unresolved` when that chain is not yet fully registered.
+ */
+export function resolveOmpIdentity(
+  sessionManager: OmpSessionManager,
+  registry: OmpAgentRegistry,
+  agent: OmpAgentContext,
+): OmpSessionIdentity {
+  const sessionId = sessionManager.getSessionId();
+  if (agent.kind === "main") return { kind: "root", sessionId };
+  const rootSessionId = resolveRootSessionId(agent.id, registry);
+  if (!rootSessionId) return { kind: "unresolved" };
+  return {
+    kind: "subagent",
+    sessionId,
+    rootSessionId,
+    agentId: agent.id,
+    agentType: agent.name,
+    parentAgentId: agent.parentId ?? agent.id,
+  };
+}
+
+// ── Todo → task-progress bridge ───────────────────────────────────────────────
+
+/** Status vocabulary of OMP's `todo` tool (see pi-coding-agent tools/todo.ts). */
+type OmpTodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
+
+/** One task row inside a todo phase, as carried by the tool result `details`. */
+interface OmpTodoTask {
+  content: string;
+  status: OmpTodoStatus;
+  blocker?: string;
+}
+
+/** A named phase of the todo list (OMP groups tasks into phases). */
+interface OmpTodoPhase {
+  name: string;
+  tasks: OmpTodoTask[];
+}
+
+/**
+ * Collapse OMP's five-state todo vocabulary onto the three states CodeIsland's
+ * checklist understands (`pending` / `in_progress` / `completed`).
+ *
+ * - `abandoned` is settled work the agent gave up on: mapped to `completed` so
+ *   it stays counted in the segmented bar's total and lets a finished list fade
+ *   instead of reading as permanently stuck.
+ * - `blocked` is neither done nor active: mapped to `pending`.
+ */
+function mapTodoStatus(status: string): "pending" | "in_progress" | "completed" {
+  switch (status) {
+    case "in_progress":
+      return "in_progress";
+    case "completed":
+    case "abandoned":
+      return "completed";
+    default:
+      return "pending";
+  }
+}
+
+/**
+ * Flatten OMP's phased todo state into the flat `{ todos: [...] }` snapshot that
+ * CodeIsland's `TodoWrite` path already ingests (→ a full list replace).
+ *
+ * OMP's `todo` tool is op-based (`init` / `start` / `done` / …) and sends only
+ * one op per call, but every result carries the whole post-op state in
+ * `details.phases`, so forwarding that snapshot keeps CodeIsland in sync without
+ * replaying individual ops. Multi-phase lists prefix the phase name onto each
+ * task (`Phase: task`) to preserve the grouping the TUI shows; a single phase
+ * (the default `Tasks` bucket for a flat `items` list) is left bare.
+ *
+ * An `init` with no items (or any op that clears all tasks) yields
+ * `details.phases = []`. Returning `{ todos: [] }` for that case lets CodeIsland
+ * clear the progress bar, rather than leaving stale items from a prior list.
+ * Only `undefined` (tool has never run / details absent) returns `null` to
+ * signal "nothing to forward".
+ */
+export function ompTodoSnapshot(
+  phases: readonly OmpTodoPhase[] | undefined,
+): { todos: { content: string; status: string }[] } | null {
+  if (phases === undefined) return null;
+  if (phases.length === 0) return { todos: [] };
+  const multiPhase = phases.length > 1;
+  const todos = phases.flatMap((phase) =>
+    phase.tasks.map((task) => ({
+      content: multiPhase && phase.name ? `${phase.name}: ${task.content}` : task.content,
+      status: mapTodoStatus(task.status),
+    })),
+  );
+  return { todos };
+}
+
 // ── Extension ─────────────────────────────────────────────────────────────────
 
-export default function codeislandExtension(pi: ExtensionAPI) {
+export default function codeislandExtension(
+  pi: ExtensionAPI,
+  sendFn: (payload: object) => Promise<boolean> = sendToSocket,
+) {
+  const agentRegistry: OmpAgentRegistry | null = (pi.pi as { AgentRegistry?: { global?: () => OmpAgentRegistry } } | undefined)?.AgentRegistry?.global?.() ?? null;
+
+  const askToolRenderer = {
+    mergeCallAndResult: true,
+    renderCall(args: { questions?: RawQuestion[] }) {
+      const questions = Array.isArray(args.questions) ? args.questions : [];
+      const lines = questions.flatMap((question) => [
+        `Ask: ${question.question}`,
+        ...question.options.map((option) => `  ○ ${option.label}`),
+      ]);
+      return new pi.pi.Text(lines.join("\n") || "Ask", 0, 0);
+    },
+    renderResult(result: AgentToolResult<CompatibleAskToolDetails>) {
+      const text = result.content
+        .filter((content): content is { type: "text"; text: string } => content.type === "text")
+        .map((content) => content.text)
+        .join("\n");
+      return new pi.pi.Text(text || "Ask completed", 0, 0);
+    },
+  };
   class ToolAbortError extends Error {
     override name = "ToolAbortError";
   }
@@ -472,72 +673,195 @@ export default function codeislandExtension(pi: ExtensionAPI) {
    * "answered externally" heuristic from auto-denying while the card is visible.
    */
   const pendingPermissionSessions = new Set<string>();
-  /** Sessions for which CodeIsland has already received SessionStart. */
+  /** Sessions for which CodeIsland has already received SessionStart/SubagentStart. */
   const startedSessions = new Set<string>();
-  /** A subagent session's parent card, kept once found so it never flips back. */
-  const parentCards = new Map<string, string>();
+  /** Confirmed subagent identities, keyed by raw provider session ID. */
+  const identityCache = new Map<string, OmpSessionIdentity & { kind: "subagent" }>();
+  /** Root session currently represented by this extension process. */
+  let activeRootSessionId: string | null = null;
+  /**
+   * Confirmed subagents we have emitted SubagentStart for, keyed by registry
+   * agent id. Drives the registry-driven SubagentStop teardown below.
+   */
+  const subagentByAgentId = new Map<string, OmpSessionIdentity & { kind: "subagent" }>();
+  /** Last cwd seen per subagent, for the SubagentStop payload. */
+  const subagentCwd = new Map<string, string>();
+  /** Agent ids already torn down, so a removed+parked pair cannot double-emit. */
+  const stoppedAgentIds = new Set<string>();
 
   /**
-   * Record which CodeIsland session this agent runs, for its subagents to
-   * find. Only from lifecycle events: there `ctx.agent` is this session's own
-   * agent, while tool events can name an advisor working on its behalf.
+   * Builds the complete event payload for CodeIsland.
+   *
+   * For confirmed subagents, stamps child metadata and `session_title` on every
+   * event so HookServer can route it.  Root events carry no child markers.
    */
-  function registerAgentCard(ctx: ExtensionContext, sessionId: string): void {
-    const agent = ompAgentIdentity(ctx);
-    if (agent) ompAgentCards().set(agent.id, `pi-${sessionId}`);
-  }
-
-  function unregisterAgentCard(ctx: ExtensionContext, sessionId: string): void {
-    const agent = ompAgentIdentity(ctx);
-    const cards = ompAgentCards();
-    // A newer session may already own the id (`/new` keeps "Main").
-    if (agent && cards.get(agent.id) === `pi-${sessionId}`) cards.delete(agent.id);
-  }
-
-  /**
-   * For a subagent session, the parent's CodeIsland session and the agent it
-   * runs (#378). Untagged while the parent is unknown — its extension has not
-   * registered yet — rather than guessed.
-   */
-  function subagentTag(ctx: ExtensionContext, sessionId: string): Record<string, unknown> {
-    const agent = ompAgentIdentity(ctx);
-    if (agent?.kind !== "sub" || !agent.parentId) return {};
-    const card = `pi-${sessionId}`;
-    let parent = parentCards.get(card);
-    if (!parent) {
-      const registered = ompAgentCards().get(agent.parentId);
-      // An advisor reaches its own session's tool handlers as a subagent of
-      // that very session: the event is the session's own, not a child's.
-      if (!registered || registered === card) return {};
-      parent = registered;
-      parentCards.set(card, parent);
-    }
-    return { _parent_session_id: parent, agent_type: agent.name ?? DEFAULT_SUBAGENT_TYPE };
-  }
-
-  /** An event payload for the session `ctx` belongs to. */
-  function payload(
-    ctx: ExtensionContext,
-    sessionId: string,
+  function buildEvent(
+    identity: OmpSessionIdentity,
+    cwd: string,
     extra: Record<string, unknown>,
   ): Record<string, unknown> {
-    return base(sessionId, ctx.cwd, { ...subagentTag(ctx, sessionId), ...extra }, tty);
+    const rawId = identity.kind !== "unresolved" ? identity.sessionId : "";
+    const payload = base(rawId, cwd, extra, tty);
+    if (identity.kind === "subagent") {
+      payload._omp_subagent = true;
+      payload._omp_parent_session_id = `pi-${identity.rootSessionId}`;
+      payload._omp_agent_id = identity.agentId;
+      payload._omp_agent_type = identity.agentType;
+      payload.agent_type = identity.agentType;
+      // _parent_session_id: immediate parent session (upstream field; equals
+      // _omp_parent_session_id for depth-1 subagents; differs for deeper nesting
+      // where _omp_parent_session_id always points to root).
+      // _parent_session_id falls back to rootSessionId when the parent has already
+      // deregistered from ompAgentCards (e.g. a cached subagent after parent shutdown).
+      const parentSid = ompAgentCards().get(identity.parentAgentId) ?? identity.rootSessionId;
+      payload._parent_session_id = `pi-${parentSid}`;
+      payload.session_title = `Subagent \u00B7 ${identity.agentId}`;
+    }
+    return payload;
   }
 
-  async function ensureSessionStarted(ctx: ExtensionContext, sessionId: string): Promise<void> {
-    const sid = `pi-${sessionId}`;
-    if (startedSessions.has(sid)) return;
+  /**
+   * Resolves session identity using the process-wide ompAgentCards map when
+   * no AgentRegistry is available (e.g. in tests or older OMP versions).
+   * Registers the current session in the cards map so peers can look it up.
+   */
+  function resolveViaCards(
+    sessionManager: OmpSessionManager,
+    agent: OmpAgentContext,
+  ): OmpSessionIdentity {
+    const sessionId = sessionManager.getSessionId();
+    // Register so that child sessions can resolve this session as their parent.
+    ompAgentCards().set(agent.id, sessionId);
+    if (agent.kind === "main") return { kind: "root", sessionId };
+    const parentId = agent.parentId;
+    if (!parentId) return { kind: "unresolved" };
+    const parentSid = ompAgentCards().get(parentId);
+    if (!parentSid) return { kind: "unresolved" };
+    // Self-referential: advisor working within the same session — treat as root.
+    if (parentSid === sessionId) return { kind: "root", sessionId };
+    return {
+      kind: "subagent",
+      sessionId,
+      rootSessionId: parentSid,
+      agentId: agent.id,
+      agentType: agent.name,
+      parentAgentId: parentId,
+    };
+  }
 
-    const sessionName = pi.getSessionName();
-    await sendToSocket(
-      payload(ctx, sessionId, {
-        hook_event_name: "SessionStart",
-        ...(sessionName ? { session_title: sessionName } : {}),
-      }),
-    );
+  function resolveIdentityFromCtx(ctx: { sessionManager: { getSessionId(): string }; agent?: OmpAgentContext }): OmpSessionIdentity {
+    const sessionId = ctx.sessionManager.getSessionId();
+    const agent = ctx.agent;
+    if (!agent) {
+      // OMP version too old to report ctx.agent — treat as root, skip cards.
+      return { kind: "root", sessionId };
+    }
+    // Always register in the shared cards map so sibling sessions can find us.
+    ompAgentCards().set(agent.id, sessionId);
+    const cached = identityCache.get(sessionId);
+    if (cached) return cached;
+    const resolved = agentRegistry !== null
+      ? resolveOmpIdentity(ctx.sessionManager, agentRegistry, agent)
+      : resolveViaCards(ctx.sessionManager, agent);
+    if (resolved.kind === "subagent") {
+      identityCache.set(sessionId, resolved);
+    }
+    return resolved;
+  }
+
+  /**
+   * Resolves identity and ensures the session start event has been emitted.
+   * Returns `null` when identity is unresolved (caller should return early).
+   */
+  async function resolveAndEnsureStart(
+    ctx: { sessionManager: { getSessionId(): string }; agent?: OmpAgentContext; cwd: string },
+  ): Promise<{ identity: OmpSessionIdentity & { kind: "root" | "subagent" }; sid: string } | null> {
+    const identity = resolveIdentityFromCtx(ctx);
+    if (identity.kind === "unresolved") return null;
+    await ensureSessionStarted(identity, ctx.cwd);
+    const sid = `pi-${identity.sessionId}`;
+    return { identity, sid };
+  }
+
+  async function ensureSessionStarted(
+    identity: OmpSessionIdentity,
+    cwd: string,
+  ): Promise<void> {
+    if (identity.kind === "unresolved") return;
+    const rawId = identity.sessionId;
+    const sid = `pi-${rawId}`;
+
+    if (identity.kind === "root" && activeRootSessionId !== null && activeRootSessionId !== rawId) {
+      const previousIdentity: OmpSessionIdentity = {
+        kind: "root",
+        sessionId: activeRootSessionId,
+      };
+      await sendFn(buildEvent(previousIdentity, cwd, { hook_event_name: "SessionEnd" }));
+      startedSessions.delete(`pi-${activeRootSessionId}`);
+      identityCache.delete(activeRootSessionId);
+      activeRootSessionId = null;
+    }
+
+    if (startedSessions.has(sid)) {
+      if (identity.kind === "root") activeRootSessionId = rawId;
+      return;
+    }
+
+    if (identity.kind === "subagent") {
+      // Record for registry-driven teardown (SubagentStop). A relaunched id
+      // clears its prior stop tombstone so it can be torn down again.
+      subagentByAgentId.set(identity.agentId, identity);
+      subagentCwd.set(identity.agentId, cwd);
+      stoppedAgentIds.delete(identity.agentId);
+      await sendFn(
+        buildEvent(identity, cwd, { hook_event_name: "SubagentStart" }),
+      );
+    } else {
+      const sessionName = pi.getSessionName();
+      await sendFn(
+        buildEvent(identity, cwd, {
+          hook_event_name: "SessionStart",
+          ...(sessionName ? { session_title: sessionName } : {}),
+        }),
+      );
+      activeRootSessionId = rawId;
+    }
     startedSessions.add(sid);
   }
 
+  /**
+   * Emits SubagentStop for a subagent the registry reports as settled
+   * (parked / aborted / removed). This is the authoritative teardown: it fires
+   * even when the per-child `agent_end` -> Stop was never delivered (deferred,
+   * parked, or hard-killed task children), which otherwise leaves the parent
+   * card pinned on the "Agent" projection. Idempotent and safe to race with the
+   * `agent_end` Stop path: CodeIsland tombstones the agent id on first teardown.
+   */
+  async function emitSubagentStop(agentId: string): Promise<void> {
+    const identity = subagentByAgentId.get(agentId);
+    if (!identity || stoppedAgentIds.has(agentId)) return;
+    stoppedAgentIds.add(agentId);
+    const cwd = subagentCwd.get(agentId) ?? process.cwd();
+    await sendFn(buildEvent(identity, cwd, { hook_event_name: "SubagentStop" }));
+    subagentByAgentId.delete(agentId);
+    subagentCwd.delete(agentId);
+    identityCache.delete(identity.sessionId);
+    startedSessions.delete(`pi-${identity.sessionId}`);
+  }
+
+  // A finished task child stays registered as `idle` (revivable) and is only
+  // torn down when its session is disposed (`parked`), hard-killed (`aborted`),
+  // or explicitly released (`removed`). `idle` is deliberately NOT a settle
+  // signal: a between-turns live subagent must keep its card. This mirrors the
+  // Agent Hub roster exactly, so the island and the roster can never disagree.
+  agentRegistry?.onChange?.((event) => {
+    const ref = event.ref;
+    if (ref.kind !== "sub") return;
+    const settled = event.type === "removed"
+      || (event.type === "status_changed"
+        && (ref.status === "parked" || ref.status === "aborted"));
+    if (settled) void emitSubagentStop(ref.id);
+  });
 
   // ── Shadow "ask" tool (#244 v3: native rendering + parallel answering) ─────
   //
@@ -742,7 +1066,7 @@ export default function codeislandExtension(pi: ExtensionAPI) {
   const reservedAskOptionLabels: Record<string, true> = {
     "Other (type your own)": true,
     "Chat about this": true,
-    "Next →": true,
+    "Next \u2192": true,
   };
 
   // Keep the v3 input additions for OMP 16.3.x, whose native Ask schema does
@@ -773,14 +1097,10 @@ export default function codeislandExtension(pi: ExtensionAPI) {
   // info first, only ask on major tradeoffs, never hand-write "Other", etc.).
   const nativeAskMetadata = createNativeAskTool();
 
-  // OMP 18.2.x moved the tool renderers into @oh-my-pi/pi-tui and no longer
-  // exports this one. It only affects how the shadow Ask tool is drawn in the
-  // terminal, so its absence must not stop the extension from loading.
-  const { askToolRenderer } = pi.pi as typeof pi.pi & {
-    askToolRenderer?: Pick<
-      ToolDefinition<typeof askParameters, CompatibleAskToolDetails>,
-      "renderCall" | "renderResult"
-    > & { mergeCallAndResult: boolean };
+  const askRendererFields = {
+    mergeCallAndResult: askToolRenderer.mergeCallAndResult,
+    renderCall: askToolRenderer.renderCall,
+    renderResult: askToolRenderer.renderResult,
   };
 
   const askToolDefinition: ToolDefinition<
@@ -799,13 +1119,7 @@ export default function codeislandExtension(pi: ExtensionAPI) {
     strict: true,
     approval: "read",
     concurrency: "exclusive",
-    ...(askToolRenderer
-      ? {
-          mergeCallAndResult: askToolRenderer.mergeCallAndResult,
-          renderCall: askToolRenderer.renderCall,
-          renderResult: askToolRenderer.renderResult,
-        }
-      : {}),
+    ...askRendererFields,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const sessionId = ctx.sessionManager.getSessionId();
       const sid = `pi-${sessionId}`;
@@ -816,6 +1130,19 @@ export default function codeislandExtension(pi: ExtensionAPI) {
         throw new ToolAbortError("Ask tool requires interactive mode");
       }
 
+      const rawIdentity = resolveIdentityFromCtx(ctx);
+
+      // Unresolved lineage means the registry has not attached the full parent chain yet.
+      // Emit nothing to CodeIsland; run native Ask directly so the TUI
+      // dialog still works while before_agent_start waits for resolution.
+      if (rawIdentity.kind === "unresolved") {
+        const nativeAsk = createNativeAskTool(ctx);
+        const nativeContext = createNativeAskContext(ctx, () => undefined);
+        const result = await nativeAsk.execute(toolCallId, params, signal, onUpdate, nativeContext);
+        return result;
+      }
+
+      const identity = rawIdentity;
       const islandQuestions = mapAskQuestionsToCodeIsland(questions);
       const answerKeys = computeAnswerKeys(questions);
 
@@ -823,7 +1150,7 @@ export default function codeislandExtension(pi: ExtensionAPI) {
       const race = createAskRaceSettlement<GateOutcome>();
 
       const islandBridge = sendAndWaitResponseCancellable(
-        payload(ctx, sessionId, {
+        buildEvent(identity, ctx.cwd, {
           hook_event_name: "PermissionRequest",
           tool_name: "AskUserQuestion",
           tool_input: { questions: islandQuestions },
@@ -935,36 +1262,96 @@ export default function codeislandExtension(pi: ExtensionAPI) {
   // ── Session lifecycle ──────────────────────────────────────────────────────
 
   pi.on("session_start", async (_event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    registerAgentCard(ctx, sessionId);
-    await ensureSessionStarted(ctx, sessionId);
+    // resolveAndEnsureStart resolves via ctx.agent (falling back to the
+    // registry), caches confirmed subagents, and emits the start event.
+    await resolveAndEnsureStart(ctx);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
-    await sendToSocket(
-      payload(ctx, sessionId, { hook_event_name: "SessionEnd" }),
+    const isChild = identityCache.has(sessionId);
+    // Always clean up this session's entry in the shared cards map, guarding
+    // against a newer session that has already claimed the same registry id.
+    const agentCtx = (ctx as unknown as { agent?: OmpAgentContext }).agent;
+    const agentId = agentCtx?.id;
+    if (agentId && ompAgentCards().get(agentId) === sessionId) {
+      ompAgentCards().delete(agentId);
+    }
+    if (isChild) {
+      // When no AgentRegistry is available, emit SubagentStop here since the
+      // registry's onChange (which normally drives teardown) never fires.
+      // emitSubagentStop is idempotent, so this is safe if onChange fires later.
+      if (agentRegistry === null && agentId) await emitSubagentStop(agentId);
+      identityCache.delete(sessionId);
+      startedSessions.delete(`pi-${sessionId}`);
+      return;
+    }
+
+    const rootSessionId = activeRootSessionId ?? sessionId;
+    const identity: OmpSessionIdentity = { kind: "root", sessionId: rootSessionId };
+    await sendFn(
+      buildEvent(identity, ctx.cwd, { hook_event_name: "SessionEnd" }),
     );
-    startedSessions.delete(`pi-${sessionId}`);
-    parentCards.delete(`pi-${sessionId}`);
-    unregisterAgentCard(ctx, sessionId);
+    startedSessions.delete(`pi-${rootSessionId}`);
+    identityCache.delete(rootSessionId);
+    activeRootSessionId = null;
+  });
+
+  pi.on("session_switch", async (_event, ctx) => {
+    const identity = resolveIdentityFromCtx(ctx);
+    await ensureSessionStarted(identity, ctx.cwd);
+  });
+
+  pi.on("input", async (event, ctx) => {
+    const text = (event as Record<string, unknown>).text?.toString().trim() ?? "";
+    const sessionId = ctx.sessionManager.getSessionId();
+    // Only act when the session is already known to CodeIsland — emitting
+    // SessionStart for an unseen session would create a phantom card.
+    if (!startedSessions.has(`pi-${sessionId}`)) return;
+    const identity: OmpSessionIdentity = { kind: "root", sessionId };
+
+    if (text === "/clear") {
+      // Retain the card by re-emitting SessionStart for the same root identity.
+      // This clears the card's stale content without removing it from the UI.
+      // startedSessions and identityCache are intentionally left intact so
+      // the next lifecycle event sees the session as already started.
+      const sessionName = pi.getSessionName();
+      await sendFn(
+        buildEvent(identity, ctx.cwd, {
+          hook_event_name: "SessionStart",
+          ...(sessionName ? { session_title: sessionName } : {}),
+        }),
+      );
+      return;
+    }
+
+    if (text.startsWith("/rename ")) {
+      // Parse the new name directly from the command text — pi.getSessionName()
+      // still holds the old name at input-event time (omp applies /rename after
+      // the input event resolves).
+      const newName = text.slice("/rename ".length).trim();
+      if (!newName) return;
+      await sendFn(
+        buildEvent(identity, ctx.cwd, {
+          hook_event_name: "SessionStart",
+          session_title: newName,
+        }),
+      );
+    }
   });
 
   // ── Agent lifecycle ────────────────────────────────────────────────────────
 
   pi.on("before_agent_start", async (event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    const sid = `pi-${sessionId}`;
-    // Again here: an extension loaded mid-session missed session_start, and
-    // subagents are only spawned during a turn.
-    registerAgentCard(ctx, sessionId);
-    await ensureSessionStarted(ctx, sessionId);
+    const resolved = await resolveAndEnsureStart(ctx);
+    if (!resolved) return;
+    const { identity, sid } = resolved;
 
     if (pendingPermissionSessions.has(sid)) return;
 
     const prompt = event.prompt ?? "";
-    await sendToSocket(
-      payload(ctx, sessionId, {
+    await sendFn(
+      buildEvent(identity, ctx.cwd, {
         hook_event_name: "UserPromptSubmit",
         prompt,
       }),
@@ -972,20 +1359,23 @@ export default function codeislandExtension(pi: ExtensionAPI) {
   });
 
   pi.on("agent_end", async (event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    const sid = `pi-${sessionId}`;
-    await ensureSessionStarted(ctx, sessionId);
+    // Non-terminal turns: OMP already scheduled more work; suppress Stop.
+    if ((event as Record<string, unknown>).willContinue === true) return;
+
+    const resolved = await resolveAndEnsureStart(ctx);
+    if (!resolved) return;
+    const { identity, sid } = resolved;
 
     if (pendingPermissionSessions.has(sid)) return;
 
     const lastAssistantMessage = extractLastAssistantText(event.messages);
     const sessionName = pi.getSessionName();
 
-    await sendToSocket(
-      payload(ctx, sessionId, {
+    await sendFn(
+      buildEvent(identity, ctx.cwd, {
         hook_event_name: "Stop",
         last_assistant_message: lastAssistantMessage || undefined,
-        ...(sessionName ? { session_title: sessionName } : {}),
+        ...(identity.kind === "root" && sessionName ? { session_title: sessionName } : {}),
       }),
     );
   });
@@ -993,21 +1383,10 @@ export default function codeislandExtension(pi: ExtensionAPI) {
   // ── Tool calls ─────────────────────────────────────────────────────────────
 
   pi.on("tool_call", async (event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    const sid = `pi-${sessionId}`;
-    await ensureSessionStarted(ctx, sessionId);
+    const resolved = await resolveAndEnsureStart(ctx);
+    if (!resolved) return;
+    const { identity, sid } = resolved;
     const toolName = displayToolName(event.toolName);
-
-    // Build a tool_input object appropriate for the tool type.
-    const toolInput: Record<string, unknown> = { ...event.input };
-    if (event.toolName === "bash") {
-      const command = event.input.command as string | undefined;
-      if (command) toolInput.patterns = [command];
-    }
-    if (event.toolName === "edit" || event.toolName === "write") {
-      const path = event.input.path as string | undefined;
-      if (path) toolInput.file_path = path;
-    }
 
     // Dangerous bash → send blocking PermissionRequest via bridge.
     if (
@@ -1015,9 +1394,14 @@ export default function codeislandExtension(pi: ExtensionAPI) {
       typeof event.input.command === "string" &&
       isDangerous(event.input.command)
     ) {
+      // Build a tool_input object for the PermissionRequest payload.
+      const toolInput: Record<string, unknown> = { ...event.input };
+      const command = event.input.command as string | undefined;
+      if (command) toolInput.patterns = [command];
+
       pendingPermissionSessions.add(sid);
 
-      const request = payload(ctx, sessionId, {
+      const request = buildEvent(identity, ctx.cwd, {
         hook_event_name: "PermissionRequest",
         tool_name: toolName,
         tool_input: toolInput,
@@ -1042,47 +1426,104 @@ export default function codeislandExtension(pi: ExtensionAPI) {
       // Approved — fall through to normal PreToolUse event below.
     }
 
-    // Non-blocking PreToolUse for all other tool calls.
-    if (!pendingPermissionSessions.has(sid)) {
-      await sendToSocket(
-        payload(ctx, sessionId, {
-          hook_event_name: "PreToolUse",
-          tool_name: toolName,
-          tool_input: toolInput,
-        }),
-      );
-    }
-
+    // The non-blocking PreToolUse is emitted from `tool_execution_start` instead
+    // (see below): that event carries the tool's `intent` — the short status
+    // text omp shows while working — which the `tool_call` event's
+    // schema-validated `input` has already had stripped. Emitting it here as
+    // well would blank the intent.
     return undefined;
   });
 
-  pi.on("tool_result", async (_event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    const sid = `pi-${sessionId}`;
-    await ensureSessionStarted(ctx, sessionId);
+  // Fires after `tool_call`, just before the tool executes. Unlike `tool_call`,
+  // this event exposes `intent` (the model's per-call `i` summary), so it is the
+  // source of the live status text CodeIsland shows while the agent works.
+  pi.on("tool_execution_start", async (event, ctx) => {
+    const resolved = await resolveAndEnsureStart(ctx);
+    if (!resolved) return;
+    const { identity, sid } = resolved;
+
+    // A blocking permission request is mid-flight on this session — the
+    // PermissionRequest already conveys the tool, so skip the status update.
+    if (pendingPermissionSessions.has(sid)) return;
+
+    const toolName = displayToolName(event.toolName);
+    const args = (event.args ?? {}) as Record<string, unknown>;
+    const toolInput: Record<string, unknown> = { ...args };
+    if (event.toolName === "bash") {
+      const command = args.command as string | undefined;
+      if (command) toolInput.patterns = [command];
+    }
+    if (event.toolName === "edit" || event.toolName === "write") {
+      const path = args.path as string | undefined;
+      if (path) toolInput.file_path = path;
+    }
+
+    await sendFn(
+      buildEvent(identity, ctx.cwd, {
+        hook_event_name: "PreToolUse",
+        tool_name: toolName,
+        tool_input: toolInput,
+        ...(event.intent ? { intent: event.intent } : {}),
+      }),
+    );
+  });
+
+  pi.on("tool_result", async (event, ctx) => {
+    const resolved = await resolveAndEnsureStart(ctx);
+    if (!resolved) return;
+    const { sid } = resolved;
 
     if (pendingPermissionSessions.has(sid)) return;
 
-    await sendToSocket(
-      payload(ctx, sessionId, { hook_event_name: "PostToolUse" }),
+    await sendFn(
+      buildEvent(resolved.identity, ctx.cwd, { hook_event_name: "PostToolUse" }),
     );
+
+    // The `todo` tool's result carries the whole post-op checklist in
+    // `details.phases`. Forward it as a TodoWrite-shaped PostToolUse so
+    // CodeIsland's task-progress bar can read it (its TodoWrite path reads the
+    // list from `tool_input`). PostToolUse, not PreToolUse: the tool has already
+    // finished, so this must not leave a phantom "running" tool on the card.
+    //
+    // Root-scoped only: a subagent's todo list belongs to that subagent's work
+    // context, not the parent's canonical checklist. HookServer merges subagent
+    // PostToolUse events onto the parent card for display, which would overwrite
+    // the root session's task-progress bar with child items.
+    if (event.toolName === "todo" && resolved.identity.kind === "root") {
+      const detailsObj = event.details;
+      if (detailsObj && typeof detailsObj === "object" && "phases" in detailsObj) {
+        const phases = (detailsObj as Record<"phases", unknown>).phases;
+        const snapshot = ompTodoSnapshot(
+          Array.isArray(phases) ? (phases as OmpTodoPhase[]) : undefined,
+        );
+        if (snapshot) {
+          await sendFn(
+            buildEvent(resolved.identity, ctx.cwd, {
+              hook_event_name: "PostToolUse",
+              tool_name: "TodoWrite",
+              tool_input: snapshot,
+            }),
+          );
+        }
+      }
+    }
   });
 
   // ── Compaction ─────────────────────────────────────────────────────────────
 
   pi.on("session_before_compact", async (_event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    await ensureSessionStarted(ctx, sessionId);
-    await sendToSocket(
-      payload(ctx, sessionId, { hook_event_name: "PreCompact" }),
+    const resolved = await resolveAndEnsureStart(ctx);
+    if (!resolved) return;
+    await sendFn(
+      buildEvent(resolved.identity, ctx.cwd, { hook_event_name: "PreCompact" }),
     );
   });
 
   pi.on("session_compact", async (_event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    await ensureSessionStarted(ctx, sessionId);
-    await sendToSocket(
-      payload(ctx, sessionId, { hook_event_name: "PostCompact" }),
+    const resolved = await resolveAndEnsureStart(ctx);
+    if (!resolved) return;
+    await sendFn(
+      buildEvent(resolved.identity, ctx.cwd, { hook_event_name: "PostCompact" }),
     );
   });
 }

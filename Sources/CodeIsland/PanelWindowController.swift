@@ -154,6 +154,16 @@ class PanelWindowController: NSObject, NSWindowDelegate {
             incoming: newFrame.offsetBy(dx: 0, dy: motion.incomingOffset)
         )
     }
+    nonisolated static func shouldCollapseOnGlobalClick(
+        surface: IslandSurface,
+        clickLocation: NSPoint,
+        panelFrame: NSRect?
+    ) -> Bool {
+        guard surface.isExpanded else { return false }
+        if case .approvalCard = surface { return false }
+        return panelFrame?.contains(clickLocation) != true
+    }
+
 
     private func panelSize(for screen: NSScreen) -> NSSize {
         let desiredH = PanelHeightMetrics.desiredHeight(
@@ -329,19 +339,20 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         observeSettingsChanges()
         configureAutoScreenPolling()
 
-        // Global click monitor: close panel + repost click when clicking outside
-        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+        // Global click monitor: collapse non-blocking surfaces when clicking outside.
+        // questionCard: dismiss (preserves request, no reopen) rather than direct collapse.
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             Task { @MainActor in
-                guard let self = self, self.appState.surface.isExpanded else { return }
-                // Don't close during approval/question
-                switch self.appState.surface {
-                case .approvalCard, .questionCard: return
-                default: break
-                }
-                // Don't collapse if click is within the panel frame (event leaked on external display)
-                if let panelFrame = self.panel?.frame {
-                    let clickLocation = NSEvent.mouseLocation
-                    if panelFrame.contains(clickLocation) { return }
+                guard let self else { return }
+                let clickLocation = NSEvent.mouseLocation
+                guard Self.shouldCollapseOnGlobalClick(
+                    surface: self.appState.surface,
+                    clickLocation: clickLocation,
+                    panelFrame: self.panel?.frame
+                ) else { return }
+                if case .questionCard(let sid) = self.appState.surface {
+                    self.appState.dismissQuestion(expectedSessionId: sid)
+                    return
                 }
                 withAnimation(NotchAnimation.close) {
                     self.appState.surface = .collapsed
