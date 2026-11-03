@@ -209,10 +209,8 @@ final class PiAgentEventFlowTests: XCTestCase {
         let base: [String: Any] = [
             "session_id": childId,
             "_source": "pi",
-            "_omp_subagent": true,
-            "_omp_parent_session_id": "pi-root-1",
-            "_omp_agent_id": "ResearchScout",
-            "_omp_agent_type": "scout",
+            DeclaredSubsession.parentKey: "pi-root-1",
+            "agent_type": "scout",
         ]
 
         _ = try apply(base.merging(["hook_event_name": "SessionStart"]) { $1 }, to: &sessions)

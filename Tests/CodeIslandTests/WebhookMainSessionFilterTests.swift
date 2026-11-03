@@ -28,10 +28,8 @@ final class WebhookMainSessionFilterTests: XCTestCase {
             "hook_event_name": "Stop",
             "session_id": "child-session",
             "_source": "pi",
-            "_omp_subagent": true,
-            "_omp_parent_session_id": "main-session",
-            "_omp_agent_id": "ResearchScout",
-            "_omp_agent_type": "scout",
+            "_parent_session_id": "main-session",
+            "agent_type": "scout",
         ])
 
         XCTAssertTrue(HookServer.isSubsessionEvent(event))
@@ -41,7 +39,7 @@ final class WebhookMainSessionFilterTests: XCTestCase {
             "hook_event_name": "Stop",
             "session_id": "child-session",
             "_source": "pi",
-            "_omp_subagent": true,
+            "_parent_session_id": "main-session",
         ])
 
         XCTAssertFalse(HookServer.webhookScopeAllows(event, mainSessionsOnly: true))

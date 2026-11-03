@@ -1145,11 +1145,11 @@ final class AppState {
 
     /// On a new OMP SessionStart that arrives on the same Herdr pane+socket as an
     /// existing root session, remove the older root so the panel doesn't accumulate
-    /// stale cards. Only fires for root OMP events (`_omp_subagent` absent/false).
+    /// stale cards. Only fires for root (non-child) OMP events.
     private func removeSupersededOmpRootSessions(for event: HookEvent, sessionId: String) {
         guard EventNormalizer.normalize(event.eventName) == "SessionStart",
               (event.rawJSON["_source"] as? String)?.lowercased() == "pi",
-              event.rawJSON["_omp_subagent"] as? Bool != true,
+              SubsessionRouter.parentCardId(in: event.rawJSON) == nil,
               let paneId = event.rawJSON["_herdr_pane_id"] as? String,
               let socketPath = event.rawJSON["_herdr_socket_path"] as? String,
               !paneId.isEmpty,

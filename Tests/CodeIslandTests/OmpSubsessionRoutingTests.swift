@@ -3,9 +3,11 @@ import XCTest
 import CodeIslandCore
 
 /// Coverage for OMP task-child routing in HookServer.
+/// OMP children use the canonical `_parent_session_id` contract and are routed by
+/// SubsessionRouter/DeclaredSubsession alongside every other child kind.
 /// Tests verify separate / merge / hide, AppState key resolution, child-first
 /// metadata, two-root disambiguation, concurrent children, malformed metadata,
-/// already-merged payloads, and nested dotted child IDs.
+/// and nested dotted child IDs.
 @MainActor
 final class OmpSubsessionRoutingTests: XCTestCase {
 
@@ -46,21 +48,20 @@ final class OmpSubsessionRoutingTests: XCTestCase {
         return (routed.processedData, routed.responseData, raw)
     }
 
+    /// Builds a canonical OMP child payload matching the TS extension output:
+    /// `_parent_session_id` + `agent_type` only; `agent_id` is derived from
+    /// the child's card id by SubsessionRouter once it folds the payload.
     private func ompChildPayload(
         sessionId: String,
         parentSessionId: String,
-        agentId: String = "ResearchScout",
         agentType: String = "scout",
         eventName: String = "PostToolUse",
         extra: [String: Any] = [:]
     ) -> [String: Any] {
         var payload: [String: Any] = [
-            "_omp_subagent": true,
-            "_omp_parent_session_id": parentSessionId,
-            "_omp_agent_id": agentId,
-            "_omp_agent_type": agentType,
+            DeclaredSubsession.parentKey: parentSessionId,
+            "agent_type": agentType,
             "session_id": sessionId,
-            "session_title": "Subagent · \(agentId)",
             "_source": "pi",
             "hook_event_name": eventName,
         ]
@@ -75,21 +76,9 @@ final class OmpSubsessionRoutingTests: XCTestCase {
         return snap
     }
 
-    // MARK: - Byte probe
-
-    func testMayBeOmpSubagentReturnsTrueWhenMarkerPresent() throws {
-        let data = try JSONSerialization.data(withJSONObject: ["_omp_subagent": true])
-        XCTAssertTrue(HookServer.mayBeOmpSubagent(data: data))
-    }
-
-    func testMayBeOmpSubagentReturnsFalseWhenMarkerAbsent() throws {
-        let data = try JSONSerialization.data(withJSONObject: ["session_id": "abc"])
-        XCTAssertFalse(HookServer.mayBeOmpSubagent(data: data))
-    }
-
     // MARK: - Separate mode
 
-    func testSeparateModePassesThroughChildUnchanged() throws {
+    func testSeparateModeLinksChildToParent() throws {
         try withPluginSessionMode("separate") {
             let appState = AppState()
             appState.sessions[rootId] = makeRunningSession()
@@ -99,10 +88,10 @@ final class OmpSubsessionRoutingTests: XCTestCase {
                 parentSessionId: rootId
             ))
             XCTAssertNil(routed.responseData)
-            // session_id stays as-is — child keeps its own card
             XCTAssertEqual(routed.raw["session_id"] as? String, childId)
-            XCTAssertNil(routed.raw["agent_id"])
-            XCTAssertNil(routed.raw["_omp_child_session_id"])
+            let event = try XCTUnwrap(HookEvent(from: routed.processedData))
+            appState.handleEvent(event)
+            XCTAssertEqual(appState.sessions[childId]?.parentSessionId, rootId)
         }
     }
 
@@ -116,32 +105,27 @@ final class OmpSubsessionRoutingTests: XCTestCase {
             let routed = try route(appState: appState, payload: ompChildPayload(
                 sessionId: childId,
                 parentSessionId: rootId,
-                agentId: "ResearchScout",
-                agentType: "scout",
-                extra: [DeclaredSubsession.parentKey: "pi-immediate-parent"]
+                agentType: "scout"
             ))
             XCTAssertNil(routed.responseData)
             XCTAssertEqual(routed.raw["session_id"] as? String, rootId)
-            XCTAssertEqual(routed.raw["agent_id"] as? String, "ResearchScout")
+            // agent_id is the child's canonical card id (derived by SubsessionRouter.fold
+            // from DeclaredSubsession.link.agentId when no agent_id is in the payload).
+            XCTAssertEqual(routed.raw["agent_id"] as? String, childId)
             XCTAssertEqual(routed.raw["agent_type"] as? String, "scout")
-            XCTAssertEqual(routed.raw["_omp_child_session_id"] as? String, childId)
-            // Routing-only fields removed
-            XCTAssertNil(routed.raw["_omp_parent_session_id"])
+            // Routing field removed; folded kind stamped
             XCTAssertNil(routed.raw[DeclaredSubsession.parentKey])
-            XCTAssertNil(routed.raw["_omp_agent_id"])
-            XCTAssertNil(routed.raw["_omp_agent_type"])
-            // _omp_subagent flag retained for downstream reducer
-            XCTAssertEqual(routed.raw["_omp_subagent"] as? Bool, true)
+            XCTAssertEqual(routed.raw[SubsessionRouter.foldedKey] as? String, "declared")
             let event = try XCTUnwrap(HookEvent(from: routed.processedData))
             appState.handleEvent(event)
             XCTAssertNil(appState.sessions[rootId]?.parentSessionId)
         }
     }
 
-    func testMergeModeMaintainsChildFirstMetadataForParentInit() throws {
+    func testChildBeforeParentKeepsItsMetadata() throws {
         try withPluginSessionMode("merge") {
             // Child arrives before the parent card exists.
-            // Metadata like _source, cwd must survive so fillMissingParentMetadata works.
+            // The child's source and working directory must remain intact.
             let appState = AppState()
 
             let routed = try route(appState: appState, payload: ompChildPayload(
@@ -153,8 +137,8 @@ final class OmpSubsessionRoutingTests: XCTestCase {
                 ]
             ))
             XCTAssertNil(routed.responseData)
-            // session_id rewritten to parent even though parent card doesn't exist yet
-            XCTAssertEqual(routed.raw["session_id"] as? String, rootId)
+            // An unknown parent is not invented; the child keeps its own card.
+            XCTAssertEqual(routed.raw["session_id"] as? String, childId)
             // Metadata fields preserved
             XCTAssertEqual(routed.raw["cwd"] as? String, "/home/user/project")
             XCTAssertEqual(routed.raw["_source"] as? String, "pi")
@@ -163,7 +147,7 @@ final class OmpSubsessionRoutingTests: XCTestCase {
 
     // MARK: - Hide mode
 
-    func testHideModeNonPermissionEventRespondsEmpty() throws {
+    func testHideModeNonBlockingEventRespondsEmpty() throws {
         try withPluginSessionMode("hide") {
             let appState = AppState()
             appState.sessions[rootId] = makeRunningSession()
@@ -177,17 +161,16 @@ final class OmpSubsessionRoutingTests: XCTestCase {
             let data = try JSONSerialization.data(withJSONObject: payload)
             let routed = server.routeSubsessionPayloadIfNeededForTesting(data: data)
             XCTAssertNotNil(routed.responseData)
-            // Non-permission events get empty JSON object response
             if let response = routed.responseData,
                let obj = try? JSONSerialization.jsonObject(with: response) as? [String: Any] {
                 XCTAssertTrue(obj.isEmpty)
             }
-            // processedData unchanged
-            XCTAssertEqual(routed.processedData, data)
         }
     }
 
-    func testHideModePermissionEventReturnsNoDecision() throws {
+    func testHideModePermissionEventGetsOwnCard() throws {
+        // Hide never answers a blocking request on the user's behalf (#165):
+        // a PermissionRequest in hide mode surfaces on the child's own card.
         try withPluginSessionMode("hide") {
             let appState = AppState()
             appState.sessions[rootId] = makeRunningSession()
@@ -201,17 +184,21 @@ final class OmpSubsessionRoutingTests: XCTestCase {
             )
             let data = try JSONSerialization.data(withJSONObject: payload)
             let routed = server.routeSubsessionPayloadIfNeededForTesting(data: data)
-            XCTAssertNotNil(routed.responseData)
-            if let response = routed.responseData,
-               let text = String(data: response, encoding: .utf8) {
-                XCTAssertEqual(text, "{}", "Hidden requests must leave the decision to their agent")
-            }
+            // Blocking request in hide mode: no hidden response, child gets own card.
+            XCTAssertNil(routed.responseData)
+            let raw = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: routed.processedData) as? [String: Any]
+            )
+            XCTAssertEqual(raw["session_id"] as? String, childId)
+            let event = try XCTUnwrap(HookEvent(json: raw))
+            appState.handleEvent(event)
+            XCTAssertEqual(appState.sessions[childId]?.parentSessionId, rootId)
         }
     }
 
     // MARK: - Resolved AppState parent key
 
-    func testMergeModeResolvesProviderParentToAppStateKey() throws {
+    func testMergeModeUsesCanonicalParentCardKey() throws {
         try withPluginSessionMode("merge") {
             // Parent exists under a different AppState key but with matching providerSessionId.
             let appState = AppState()
@@ -222,18 +209,17 @@ final class OmpSubsessionRoutingTests: XCTestCase {
 
             let routed = try route(appState: appState, payload: ompChildPayload(
                 sessionId: childId,
-                parentSessionId: providerParentId  // raw provider ID, not AppState key
+                parentSessionId: appStateKey
             ))
             XCTAssertNil(routed.responseData)
-            // session_id must be the resolved AppState key, not the raw provider ID
+            // The canonical parent pointer addresses the card directly.
             XCTAssertEqual(routed.raw["session_id"] as? String, appStateKey)
-            XCTAssertEqual(routed.raw["_omp_child_session_id"] as? String, childId)
         }
     }
 
-    func testMergeModeUsesProviderIdWhenNoCardExists() throws {
+    func testMergeModeDoesNotInventUnknownParent() throws {
         try withPluginSessionMode("merge") {
-            // No AppState card for the parent yet — fall back to raw parent session ID.
+            // An unknown parent does not create a phantom parent card.
             let appState = AppState()
 
             let routed = try route(appState: appState, payload: ompChildPayload(
@@ -241,14 +227,14 @@ final class OmpSubsessionRoutingTests: XCTestCase {
                 parentSessionId: rootId
             ))
             XCTAssertNil(routed.responseData)
-            XCTAssertEqual(routed.raw["session_id"] as? String, rootId)
+            XCTAssertEqual(routed.raw["session_id"] as? String, childId)
         }
     }
 
     // MARK: - Two roots sharing CWD and PID
 
     func testTwoRootsWithSameCwdAndPidRemainSeparate() throws {
-        // OMP routing uses explicit _omp_parent_session_id; CWD/PID are irrelevant.
+        // OMP routing uses explicit _parent_session_id; CWD/PID are irrelevant.
         // Each child is attached to its explicit parent, not an ambiguous guess.
         try withPluginSessionMode("merge") {
             let appState = AppState()
@@ -280,95 +266,54 @@ final class OmpSubsessionRoutingTests: XCTestCase {
             let routed1 = try route(appState: appState, payload: ompChildPayload(
                 sessionId: childId,
                 parentSessionId: rootId,
-                agentId: "ResearchScout",
                 agentType: "scout"
             ))
             let routed2 = try route(appState: appState, payload: ompChildPayload(
                 sessionId: child2Id,
                 parentSessionId: rootId,
-                agentId: "CodeReviewer",
                 agentType: "reviewer"
             ))
 
             XCTAssertEqual(routed1.raw["session_id"] as? String, rootId)
-            XCTAssertEqual(routed1.raw["agent_id"] as? String, "ResearchScout")
-            XCTAssertEqual(routed1.raw["_omp_child_session_id"] as? String, childId)
+            // Each child's card id is its agent_id row in the parent.
+            XCTAssertEqual(routed1.raw["agent_id"] as? String, childId)
 
             XCTAssertEqual(routed2.raw["session_id"] as? String, rootId)
-            XCTAssertEqual(routed2.raw["agent_id"] as? String, "CodeReviewer")
-            XCTAssertEqual(routed2.raw["_omp_child_session_id"] as? String, child2Id)
+            XCTAssertEqual(routed2.raw["agent_id"] as? String, child2Id)
         }
     }
 
-    // MARK: - Malformed metadata unchanged
+    // MARK: - Malformed metadata passes through unchanged
 
-    func testMalformedOmpPayloadPassesThrough() throws {
-        struct Case {
-            let label: String
-            let payload: [String: Any]
-            let expectedSessionId: String
-        }
-        let cases: [Case] = [
-            Case(
-                label: "missing _omp_parent_session_id",
-                payload: [
-                    "_omp_subagent": true,
-                    "_omp_agent_id": "ResearchScout",
-                    "_omp_agent_type": "scout",
-                    "session_id": childId,
-                    "_source": "pi",
-                    "hook_event_name": "PostToolUse",
-                ],
-                expectedSessionId: childId
-            ),
-            Case(
-                label: "missing _omp_agent_id",
-                payload: [
-                    "_omp_subagent": true,
-                    "_omp_parent_session_id": rootId,
-                    "_omp_agent_type": "scout",
-                    "session_id": childId,
-                    "_source": "pi",
-                    "hook_event_name": "PostToolUse",
-                ],
-                expectedSessionId: childId
-            ),
-            Case(
-                label: "child and parent session_id identical",
-                payload: [
-                    "_omp_subagent": true,
-                    "_omp_parent_session_id": rootId,
-                    "_omp_agent_id": "ResearchScout",
-                    "_omp_agent_type": "scout",
-                    "session_id": rootId,
-                    "_source": "pi",
-                    "hook_event_name": "PostToolUse",
-                ],
-                expectedSessionId: rootId
-            ),
-            Case(
-                label: "_omp_subagent is string not bool",
-                payload: [
-                    "_omp_subagent": "true",
-                    "_omp_parent_session_id": rootId,
-                    "_omp_agent_id": "ResearchScout",
-                    "_omp_agent_type": "scout",
-                    "session_id": childId,
-                    "_source": "pi",
-                    "hook_event_name": "PostToolUse",
-                ],
-                expectedSessionId: childId
-            ),
-        ]
+    func testMissingParentSessionIdPassesThrough() throws {
+        // No _parent_session_id: not a declared child; passes through unchanged.
         try withPluginSessionMode("merge") {
-            for c in cases {
-                let appState = AppState()
-                let routed = try route(appState: appState, payload: c.payload)
-                XCTAssertEqual(routed.raw["session_id"] as? String, c.expectedSessionId,
-                    "session_id wrong for case: \(c.label)")
-                XCTAssertNil(routed.raw["agent_id"],
-                    "agent_id should be nil for case: \(c.label)")
-            }
+            let appState = AppState()
+            let payload: [String: Any] = [
+                "agent_id": "ResearchScout",
+                "agent_type": "scout",
+                "session_id": childId,
+                "_source": "pi",
+                "hook_event_name": "PostToolUse",
+            ]
+            let routed = try route(appState: appState, payload: payload)
+            // No _parent_session_id: SubsessionRouter won't fold this.
+            // agent_id present so isSubsessionEvent=true, but no routing.
+            XCTAssertEqual(routed.raw["session_id"] as? String, childId)
+        }
+    }
+
+    func testChildAndParentSameIdPassesThrough() throws {
+        try withPluginSessionMode("merge") {
+            let appState = AppState()
+            // DeclaredSubsession rejects self-parent.
+            let payload = ompChildPayload(
+                sessionId: rootId,
+                parentSessionId: rootId
+            )
+            let routed = try route(appState: appState, payload: payload)
+            XCTAssertEqual(routed.raw["session_id"] as? String, rootId)
+            XCTAssertNil(routed.raw[SubsessionRouter.foldedKey])
         }
     }
 
@@ -397,12 +342,11 @@ final class OmpSubsessionRoutingTests: XCTestCase {
             XCTAssertEqual(routed.raw["session_id"] as? String, rootId)
             XCTAssertEqual(routed.raw["agent_id"] as? String, childId)
             XCTAssertEqual(routed.raw["agent_type"] as? String, "omp")
-            XCTAssertEqual(routed.raw["_omp_child_session_id"] as? String, childId)
-            XCTAssertEqual(routed.raw["_omp_subagent"] as? Bool, true)
+            XCTAssertEqual(routed.raw[SubsessionRouter.foldedKey] as? String, "declared")
         }
     }
 
-    func testNestedOmpProcessInSeparateModeDoesNotReplaceParentCard() throws {
+    func testNestedOmpProcessInSeparateModeLinksToParent() throws {
         try withPluginSessionMode("separate") {
             let appState = AppState()
             var parent = makeRunningSession()
@@ -422,13 +366,13 @@ final class OmpSubsessionRoutingTests: XCTestCase {
                 parentPidLookup: { parents[$0] }
             )
 
+            // The reducer links the separate child through its declared parent.
             XCTAssertEqual(routed.raw["session_id"] as? String, childId)
-            XCTAssertEqual(routed.raw["_omp_parent_session_id"] as? String, rootId)
-            XCTAssertEqual(routed.raw["_omp_subagent"] as? Bool, true)
 
             let event = try XCTUnwrap(HookEvent(from: routed.processedData))
             appState.handleEvent(event)
             XCTAssertNotNil(appState.sessions[rootId])
+            XCTAssertEqual(appState.sessions[childId]?.parentSessionId, rootId)
             XCTAssertNotNil(appState.sessions[childId])
         }
     }
@@ -495,63 +439,39 @@ final class OmpSubsessionRoutingTests: XCTestCase {
             )
 
             XCTAssertEqual(routed.raw["session_id"] as? String, childId)
-            XCTAssertNil(routed.raw["_omp_subagent"])
-        }
-    }
-
-    // MARK: - Already merged unchanged
-
-    func testAlreadyMergedPayloadIsUnchanged() throws {
-        try withPluginSessionMode("merge") {
-            let appState = AppState()
-
-            // Already-routed: has _omp_subagent + agent_id + _omp_child_session_id,
-            // but _omp_parent_session_id is absent.
-            let alreadyMerged: [String: Any] = [
-                "_omp_subagent": true,
-                "agent_id": "ResearchScout",
-                "_omp_child_session_id": childId,
-                "session_id": rootId,
-                "_source": "pi",
-                "hook_event_name": "PostToolUse",
-            ]
-            let routed = try route(appState: appState, payload: alreadyMerged)
-            XCTAssertNil(routed.responseData)
-            XCTAssertEqual(routed.raw["session_id"] as? String, rootId)
-            XCTAssertEqual(routed.raw["agent_id"] as? String, "ResearchScout")
-            XCTAssertEqual(routed.raw["_omp_child_session_id"] as? String, childId)
-            // No double-routing
-            XCTAssertNil(routed.raw["_omp_parent_session_id"])
+            XCTAssertNil(routed.raw[DeclaredSubsession.parentKey])
+            XCTAssertNil(routed.raw[SubsessionRouter.linkedParentKey])
         }
     }
 
     // MARK: - Nested dotted child ID
 
-    func testNestedDottedChildIdIsPreservedInMerge() throws {
+    func testNestedChildMergeUsesCardIdAsAgentRow() throws {
+        // Without an agent_id in the payload, SubsessionRouter.fold uses the
+        // child's card id (DeclaredSubsession.link.agentId = childCardId) as
+        // the subagent row identifier.
         try withPluginSessionMode("merge") {
             let appState = AppState()
             appState.sessions[rootId] = makeRunningSession()
 
-            let nestedAgentId = "ParentScout.ChildReviewer"
             let routed = try route(appState: appState, payload: ompChildPayload(
                 sessionId: childId,
                 parentSessionId: rootId,
-                agentId: nestedAgentId,
                 agentType: "reviewer"
             ))
             XCTAssertNil(routed.responseData)
             XCTAssertEqual(routed.raw["session_id"] as? String, rootId)
-            // Dotted nested ID preserved exactly as-is
-            XCTAssertEqual(routed.raw["agent_id"] as? String, nestedAgentId)
-            XCTAssertEqual(routed.raw["_omp_child_session_id"] as? String, childId)
+            // agent_id is the canonical child card id.
+            XCTAssertEqual(routed.raw["agent_id"] as? String, childId)
+            XCTAssertEqual(routed.raw["agent_type"] as? String, "reviewer")
         }
     }
 
-    // MARK: - OMP routing precedes Cursor/Codex/plugin routing
+    // MARK: - OMP routing goes through SubsessionRouter alongside Cursor/Codex
 
-    func testOmpRoutingPrecedesCursorRouting() throws {
-        // A payload that looks like it could be Cursor (has agent-transcripts)
-        // but also carries OMP metadata must be handled by OMP routing only.
+    func testOmpChildWithCursorTranscriptPathUsesParentKey() throws {
+        // A payload that carries both a Cursor transcript path and _parent_session_id
+        // is routed by DeclaredSubsession (explicit), not by Cursor heuristics.
         try withPluginSessionMode("merge") {
             let appState = AppState()
             appState.sessions[rootId] = makeRunningSession()
@@ -559,18 +479,15 @@ final class OmpSubsessionRoutingTests: XCTestCase {
             var payload = ompChildPayload(
                 sessionId: childId,
                 parentSessionId: rootId,
-                agentId: "ResearchScout",
                 agentType: "scout"
             )
-            // Add a Cursor-style transcript path to the payload
             payload["transcript_path"] = "/Users/u/.cursor/projects/x/agent-transcripts/parent/child.jsonl"
             payload["_source"] = "pi"
 
             let routed = try route(appState: appState, payload: payload)
-            // OMP routing must have fired: session_id is rootId, agent_id is set
+            // DeclaredSubsession wins: session_id is rootId, agent_id is preserved.
             XCTAssertEqual(routed.raw["session_id"] as? String, rootId)
-            XCTAssertEqual(routed.raw["agent_id"] as? String, "ResearchScout")
-            // No Cursor-specific fields added
+            XCTAssertEqual(routed.raw["agent_id"] as? String, childId)
             XCTAssertNil(routed.raw["_cursor_subagent"])
         }
     }

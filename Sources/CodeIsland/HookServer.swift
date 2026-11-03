@@ -261,7 +261,7 @@ class HookServer {
         if event.agentId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
             return true
         }
-        if (raw["_omp_subagent"] as? Bool) == true
+        if SubsessionRouter.parentCardId(in: raw) != nil
             || (raw["_cursor_subagent"] as? Bool) == true
             || (raw["_codex_subagent"] as? Bool) == true
             || (raw["_via_plugin"] as? Bool) == true {
@@ -322,7 +322,6 @@ class HookServer {
     private static let cursorSourceExactBytes = Data(#""_source":"cursor""#.utf8)
     private static let cursorCliSourceExactBytes = Data(#""_source":"cursor-cli""#.utf8)
     private static let ppidKeyBytes = Data(#""_ppid""#.utf8)
-    private static let ompSubagentMarkerBytes = Data(#""_omp_subagent""#.utf8)
     private static let ompSourceExactBytes = Data(#""_source":"pi""#.utf8)
     /// JSON `\uXXXX` escape — only then do we fall back to a full parse.
     private static let jsonUnicodeEscapeBytes = Data(#"\u"#.utf8)
@@ -388,11 +387,6 @@ class HookServer {
             && data.range(of: ppidKeyBytes) != nil
     }
 
-    /// Serialize `rewritten` to JSON; return `fallback` on failure.
-    private static func serializeOrFallback(_ rewritten: [String: Any], fallback: Data) -> Data {
-        (try? JSONSerialization.data(withJSONObject: rewritten)) ?? fallback
-    }
-
     // MARK: - Payload helpers
 
     nonisolated private static func nonEmptyString(_ value: Any?) -> String? {
@@ -409,107 +403,9 @@ class HookServer {
         SubsessionRouter.positivePpid(in: raw)
     }
 
-    /// Hidden requests return no decision so their agent remains responsible for asking.
-    private static func hiddenPluginResponse(for raw: [String: Any]) -> Data {
-        Data("{}".utf8)
-    }
-
     nonisolated private static func codexSubagentMetadata(from raw: [String: Any]) -> CodexSubagentMetadata? {
         guard let path = nonEmptyString(raw["transcript_path"]) else { return nil }
         return CodexDiscovery.codexSubagentMetadata(inTranscriptPath: path)
-    }
-
-
-    // MARK: - OMP subagent routing
-
-    /// Decision produced by ``decideOmpSubagent(raw:)``.
-    enum OmpSubagentDecision {
-        /// Payload is a valid OMP child; apply the chosen mode.
-        case route(childSessionId: String, parentSessionId: String, agentId: String, agentType: String)
-        /// Already routed — `_omp_subagent` + `agent_id` + `_omp_child_session_id`
-        /// but no `_omp_parent_session_id`. Leave unchanged.
-        case alreadyMerged
-        /// Not an OMP child event, or invalid/partial metadata. Pass through.
-        case passThrough
-    }
-
-    /// Cheap structural check: true when raw bytes contain `"_omp_subagent"`.
-    internal static func mayBeOmpSubagent(data: Data) -> Bool {
-        data.range(of: ompSubagentMarkerBytes) != nil
-    }
-
-    /// Parse and validate OMP routing metadata from an already-deserialized payload.
-    ///
-    /// Returns `.route` when all required fields are present and valid.
-    /// Returns `.alreadyMerged` for a payload that has already been routed.
-    /// Returns `.passThrough` for anything else (including malformed/partial metadata).
-    internal static func decideOmpSubagent(raw: [String: Any]) -> OmpSubagentDecision {
-        // Must have _omp_subagent: true
-        guard (raw["_omp_subagent"] as? Bool) == true else { return .passThrough }
-
-        // Already-merged: has agent_id and _omp_child_session_id but no parent pointer.
-        if Self.nonEmptyString(raw["agent_id"]) != nil,
-           Self.nonEmptyString(raw["_omp_child_session_id"]) != nil,
-           raw["_omp_parent_session_id"] == nil {
-            return .alreadyMerged
-        }
-
-        // All routing fields must be present and non-empty.
-        guard let childSessionId = Self.rawSessionId(from: raw),
-              let parentSessionId = Self.nonEmptyString(raw["_omp_parent_session_id"]),
-              let agentId = Self.nonEmptyString(raw["_omp_agent_id"]),
-              let agentType = Self.nonEmptyString(raw["_omp_agent_type"]) else {
-            return .passThrough
-        }
-        // Child and parent must be distinct.
-        guard childSessionId != parentSessionId else { return .passThrough }
-
-        return .route(
-            childSessionId: childSessionId,
-            parentSessionId: parentSessionId,
-            agentId: agentId,
-            agentType: agentType
-        )
-    }
-
-    /// Apply OMP-specific routing when ``decideOmpSubagent(raw:)`` returns `.route`.
-    ///
-    /// - `separate`: return `(data, nil)` — child session ID and title are unchanged.
-    /// - `merge`:    rewrite `session_id` to the resolved root key, set `agent_id`,
-    ///               `agent_type`, and `_omp_child_session_id`; remove the three
-    ///               routing-only fields `_omp_parent_session_id`, `_omp_agent_id`,
-    ///               and `_omp_agent_type`. Falls back to original `data` on
-    ///               serialization failure.
-    /// - `hide`:     return `(data, hiddenPluginResponse)`.
-    private func applyOmpRouting(
-        data: Data,
-        raw: [String: Any],
-        childSessionId: String,
-        parentSessionId: String,
-        agentId: String,
-        agentType: String,
-        mode: SubsessionMode
-    ) -> RoutedHook {
-        switch mode {
-        case .hide:
-            return RoutedHook(data: data, json: raw, response: Self.hiddenPluginResponse(for: raw))
-        case .merge:
-            let resolvedParent = appState.findSessionId(providerSessionId: parentSessionId)
-                ?? parentSessionId
-            var rewritten = raw
-            rewritten["session_id"] = resolvedParent
-            rewritten["agent_id"] = agentId
-            rewritten["agent_type"] = agentType
-            rewritten["_omp_child_session_id"] = childSessionId
-            rewritten.removeValue(forKey: "_omp_parent_session_id")
-            rewritten.removeValue(forKey: DeclaredSubsession.parentKey)
-            rewritten.removeValue(forKey: "_omp_agent_id")
-            rewritten.removeValue(forKey: "_omp_agent_type")
-            return RoutedHook(data: data, json: rewritten, rewritten: true)
-        default:
-            // .separate or unknown — leave session ID and title as-is.
-            return RoutedHook(data: data, json: raw, rewritten: true)
-        }
     }
 
     /// OMP supervised processes inherit their launching session's process
@@ -521,7 +417,7 @@ class HookServer {
         mode: SubsessionMode
     ) -> RoutedHook? {
         guard case .local = origin,
-              (raw["_omp_subagent"] as? Bool) != true,
+              SubsessionRouter.parentCardId(in: raw) == nil,
               SessionSnapshot.normalizedSupportedSource(raw["_source"] as? String) == "pi",
               let childSessionId = Self.rawSessionId(from: raw),
               let rawProcessId = Self.pluginPpid(from: raw),
@@ -543,21 +439,34 @@ class HookServer {
             appState.removeSession(childSessionId)
         }
 
+        // Stamp the canonical subsession contract so SubsessionRouter routes
+        // this nested process exactly like any other declared child.
         var child = raw
-        child["_omp_subagent"] = true
-        child["_omp_parent_session_id"] = parentSessionId
-        child["_omp_agent_id"] = childSessionId
-        child["_omp_agent_type"] = "omp"
+        child[DeclaredSubsession.parentKey] = parentSessionId
+        child["agent_type"] = "omp"
 
-        return applyOmpRouting(
-            data: data,
-            raw: child,
-            childSessionId: childSessionId,
-            parentSessionId: parentSessionId,
-            agentId: childSessionId,
-            agentType: "omp",
-            mode: mode
+        let context = appState.subsessionContext
+        guard let link = SubsessionRouter.link(in: child, context: context) else {
+            return RoutedHook(data: data, json: child, rewritten: true)
+        }
+        let original = child
+        let outcome = SubsessionRouter.route(
+            &child,
+            link: link,
+            mode: mode,
+            cards: context.cards,
+            isBlockingRequest: {
+                HookEvent(json: original).map { Self.routeKind(for: $0) != .event } ?? false
+            }
         )
+        switch outcome {
+        case .unchanged:
+            return RoutedHook(data: data, json: child, rewritten: true)
+        case .rewritten:
+            return RoutedHook(data: data, json: child, rewritten: true)
+        case .hidden:
+            return RoutedHook(data: data, json: child, response: Data("{}".utf8))
+        }
     }
 
     /// A hook after Agent Sub-Sessions: `json` is its parsed payload when
@@ -585,39 +494,20 @@ class HookServer {
     /// Agent Sub-Sessions (#123, #151, #262, #378): find whose child the hook
     /// is (``SubsessionRouter/link(in:context:now:)``) and place it — on the
     /// child's own card, linked to its parent; folded into the parent's card;
-    /// or hidden. OMP subagent routing (``decideOmpSubagent(raw:)``) runs
-    /// first and short-circuits before ``SubsessionRouter`` sees the payload.
+    /// or hidden. OMP children use canonical `_parent_session_id` and route
+    /// through ``SubsessionRouter`` alongside every other child kind.
     private func routeSubsessionPayloadIfNeeded(data: Data) -> RoutedHook {
         let mode = AppState.currentPluginSessionMode()
-        let mayBeOmp = Self.mayBeOmpSubagent(data: data)
-            || (data.range(of: Self.ompSourceExactBytes) != nil
-                && data.range(of: Self.ppidKeyBytes) != nil)
-        guard Self.mayNeedSubsessionRouting(data: data, mode: mode) || mayBeOmp,
+        let mayBeNestedOmp = data.range(of: Self.ompSourceExactBytes) != nil
+            && data.range(of: Self.ppidKeyBytes) != nil
+        guard Self.mayNeedSubsessionRouting(data: data, mode: mode) || mayBeNestedOmp,
               var raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return RoutedHook(data: data)
         }
 
-        // OMP explicit subagent routing takes priority over SubsessionRouter.
-        switch Self.decideOmpSubagent(raw: raw) {
-        case .route(let childSessionId, let parentSessionId, let agentId, let agentType):
-            return applyOmpRouting(
-                data: data,
-                raw: raw,
-                childSessionId: childSessionId,
-                parentSessionId: parentSessionId,
-                agentId: agentId,
-                agentType: agentType,
-                mode: mode
-            )
-        case .alreadyMerged:
-            return RoutedHook(data: data, json: raw)
-        case .passThrough:
-            break
-        }
-
         // OMP nested-process routing: a fresh OMP session whose process ancestry
         // includes an active parent OMP session is treated as a child.
-        if data.range(of: Self.ompSourceExactBytes) != nil,
+        if mayBeNestedOmp,
            let routed = routeNestedOmpProcessIfNeeded(data: data, raw: raw, mode: mode) {
             return routed
         }

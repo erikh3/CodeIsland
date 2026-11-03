@@ -236,7 +236,7 @@ describe("lifecycle event wire contract", () => {
     expect(hookNames).toContain("Stop");
     const stopEvent = sent.find((e) => e.hook_event_name === "Stop");
     expect(stopEvent).toBeDefined();
-    expect(stopEvent!._omp_subagent).toBeUndefined();
+    expect(stopEvent!._parent_session_id).toBeUndefined();
   });
 
   test("non-terminal agent_end with willContinue=true emits no Stop", async () => {
@@ -341,9 +341,9 @@ describe("registry-driven SubagentStop", () => {
 
     const stops = sent.filter((e) => e.hook_event_name === "SubagentStop");
     expect(stops).toHaveLength(1);
-    expect(stops[0]!._omp_subagent).toBe(true);
-    expect(stops[0]!._omp_agent_id).toBe(agentId);
-    expect(stops[0]!._omp_parent_session_id).toBe("pi-root-provider-id");
+    expect(stops[0]!._parent_session_id).toBe("pi-parent-provider-id");
+    expect(stops[0]!.session_id).toBe("pi-nested-session");
+    expect(stops[0]!.agent_type).toBe("reviewer");
   });
 
   test("aborted status emits SubagentStop", async () => {
@@ -410,7 +410,7 @@ describe("session event emission", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]!.hook_event_name).toBe("SessionStart");
     expect(sent[0]!.session_id).toBe("pi-root-abc");
-    expect(sent[0]!._omp_subagent).toBeUndefined();
+    expect(sent[0]!._parent_session_id).toBeUndefined();
   });
 
   test("root session_start does not emit SessionStart twice for the same session", async () => {
@@ -424,7 +424,7 @@ describe("session event emission", () => {
     expect(starts).toHaveLength(1);
   });
 
-  test("nested child session_start emits the top-level parent ID", async () => {
+  test("nested child session_start emits canonical subsession fields with immediate parent", async () => {
     const sent: Record<string, unknown>[] = [];
     const ctx = makeChildCtx("nested-session", { kind: "sub", id: "Parent.Child", name: "reviewer", depth: 2, parentId: "Parent" });
     const childManager = ctx.sessionManager;
@@ -440,10 +440,10 @@ describe("session event emission", () => {
 
     expect(sent).toHaveLength(1);
     expect(sent[0]!.hook_event_name).toBe("SubagentStart");
-    expect(sent[0]!._omp_subagent).toBe(true);
-    expect(sent[0]!._omp_parent_session_id).toBe("pi-root-provider-id");
-    expect(sent[0]!._omp_agent_id).toBe("Parent.Child");
-    expect(sent[0]!._omp_agent_type).toBe("reviewer");
+    // _parent_session_id is the immediate parent (canonical DeclaredSubsession key).
+    expect(sent[0]!._parent_session_id).toBe("pi-parent-provider-id");
+    expect(sent[0]!.session_id).toBe("pi-nested-session");
+    expect(sent[0]!.agent_type).toBe("reviewer");
   });
 
   test("child session_shutdown emits no SessionEnd", async () => {
@@ -476,7 +476,7 @@ describe("session event emission", () => {
     const endEvents = sent.filter((e) => e.hook_event_name === "SessionEnd");
     expect(endEvents).toHaveLength(1);
     expect(endEvents[0]!.session_id).toBe("pi-root-shutdown");
-    expect(endEvents[0]!._omp_subagent).toBeUndefined();
+    expect(endEvents[0]!._parent_session_id).toBeUndefined();
   });
 
   // ── root session identity handoff ───────────────────────────────────────────
@@ -574,7 +574,7 @@ describe("/clear input handler", () => {
     const startEvents = sent.filter((e) => e.hook_event_name === "SessionStart");
     expect(startEvents).toHaveLength(1);
     expect(startEvents[0]!.session_id).toBe("pi-root-clear");
-    expect(startEvents[0]!._omp_subagent).toBeUndefined();
+    expect(startEvents[0]!._parent_session_id).toBeUndefined();
 
     // No SessionEnd must be emitted — removing the card is the wrong behavior.
     const endEvents = sent.filter((e) => e.hook_event_name === "SessionEnd");
@@ -787,7 +787,7 @@ describe("/fresh session_switch checklist reset", () => {
       ["SessionEnd", "pi-old-fresh-root"],
       ["SessionStart", "pi-new-fresh-root"],
     ]);
-    expect(sent[1]!._omp_subagent).toBeUndefined();
+    expect(sent[1]!._parent_session_id).toBeUndefined();
   });
 });
 
@@ -809,7 +809,7 @@ describe("/rename input handler", () => {
     expect(sent[0]!.hook_event_name).toBe("SessionStart");
     expect(sent[0]!.session_id).toBe("pi-root-rename");
     expect(sent[0]!.session_title).toBe("My New Session");
-    expect(sent[0]!._omp_subagent).toBeUndefined();
+    expect(sent[0]!._parent_session_id).toBeUndefined();
   });
 
   test("/rename with blank name emits nothing", async () => {

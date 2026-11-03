@@ -1,5 +1,5 @@
 // CodeIsland pi extension
-// version: v22
+// version: v23
 // OMP-compatible install
 
 /**
@@ -726,8 +726,10 @@ export default function codeislandExtension(
   /**
    * Builds the complete event payload for CodeIsland.
    *
-   * For confirmed subagents, stamps child metadata and `session_title` on every
-   * event so HookServer can route it.  Root events carry no child markers.
+   * For confirmed subagents, stamps `_parent_session_id` and `agent_type` so
+   * HookServer's SubsessionRouter routes via DeclaredSubsession. The child's
+   * card id (derived from `session_id`) becomes the `agent_id` subagent row
+   * once the router folds the payload. Root events carry none of these fields.
    */
   function buildEvent(
     identity: OmpSessionIdentity,
@@ -737,18 +739,16 @@ export default function codeislandExtension(
     const rawId = identity.kind !== "unresolved" ? identity.sessionId : "";
     const payload = base(rawId, cwd, extra, tty);
     if (identity.kind === "subagent") {
-      payload._omp_subagent = true;
-      payload._omp_parent_session_id = `pi-${identity.rootSessionId}`;
-      payload._omp_agent_id = identity.agentId;
-      payload._omp_agent_type = identity.agentType;
-      payload.agent_type = identity.agentType;
-      // _parent_session_id: immediate parent session (upstream field; equals
-      // _omp_parent_session_id for depth-1 subagents; differs for deeper nesting
-      // where _omp_parent_session_id always points to root).
-      // _parent_session_id falls back to rootSessionId when the parent has already
-      // deregistered from ompAgentCards (e.g. a cached subagent after parent shutdown).
-      const parentSid = ompAgentCards().get(identity.parentAgentId) ?? identity.rootSessionId;
+      // _parent_session_id: immediate parent session (the canonical DeclaredSubsession
+      // key HookServer routes on). For depth-1 subagents this is the root; for deeper
+      // nesting it is the direct parent. Falls back to rootSessionId when the parent
+      // has already deregistered from ompAgentCards (e.g. a cached subagent after
+      // parent shutdown).
+      const parentSid = agentRegistry?.get(identity.parentAgentId)?.session?.sessionManager.getSessionId()
+        ?? ompAgentCards().get(identity.parentAgentId)
+        ?? identity.rootSessionId;
       payload._parent_session_id = `pi-${parentSid}`;
+      payload.agent_type = identity.agentType;
       payload.session_title = `Subagent \u00B7 ${identity.agentId}`;
     }
     return payload;

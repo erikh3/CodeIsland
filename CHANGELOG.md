@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### English
+- OMP explicit children and nested processes now use upstream's shared subsession router and canonical parent metadata. Hide mode retains blocking questions and approvals instead of swallowing them.
 - The thinking and tool-intent sweep stays aligned with the label and travels across its full rendered width, without overlapping shifted text.
 - Webhook URL and event-filter placeholder text is now inside the editable field instead of appearing as an uneditable Form label.
 - OMP identity, rename, and session card lifecycle: `/new`, resume, fork, and startup identity changes each replace the existing card in place; `/fresh` keeps the same card when the root session ID is unchanged; `/rename` is forwarded as a new SessionStart with the updated title so the card name tracks it live. CodeIsland removes stale duplicate OMP cards that share one Herdr pane. Restart any already-running OMP processes after a CodeIsland update to load the new extension.
@@ -16,11 +17,12 @@
 - Webhook forwarding can wait for keyboard, mouse, and trackpad input to go idle for a configurable interval before sending; a locked login session bypasses the wait and sends queued events immediately. A separate main-session-only filter excludes subagent and child-session activity. The toolbar button shows an arc ring filling toward the threshold while waiting, then plays a brief ring animation when delivery activates.
 - The notch toolbar has a webhook on/off toggle next to the sound control. Webhook settings moved to their own Settings page.
 - A question card collapses on an outside click; an approval card does not (it blocks until answered or dismissed).
-- App entry point switched from SwiftUI Scene to an explicit AppKit `NSApplication` + `AppDelegate` launch path, fixing launch failures in certain build configurations.
+- App entry point switched from SwiftUI Scene to an explicit AppKit `NSApplication` + `AppDelegate` launch path, working around a launch issue observed in certain build configurations.
 - Build packaging uses upstream's native SwiftPM release helper and copies the exact application resource bundle, including the custom avatar font.
 - Session titles with a leading avatar glyph or emoji omit the `#` prefix; plain titles keep it. Nerd Fonts glyphs use the bundled Symbols Nerd Font, loaded once per process, while title text retains the existing system font.
 
 ### 中文
+- OMP 显式子会话和嵌套进程现在使用上游共享子会话路由器和标准父会话元数据。隐藏模式保留阻塞提问与审批，不再吞掉这些请求。
 - Webhook URL 和事件过滤器的占位文字现在显示在可编辑输入框内，不再被当成不可编辑的 Form 标签。
 - OMP 身份、重命名与会话卡片生命周期：`/new`、恢复、分叉和启动时的身份变更，各自在原位替换现有卡片；根会话 ID 不变时 `/fresh` 保留同一卡片；`/rename` 以包含新标题的 SessionStart 形式转发，卡片名称实时更新。CodeIsland 移除同一 Herdr 面板上的过期重复 OMP 卡片。CodeIsland 更新后请重启正在运行的 OMP 进程以加载新扩展。
 - OMP 每次工具调用的思考状态：OMP 传入的 `i`/`intent` 参数作为实时工具描述显示在卡片上。最近一次的 intent 在回合间的模型生成空隙中保留，卡片不会回退到空白的"thinking"。
@@ -33,7 +35,7 @@
 - Webhook 转发可以等到键盘、鼠标、触控板在可配置时长内都没有操作再发送；锁定登录会话时跳过等待、立即发送队列中的事件。单独的仅主会话过滤器可排除子代理和子会话活动。工具栏按钮在等待时以圆弧进度环显示剩余时长，投递激活时播放短暂的环形亮起动画。
 - 灵动岛工具栏在声音控件旁新增 Webhook 开关。Webhook 设置迁移至独立的设置页面。
 - 提问卡片在面板外点击时收起；审批卡片不收起（必须作答或手动关闭）。
-- 应用入口从 SwiftUI Scene 改为显式 AppKit `NSApplication` + `AppDelegate` 启动路径，修复了部分构建配置下的启动失败。
+- 应用入口从 SwiftUI Scene 改为显式 AppKit `NSApplication` + `AppDelegate` 启动路径，规避了部分构建配置下观察到的启动问题。
 - 构建打包使用上游的 native SwiftPM 发布辅助脚本，并复制完整的应用资源 bundle，包括自定义头像字体。
 - 以头像字形或 emoji 开头的会话标题省略 `#` 前缀；纯文字标题保持不变。Nerd Fonts 字形使用随包附带、每个进程只加载一次的 Symbols Nerd Font，标题文字继续使用原有系统字体。
 
