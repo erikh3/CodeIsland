@@ -285,6 +285,44 @@ Antigravity 的 `PreToolUse` hook 只能拒绝工具调用、不能批准，所�
 
 </details>
 
+<a name="omp"></a>
+<details>
+<summary><b>Pi / Oh My Pi</b></summary>
+
+<br>
+
+CodeIsland 把 TypeScript 扩展安装到 `~/.omp/agent/extensions/codeisland.ts`（Pi 则是 `~/.pi/`）。Oh My Pi 在启动时加载扩展，因此安装或更新 CodeIsland 后，请重启正在运行的 OMP 进程。
+
+会话卡片生命周期：`/new`、恢复、分叉和启动时的身份变更，各自在原位替换现有卡片。根会话 ID 不变时 `/fresh` 保留同一卡片。`/rename` 实时更新卡片标题。同一 Herdr 面板上的过期重复卡片会自动移除。
+
+每次工具调用的思考状态：OMP 传入的 `i`/`intent` 参数显示为卡片上的实时状态文字。它在回合间的模型生成空隙中保留，卡片不会回退到空白的"thinking"。
+
+task 子会话遵循「设置 → 行为 → Agent 子会话」：独立模式下卡片显示子会话自身名称，子会话结束后依然可读；合并模式保持审批与提问卡片可操作；隐藏模式完全压制子会话事件。完成指示器仅在根会话结束时触发。
+
+根会话任务清单：`todo` 工具的分阶段任务列表以分段进度条的形式转发。多阶段列表在每项内容前加上阶段名以保留 OMP 显示的分组；单阶段列表保持原样。已完成项在进度条中渐隐；显式传入空 `todo` 快照则完全清空进度条。
+
+Oh My Pi 18.3 及更高版本：通过 `bash` 启动的嵌套 `omp` 按进程祖先关系识别，并遵循同一个 Agent 子会话设置；彼此独立的 OMP 进程仍保持独立根会话。
+
+AskUserQuestion：扩展提供了自己的终端渲染器，修复了 OMP 18.2.x 将内置渲染器迁移到内部包并停止导出后产生的渲染缺失问题。shadow Ask 工具会让刘海与 OMP 的终端 Ask 渲染器并行竞速；先收到答案的一方获胜，另一方取消。
+
+OMP 会话运行在 Herdr 内部时，CodeIsland 会订阅该面板的状态流。Herdr 上报的等待状态会保留，不被无关的 hook 活动覆盖。
+
+<a name="webhook"></a>
+<details>
+<summary><b>Webhook 转发</b></summary>
+
+<br>
+
+**设置 → Webhooks** 可以把原始事件 JSON 转发到你配置的地址。灵动岛工具栏在声音控件旁有一个开关，可以不进设置就暂停转发。
+
+答复审批或提问、查看完成卡片或打开对应会话、会话开始下一轮时，待发投递会取消。确认按会话、Agent 和工具调用分别匹配。
+
+两个可选过滤器帮助减少噪音：
+
+- 仅主会话：只转发根会话的事件，忽略子代理和子会话的活动。
+- 空闲延迟：等到键盘、鼠标、触控板在可配置时长内都没有操作再发送。锁定登录会话时跳过等待，立即发送所有待处理事件。工具栏按钮在等待时以圆弧进度环显示剩余时长，投递激活时播放短暂的环形亮起动画。
+</details>
+
 <details>
 <summary><b>SSH 远程主机</b></summary>
 
@@ -356,6 +394,19 @@ CodeIsland 往每个工具自己的配置里装一个轻量 hook。工具触发�
 ## 从源码构建
 
 需要 **macOS 14+** 和 **Swift 5.9+**。
+
+应用入口使用显式 AppKit `NSApplication` + `AppDelegate` 启动路径（而非 SwiftUI Scene），修复了部分构建配置下的启动失败。打包保留上游的 native SwiftPM 发布辅助脚本，并复制完整的应用资源 bundle，包括自定义头像字体。
+
+**上游拆分说明**（供开发者分 PR 提取功能参考）：
+- **App 启动修复**（`AppDelegate.swift`、`CodeIslandApp.swift`）：独立；无功能依赖。
+- **构建打包**（`build.sh`、`scripts/swiftpm-release.sh`）：使用上游的发布构建和资源 bundle 处理。
+- **OMP 身份 / 重命名 / 生命周期**（`codeisland-omp.ts`：`session_start`、`session_switch`、`session_shutdown`、`input` hook；`HookServer` `SessionStart`/`SessionEnd` 路由）：不依赖 intent 或任务清单代码。
+- **OMP intent 显示**（`codeisland-omp.ts`：`tool_execution_start` hook 发送带 `intent` 字段的 `PreToolUse`；`SessionSnapshot.lastToolIntent`）：依赖核心 reducer，不依赖 OMP 身份或任务清单。
+- **OMP 子会话路由 / 路由器+核心**（`codeisland-omp.ts`：通过 `OmpAgentContext` + `agentRegistry` 发出 `SubagentStart`/`SubagentStop`；`HookServer.decideOmpSubagent` / `applyOmpRouting`）：依赖身份层。
+- **Herdr 订阅 / 焦点路由**（`HerdrSubscription.swift`、`HerdrController.swift`）：依赖会话身份；与 intent 和任务清单无关。
+- **Webhook 后端**（`WebhookForwarder.swift`）：事件队列、取消和作用域；与工具栏开关及确认 UI 无关（`NotchPanelView.swift` Webhook 圆弧环）。
+- **Webhook 工具栏 / 确认 UI**（`NotchPanelView.swift` Webhook 圆弧环和开关）：依赖 `WebhookForwarder`。
+- **Webhook 设置页面**（`SettingsView.swift` `WebhooksPage`）：依赖 `WebhookForwarder` 设置键；与工具栏 UI 无关。
 
 ```bash
 git clone https://github.com/wxtsky/CodeIsland.git

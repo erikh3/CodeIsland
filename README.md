@@ -285,6 +285,44 @@ Antigravity's `PreToolUse` hook can refuse a tool call but can't approve one, so
 
 </details>
 
+<a name="omp"></a>
+<details>
+<summary><b>Pi / Oh My Pi</b></summary>
+
+<br>
+
+CodeIsland installs a TypeScript extension at `~/.omp/agent/extensions/codeisland.ts` (or `~/.pi/` for Pi). Oh My Pi loads extensions at startup, so restart any already-running OMP process after installing or updating CodeIsland.
+
+Session card lifecycle: `/new`, resume, fork, and startup identity changes each replace the existing card in place. `/fresh` keeps the same card when the root session ID is unchanged. `/rename` updates the card title live. Stale duplicate cards for the same Herdr pane are removed automatically.
+
+Per-tool thinking: the `i`/`intent` argument OMP passes on every tool call shows as the card's live status text. It persists through the model-generation gap between turns so the card does not blank back to bare "thinking".
+
+Task children follow the Agent Sub-Sessions setting (Settings → Behavior): separate cards show the child's own name and stay readable after it finishes; merged mode keeps approval and question cards actionable; hide suppresses child-session events entirely. The completion indicator fires only when the root session ends.
+
+Root session checklist: the `todo` tool's phased task list forwards as a segmented progress bar. Multi-phase lists prefix the phase name onto each item to preserve the grouping OMP shows; a single phase is left bare. Completed items fade in the bar; an explicit empty `todo` snapshot clears the bar entirely.
+
+OMP 18.3 and later: a nested `omp` launched through `bash` is recognized by process ancestry and follows the same Agent Sub-Sessions setting; independent OMP processes remain separate root sessions.
+
+AskUserQuestion: the extension supplies its own terminal renderer, fixing the rendering gap after OMP 18.2.x moved the built-in renderer to an internal package and stopped exporting it. The shadow Ask tool races the island against OMP's terminal Ask renderer; whichever receives an answer first wins and cancels the other.
+
+When an OMP session runs inside Herdr, CodeIsland subscribes to that pane's status stream. A waiting state reported by Herdr is preserved and not overwritten by unrelated hook activity.
+
+<a name="webhook"></a>
+<details>
+<summary><b>Webhook forwarding</b></summary>
+
+<br>
+
+**Settings → Webhooks** forwards raw event JSON to a URL you configure. The notch toolbar has an on/off toggle next to the sound control so you can pause forwarding without opening Settings.
+
+Queued delivery is cancelled when an approval or question is answered, when a completion card is viewed or its session is opened, and when the session starts another turn. Acknowledgements are scoped to the session, agent, and tool call.
+
+Two optional filters reduce noise:
+
+- Main session only: forward events only from the root session, ignoring subagent and child-session activity.
+- Idle delay: wait until keyboard, mouse, and trackpad input have all been idle for a configurable interval before sending. A locked login session bypasses the delay and sends any queued events immediately. The toolbar button shows an arc ring filling toward the threshold while waiting, then a brief ring animation when delivery activates.
+</details>
+
 <details>
 <summary><b>SSH remote hosts</b></summary>
 
@@ -356,6 +394,19 @@ Every shortcut can be rebound in **Settings → Shortcuts**, where you can also 
 ## Build from source
 
 Requires **macOS 14+** and **Swift 5.9+**.
+
+The app entry point uses an explicit AppKit `NSApplication` + `AppDelegate` launch path (not SwiftUI Scene), which fixes launch failures in certain build configurations. Packaging retains upstream's native SwiftPM release helper and copies the exact application resource bundle, including the custom avatar font.
+
+**Upstream extraction notes** (for developers splitting features into separate PRs):
+- **App launch fix** (`AppDelegate.swift`, `CodeIslandApp.swift`): standalone; no feature dependencies.
+- **Build packaging** (`build.sh`, `scripts/swiftpm-release.sh`): uses upstream's release build and resource bundle handling.
+- **OMP identity / rename / lifecycle** (`codeisland-omp.ts`: `session_start`, `session_switch`, `session_shutdown`, `input` hooks; `HookServer` `SessionStart`/`SessionEnd` routing): no dependency on intent or checklist code.
+- **OMP intent display** (`codeisland-omp.ts`: `tool_execution_start` hook sends `PreToolUse` with `intent` field; `SessionSnapshot.lastToolIntent`): depends on core reducer but not on OMP identity or checklist.
+- **OMP sub-session routing / router+core** (`codeisland-omp.ts`: `SubagentStart`/`SubagentStop` via `OmpAgentContext` + `agentRegistry`; `HookServer.decideOmpSubagent` / `applyOmpRouting`): depends on identity layer.
+- **Herdr subscriptions / focus routing** (`HerdrSubscription.swift`, `HerdrController.swift`): depends on session identity; independent of intent and checklist.
+- **Webhook backend** (`WebhookForwarder.swift`): event queue, cancellation, and scoping; independent of toolbar toggle and ack UI (`NotchPanelView.swift` webhook ring).
+- **Webhook toolbar / ack UI** (`NotchPanelView.swift` webhook arc ring and toggle): depends on `WebhookForwarder`.
+- **Webhook Settings page** (`SettingsView.swift` `WebhooksPage`): depends on `WebhookForwarder` settings keys; independent of toolbar UI.
 
 ```bash
 git clone https://github.com/wxtsky/CodeIsland.git
