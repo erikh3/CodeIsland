@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
-// The module reads HOME while loading; dynamic import isolates the no-bridge boundary.
+// Dynamic import exception: the module calls `detectTty()` and reads `process.env.HOME`
+// at load time to derive the bridge path. Static import cannot be used here because the
+// HOME env must be patched before the module initialises to prevent bridge file access.
 const originalHome = process.env.HOME;
 process.env.HOME = "/tmp/codeisland-omp-extension-tests-no-bridge";
 const {
@@ -169,7 +171,13 @@ describe("OMP Ask racing settlement", () => {
         selectedOptions: ["Beta"],
       },
     };
+    class FakeText {
+      constructor(readonly text: string) {}
+    }
     let registeredTool: {
+      mergeCallAndResult?: boolean;
+      renderCall?: (...args: unknown[]) => unknown;
+      renderResult?: (...args: unknown[]) => unknown;
       execute: (...args: unknown[]) => Promise<unknown>;
     } | undefined;
     let contextAborted = false;
@@ -190,11 +198,6 @@ describe("OMP Ask racing settlement", () => {
       }
     }
 
-    const renderer = {
-      mergeCallAndResult: true,
-      renderCall: () => null,
-      renderResult: () => null,
-    };
     const zod = {
       string: fakeSchema,
       number: fakeSchema,
@@ -205,8 +208,9 @@ describe("OMP Ask racing settlement", () => {
     const extensionApi = {
       zod,
       pi: {
+        AgentRegistry: { global: () => ({ get: () => undefined, list: () => [] }) },
         AskTool: FakeAskTool,
-        askToolRenderer: renderer,
+        Text: FakeText,
         settings: {},
       },
       getSessionName: () => undefined,
@@ -218,6 +222,19 @@ describe("OMP Ask racing settlement", () => {
     codeislandExtension(extensionApi as never);
 
     expect(registeredTool).toBeDefined();
+    expect(registeredTool!.mergeCallAndResult).toBe(true);
+    expect(registeredTool!.renderCall).toBeFunction();
+    expect(registeredTool!.renderResult).toBeFunction();
+    const renderedCall = registeredTool!.renderCall!({
+      questions: [{
+        id: "choice",
+        question: "PR candidate smoke?",
+        options: [{ label: "Alpha" }, { label: "Beta" }],
+      }],
+    });
+    expect(renderedCall).toBeInstanceOf(FakeText);
+    expect((renderedCall as FakeText).text).toContain("Ask: PR candidate smoke?");
+    expect((renderedCall as FakeText).text).toContain("○ Beta");
     const result = await registeredTool!.execute(
       "ask-fallback-smoke",
       {
@@ -232,6 +249,7 @@ describe("OMP Ask racing settlement", () => {
       {
         cwd: "/tmp",
         hasUI: true,
+        agent: { kind: "main", id: "Main", name: "main", depth: 0 },
         sessionManager: {
           getSessionId: () => "ask-fallback-smoke-session",
           getSessionFile: () => null,
@@ -250,13 +268,16 @@ describe("OMP Ask racing settlement", () => {
     expect(contextAborted).toBe(false);
   });
 
-  // OMP 18.2.x moved the tool renderers into @oh-my-pi/pi-tui, so
-  // `pi.pi.askToolRenderer` is undefined there. The extension must still load.
+  // The extension defines its own internal renderer using pi.pi.Text so it
+  // always has renderCall/renderResult regardless of OMP version.
   function registerAskTool(piExports: Record<string, unknown>) {
     class FakeAskTool {
       readonly label = "Ask";
       readonly description = "Native Ask";
       constructor(_session: unknown) {}
+    }
+    class FakeText {
+      constructor(readonly text: string) {}
     }
     let registeredTool: Record<string, unknown> | undefined;
     codeislandExtension({
@@ -267,7 +288,13 @@ describe("OMP Ask racing settlement", () => {
         array: fakeSchema,
         object: fakeSchema,
       },
-      pi: { AskTool: FakeAskTool, settings: {}, ...piExports },
+      pi: {
+        AgentRegistry: { global: () => ({ get: () => undefined, list: () => [] }) },
+        AskTool: FakeAskTool,
+        Text: FakeText,
+        settings: {},
+        ...piExports,
+      },
       getSessionName: () => undefined,
       registerTool: (tool: Record<string, unknown>) => {
         registeredTool = tool;
@@ -277,26 +304,13 @@ describe("OMP Ask racing settlement", () => {
     return registeredTool;
   }
 
-  test("loads without the native Ask renderer and leaves rendering to OMP", () => {
+  test("always has the internal Ask renderer (pi.pi.Text-based)", () => {
     const tool = registerAskTool({});
 
     expect(tool).toBeDefined();
     expect(tool!.name).toBe("ask");
-    expect("renderCall" in tool!).toBe(false);
-    expect("renderResult" in tool!).toBe(false);
-    expect("mergeCallAndResult" in tool!).toBe(false);
-  });
-
-  test("reuses the native Ask renderer when OMP still exports it", () => {
-    const renderer = {
-      mergeCallAndResult: true,
-      renderCall: () => null,
-      renderResult: () => null,
-    };
-    const tool = registerAskTool({ askToolRenderer: renderer });
-
-    expect(tool!.renderCall).toBe(renderer.renderCall);
-    expect(tool!.renderResult).toBe(renderer.renderResult);
     expect(tool!.mergeCallAndResult).toBe(true);
+    expect(typeof tool!.renderCall).toBe("function");
+    expect(typeof tool!.renderResult).toBe("function");
   });
 });

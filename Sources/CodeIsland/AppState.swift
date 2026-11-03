@@ -1100,6 +1100,43 @@ final class AppState {
         shouldAdmitRemovedSession(sessionId, evidence: .blockingRequest)
     }
 
+
+
+
+
+        }
+    }
+
+    // MARK: - Same-pane OMP root supersession
+
+    /// On a new OMP SessionStart that arrives on the same Herdr pane+socket as an
+    /// existing root session, remove the older root so the panel doesn't accumulate
+    /// stale cards. Only fires for root OMP events (`_omp_subagent` absent/false).
+    private func removeSupersededOmpRootSessions(for event: HookEvent, sessionId: String) {
+        guard EventNormalizer.normalize(event.eventName) == "SessionStart",
+              (event.rawJSON["_source"] as? String)?.lowercased() == "pi",
+              event.rawJSON["_omp_subagent"] as? Bool != true,
+              let paneId = event.rawJSON["_herdr_pane_id"] as? String,
+              let socketPath = event.rawJSON["_herdr_socket_path"] as? String,
+              !paneId.isEmpty,
+              !socketPath.isEmpty else {
+            return
+        }
+
+        let supersededIds: [String] = sessions.compactMap { existingId, session in
+            guard existingId != sessionId,
+                  session.source.lowercased() == "pi",
+                  session.herdrPaneId == paneId,
+                  session.herdrSocketPath == socketPath else {
+                return nil
+            }
+            return existingId
+        }
+        for supersededId in supersededIds {
+            removeSession(supersededId)
+        }
+    }
+
     // MARK: - Compact bar mascot rotation
 
     private func startRotationIfNeeded() {
@@ -1743,6 +1780,8 @@ final class AppState {
             && event.rawJSON["transcript_path"] is NSNull {
             return
         }
+
+        removeSupersededOmpRootSessions(for: event, sessionId: sessionId)
 
         if sessions[sessionId] == nil {
             sessions[sessionId] = SessionSnapshot()
@@ -2491,6 +2530,73 @@ final class AppState {
         }
 
         answerQuestion(answer, expectedSessionId: expectedSessionId)
+    }
+
+    /// Find an existing session whose source matches and whose CLI PID equals
+    /// the supplied ppid. Used by HookServer to merge plugin-proxied events
+    /// into their main session. (#123)
+    ///
+    /// Live routing requires recent activity to guard against macOS PID reuse.
+    /// Restore cleanup disables that check only after validating the persisted
+    /// process start time, so a live nested OMP process can be reconciled even
+    /// when its parent has been quiet for more than five minutes.
+    func findSessionId(
+        forSource source: String,
+        ppid: Int,
+        excluding excludedSessionId: String? = nil,
+        requireActive: Bool = false,
+        requireRecent: Bool = true
+    ) -> String? {
+        guard let processId = pid_t(exactly: ppid), processId > 0 else { return nil }
+        let normalized = SessionSnapshot.normalizedSupportedSource(source)
+        let cutoff = Date().addingTimeInterval(-300)
+        return sessions
+            .filter { sessionId, snap in
+                let snapSource = SessionSnapshot.normalizedSupportedSource(snap.source)
+                return snapSource == normalized
+                    && snap.remoteHostId == nil
+                    && snap.cliPid == processId
+                    && (!requireRecent || snap.lastActivity >= cutoff)
+                    && sessionId != excludedSessionId
+                    && (!requireActive || snap.status != .idle)
+            }
+            .sorted { lhs, rhs in
+                let lhsActive = lhs.value.status != .idle
+                let rhsActive = rhs.value.status != .idle
+                if lhsActive != rhsActive { return lhsActive }
+                return lhs.value.startTime < rhs.value.startTime
+            }
+            .first?.key
+    }
+
+    /// Finds the nearest recent session of the same provider in a process's
+    /// parent chain. OMP's supervised process broker sits between a parent OMP
+    /// session and a nested OMP process, so same-PID matching cannot link them.
+    func findAncestorSessionId(
+        forSource source: String,
+        processId: pid_t,
+        excluding excludedSessionId: String? = nil,
+        requireActive: Bool = false,
+        requireRecent: Bool = true,
+        parentPidLookup: (pid_t) -> pid_t? = ProcessTable.parentPid(of:)
+    ) -> String? {
+        guard processId > 0 else { return nil }
+        var current = parentPidLookup(processId)
+        var visited = Set<pid_t>()
+        for _ in 0..<32 {
+            guard let pid = current, pid > 1, visited.insert(pid).inserted else { break }
+            if let match = findSessionId(
+                forSource: source,
+                ppid: Int(pid),
+                excluding: excludedSessionId,
+                requireActive: requireActive,
+                requireRecent: requireRecent
+            ) {
+                return match
+            }
+            current = parentPidLookup(pid)
+        }
+        return nil
     }
 
     func findSessionId(providerSessionId: String) -> String? {
@@ -3458,11 +3564,42 @@ final class AppState {
         SessionPersistence.clear()
         _ = applyCodexSubsessionModeToKnownSessions()
         _ = applyCursorSubsessionModeToKnownSessions()
+        removeRestoredNestedOmpSessions()
         if activeSessionId == nil {
             activeSessionId = sessions.first(where: { $0.value.status != .idle })?.key
                 ?? sessions.keys.sorted().first
         }
         refreshDerivedState()
+    }
+
+    /// Drop duplicate OMP root cards persisted before supervised child
+    /// processes were recognized as sub-sessions. Separate mode intentionally
+    /// keeps both cards.
+    func removeRestoredNestedOmpSessions(
+        parentPidLookup: (pid_t) -> pid_t? = ProcessTable.parentPid(of:)
+    ) {
+        let mode = UserDefaults.standard.string(forKey: SettingsKey.pluginSessionMode)
+            ?? SettingsDefaults.pluginSessionMode
+        guard mode == "merge" || mode == "hide" else { return }
+
+        let nestedIds = sessions.compactMap { sessionId, session -> String? in
+            guard session.source == "pi",
+                  let processId = session.cliPid,
+                  findAncestorSessionId(
+                    forSource: "pi",
+                    processId: processId,
+                    excluding: sessionId,
+                    requireActive: false,
+                    requireRecent: false,
+                    parentPidLookup: parentPidLookup
+                  ) != nil else {
+                return nil
+            }
+            return sessionId
+        }
+        for sessionId in nestedIds {
+            removeSession(sessionId)
+        }
     }
 
     /// Idle snapshots with no live process are usually discarded on restore.

@@ -214,7 +214,7 @@ describe("a turn ends once, at the agent_end OMP does not go on from (#386)", ()
     await child("agent_end", { messages: [user("look"), failed, reply("found")] });
 
     const payloads = await payloadsFor("pi-sub-1", 2);
-    expect(eventNames(payloads)).toEqual(["SessionStart", "Stop"]);
+    expect(eventNames(payloads)).toEqual(["SubagentStart", "Stop"]);
     for (const payload of payloads) {
       expect(payload).toMatchObject({ _parent_session_id: "pi-main-1", agent_type: "explore" });
     }

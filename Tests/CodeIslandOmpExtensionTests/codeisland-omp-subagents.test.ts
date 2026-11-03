@@ -135,19 +135,19 @@ describe("OMP subagent sessions (#378)", () => {
     await parent("session_start");
     await child("session_start");
     await child("before_agent_start", { prompt: "Find the config loader" });
-    await child("tool_call", { toolName: "read", toolCallId: "c1", input: { path: "a.ts" } });
+    await child("tool_execution_start", { toolName: "read", args: { path: "a.ts" } });
     await child("tool_result", { toolName: "read", toolCallId: "c1" });
     await child("agent_end", { messages: [{ role: "assistant", content: [{ type: "text", text: "found" }] }] });
     await child("session_shutdown");
 
     const payloads = await payloadsFor("pi-sub-1", 6);
     expect(payloads.map((p) => p.hook_event_name)).toEqual([
-      "SessionStart",
+      "SubagentStart",
       "UserPromptSubmit",
       "PreToolUse",
       "PostToolUse",
       "Stop",
-      "SessionEnd",
+      "SubagentStop",
     ]);
     for (const payload of payloads) {
       expect(tagOf(payload)).toEqual({ parent: "pi-main-1", type: "explore" });
@@ -178,16 +178,18 @@ describe("OMP subagent sessions (#378)", () => {
     await child("session_start");
     // Its next turn registers it; subagents are only spawned during a turn.
     await parent("before_agent_start", { prompt: "go" });
-    await child("tool_call", { toolName: "read", toolCallId: "c2", input: { path: "b.ts" } });
+    await child("tool_execution_start", { toolName: "read", args: { path: "b.ts" } });
     // The parent ending does not unlink a child that already found it.
     await parent("session_shutdown");
     await child("agent_end", { messages: [] });
 
+    // session_start was unresolved (no event); first payload is SubagentStart
+    // emitted lazily when tool_execution_start resolved the parent.
     const payloads = await payloadsFor("pi-sub-3", 3);
-    expect(payloads.map((p) => p.hook_event_name)).toEqual(["SessionStart", "PreToolUse", "Stop"]);
-    expect("_parent_session_id" in payloads[0]).toBe(false);
-    expect(tagOf(payloads[1])).toEqual({ parent: "pi-main-3", type: "explore" });
-    expect(tagOf(payloads[2])).toEqual({ parent: "pi-main-3", type: "explore" });
+    expect(payloads.map((p) => p.hook_event_name)).toEqual(["SubagentStart", "PreToolUse", "Stop"]);
+    for (const payload of payloads) {
+      expect(tagOf(payload)).toEqual({ parent: "pi-main-3", type: "explore" });
+    }
   });
 
   test("an advisor's tool calls stay the session's own", async () => {
@@ -195,8 +197,8 @@ describe("OMP subagent sessions (#378)", () => {
     await parent("session_start");
     // OMP reports an advisor working for this session as a subagent of it.
     await parent(
-      "tool_call",
-      { toolName: "grep", toolCallId: "c3", input: { pattern: "TODO" } },
+      "tool_execution_start",
+      { toolName: "grep", args: { pattern: "TODO" } },
       { kind: "sub", id: "advisor", name: "advisor", depth: 0, parentId: "Main" },
     );
 
