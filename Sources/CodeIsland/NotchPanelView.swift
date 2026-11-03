@@ -4443,6 +4443,18 @@ func approvalInlineSummary(tool: String, toolDescription: String?, toolInput: [S
     return nil
 }
 
+/// One-line summary for a native Ask question shown in the session-list card
+/// while the question is still queued. Shows `"header: question"` when both
+/// are present and different; otherwise shows the question text alone.
+func questionInlineSummary(_ question: QuestionPayload) -> String? {
+    let text = question.question.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return nil }
+    let header = question.header?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let header, !header.isEmpty, header != text else { return text }
+    return "\(header): \(text)"
+}
+
+
 private struct SessionCard: View {
     var appState: AppState
     let sessionId: String
@@ -4486,6 +4498,13 @@ private struct SessionCard: View {
             && !showsExternalCursorQuestion
             && appState.pendingQuestion(forSession: sessionId) != nil
             && appState.surface.questionSessionId != sessionId
+    }
+    /// One-line summary of the native Ask question queued for this session,
+    /// shown on the card instead of the generic thinking/tool indicator.
+    /// `nil` when no native question is pending for this session.
+    private var queuedQuestionSummary: String? {
+        appState.pendingQuestion(forSession: sessionId)
+            .flatMap { questionInlineSummary($0.question) }
     }
     private var cardStatus: SessionCardStatus { SessionCardStatus(session) }
     /// The completion card is a full card whatever the density.
@@ -4661,7 +4680,7 @@ private struct SessionCard: View {
     @ViewBuilder
     private var chatAndLiveRows: some View {
         let live = liveRow
-        if !session.recentMessages.isEmpty || live != nil {
+        if !session.recentMessages.isEmpty || live != nil || queuedQuestionSummary != nil {
             VStack(alignment: .leading, spacing: 3) {
                 // Chat messages (detailed mode only)
                 let visibleMessages = session.status != .idle
@@ -4684,8 +4703,25 @@ private struct SessionCard: View {
                     )
                 }
 
-                // What the agent is doing right now.
-                if let live {
+                // A native Ask request is still in the question queue while the
+                // session-list card is visible. Show the actual prompt instead of
+                // reducing it to a generic indicator.
+                if let question = queuedQuestionSummary {
+                    HStack(alignment: .top, spacing: 5) {
+                        Text("?")
+                            .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color(red: 1.0, green: 0.6, blue: 0.2))
+                        Text(question)
+                            .font(.system(size: fontSize, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.85))
+                            .lineLimit(2)
+                            .truncationMode(.tail)
+                    }
+                }
+
+                // What the agent is doing right now — suppressed when a native
+                // question prompt is already shown above.
+                if let live, queuedQuestionSummary == nil {
                     liveRowView(live)
                 }
             }
