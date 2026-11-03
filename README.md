@@ -293,11 +293,13 @@ Antigravity's `PreToolUse` hook can refuse a tool call but can't approve one, so
 
 CodeIsland installs a TypeScript extension at `~/.omp/agent/extensions/codeisland.ts` (or `~/.pi/` for Pi). Oh My Pi loads extensions at startup, so restart any already-running OMP process after installing or updating CodeIsland.
 
+Upstream already provides OMP lifecycle events, child identity, the shadow Ask race, and Agent Sub-Sessions modes. This fork adds session-switch and rename handling, todo forwarding, persistent tool intent, nested-process inference, and the terminal Ask renderer.
+
 Session card lifecycle: `/new`, resume, fork, and startup identity changes each replace the existing card in place. `/fresh` keeps the same card when the root session ID is unchanged. `/rename` updates the card title live. Stale duplicate cards for the same Herdr pane are removed automatically.
 
 Per-tool thinking: the `i`/`intent` argument OMP passes on every tool call shows as the card's live status text. It persists through the model-generation gap between turns so the card does not blank back to bare "thinking".
 
-Task children follow the Agent Sub-Sessions setting (Settings → Behavior): separate cards show the child's own name and stay readable after it finishes; merged mode keeps approval and question cards actionable; hide suppresses child-session events entirely. The completion indicator fires only when the root session ends.
+Task children use upstream's Agent Sub-Sessions setting (Settings → Behavior). Separate cards show the child's own name; merge folds child activity into the parent; hide suppresses ordinary child activity while preserving blocking requests. Only root-session completion triggers the completion indicator.
 
 Root session checklist: the `todo` tool's phased task list forwards as a segmented progress bar. Multi-phase lists prefix the phase name onto each item to preserve the grouping OMP shows; a single phase is left bare. Completed items fade in the bar; an explicit empty `todo` snapshot clears the bar entirely.
 
@@ -306,6 +308,7 @@ OMP 18.3 and later: a nested `omp` launched through `bash` is recognized by proc
 AskUserQuestion: the extension supplies its own terminal renderer, fixing the rendering gap after OMP 18.2.x moved the built-in renderer to an internal package and stopped exporting it. The shadow Ask tool races the island against OMP's terminal Ask renderer; whichever receives an answer first wins and cancels the other.
 
 When an OMP session runs inside Herdr, CodeIsland subscribes to that pane's status stream. A waiting state reported by Herdr is preserved and not overwritten by unrelated hook activity.
+</details>
 
 <a name="webhook"></a>
 <details>
@@ -395,15 +398,16 @@ Every shortcut can be rebound in **Settings → Shortcuts**, where you can also 
 
 Requires **macOS 14+** and **Swift 5.9+**.
 
-The app entry point uses an explicit AppKit `NSApplication` + `AppDelegate` launch path (not SwiftUI Scene), which fixes launch failures in certain build configurations. Packaging retains upstream's native SwiftPM release helper and copies the exact application resource bundle, including the custom avatar font.
+The app entry point uses an explicit AppKit `NSApplication` + `AppDelegate` launch path (not SwiftUI Scene), working around a launch issue observed in certain build configurations. Packaging retains upstream's native SwiftPM release helper and copies the exact application resource bundle, including the custom avatar font.
 
-**Upstream extraction notes** (for developers splitting features into separate PRs):
+**Fork extraction notes** (for developers splitting features into separate PRs):
 - **App launch fix** (`AppDelegate.swift`, `CodeIslandApp.swift`): standalone; no feature dependencies.
-- **Build packaging** (`build.sh`, `scripts/swiftpm-release.sh`): uses upstream's release build and resource bundle handling.
-- **OMP identity / rename / lifecycle** (`codeisland-omp.ts`: `session_start`, `session_switch`, `session_shutdown`, `input` hooks; `HookServer` `SessionStart`/`SessionEnd` routing): no dependency on intent or checklist code.
+- **OMP session identity** (`codeisland-omp.ts`, `AppState.swift`): extends upstream lifecycle handling with session-switch, rename, and same-pane replacement.
+- **OMP checklist** (`codeisland-omp.ts`): forwards phased todo snapshots to the existing progress bar.
+- **OMP Ask renderer** (`codeisland-omp.ts`): restores terminal rendering while retaining upstream's shadow Ask race.
 - **OMP intent display** (`codeisland-omp.ts`: `tool_execution_start` hook sends `PreToolUse` with `intent` field; `SessionSnapshot.lastToolIntent`): depends on core reducer but not on OMP identity or checklist.
-- **OMP sub-session routing / router+core** (`codeisland-omp.ts`: `SubagentStart`/`SubagentStop` via `OmpAgentContext` + `agentRegistry`; `HookServer.decideOmpSubagent` / `applyOmpRouting`): depends on identity layer.
-- **Herdr subscriptions / focus routing** (`HerdrSubscription.swift`, `HerdrController.swift`): depends on session identity; independent of intent and checklist.
+- **OMP sub-session routing** (`codeisland-omp.ts`: emits canonical `_parent_session_id` and `agent_type`; `HookServer` routes via upstream `SubsessionRouter`; nested-process inference generates a canonical link then routes the same router): depends on identity layer.
+- **Herdr subscriptions / workspace activation** (`HerdrSubscription.swift`, `HerdrController.swift`): extends upstream pane focus with live status subscriptions and workspace activation.
 - **Webhook backend** (`WebhookForwarder.swift`): event queue, cancellation, and scoping; independent of toolbar toggle and ack UI (`NotchPanelView.swift` webhook ring).
 - **Webhook toolbar / ack UI** (`NotchPanelView.swift` webhook arc ring and toggle): depends on `WebhookForwarder`.
 - **Webhook Settings page** (`SettingsView.swift` `WebhooksPage`): depends on `WebhookForwarder` settings keys; independent of toolbar UI.
