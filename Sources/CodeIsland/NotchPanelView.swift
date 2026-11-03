@@ -5928,31 +5928,32 @@ private struct TypingIndicator: View {
         let peakOpacity: Double = bright ? 0.8 : 0.5
         let midOpacity: Double = bright ? 0.5 : 0.3
         let bandWidth: CGFloat = bright ? 80 : 60
-        let startPhase: CGFloat = bright ? -80 : -60
-        let endPhase: CGFloat = bright ? 100 : 80
 
         return Text(label)
             .font(.system(size: fontSize, design: .monospaced))
             .foregroundStyle(baseColor.opacity(baseOpacity))
-            .overlay(
-                LinearGradient(
-                    stops: [
-                        .init(color: .clear, location: 0),
-                        .init(color: .white.opacity(midOpacity), location: bright ? 0.35 : 0.4),
-                        .init(color: .white.opacity(peakOpacity), location: 0.5),
-                        .init(color: .white.opacity(midOpacity), location: bright ? 0.65 : 0.6),
-                        .init(color: .clear, location: 1),
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: bandWidth)
-                .offset(x: startPhase + (endPhase - startPhase) * sweep)
-                .mask(
+            .overlay {
+                GeometryReader { geometry in
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: .white.opacity(midOpacity), location: bright ? 0.35 : 0.4),
+                            .init(color: .white.opacity(peakOpacity), location: 0.5),
+                            .init(color: .white.opacity(midOpacity), location: bright ? 0.65 : 0.6),
+                            .init(color: .clear, location: 1),
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: bandWidth, height: geometry.size.height)
+                    .offset(x: -bandWidth + (geometry.size.width + bandWidth) * sweep)
+                }
+                .mask {
                     Text(label)
                         .font(.system(size: fontSize, design: .monospaced))
-                )
-            )
+                }
+                .allowsHitTesting(false)
+            }
     }
 }
 
