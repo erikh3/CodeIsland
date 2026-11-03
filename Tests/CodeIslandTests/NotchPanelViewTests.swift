@@ -223,6 +223,91 @@ final class NotchPanelViewTests: XCTestCase {
 
 }
 
+// MARK: - Idle panel width (webhook-aware toolbar)
+
+final class IdlePanelWidthTests: XCTestCase {
+    func testCollapsedIdleWidthIsSymmetricAroundNotch() {
+        let nw: CGFloat = 185
+        let wing: CGFloat = 60
+        let collapsed = NotchWidthMetrics.idlePanelWidth(notchWidth: nw, compactWingWidth: wing, hovered: false)
+        XCTAssertEqual(collapsed, nw + wing * 2, accuracy: 0.5)
+    }
+
+    func testHoveredIdleWidthExceedsCollapsedWidth() {
+        let nw: CGFloat = 185
+        let wing: CGFloat = 60
+        let collapsed = NotchWidthMetrics.idlePanelWidth(notchWidth: nw, compactWingWidth: wing, hovered: false)
+        let hovered  = NotchWidthMetrics.idlePanelWidth(notchWidth: nw, compactWingWidth: wing, hovered: true)
+        // Hovered must expand to accommodate 4 toolbar buttons + count text.
+        XCTAssertGreaterThan(hovered, collapsed)
+    }
+
+    func testHoveredIdleWidthIsSymmetric() {
+        let nw: CGFloat = 185
+        let wing: CGFloat = 60
+        let hovered = NotchWidthMetrics.idlePanelWidth(notchWidth: nw, compactWingWidth: wing, hovered: true)
+        // Width must be (notch + 2*sideWidth); (width - notch) must be even.
+        let sides = hovered - nw
+        XCTAssertEqual(sides.truncatingRemainder(dividingBy: 2), 0, accuracy: 0.5,
+                       "hovered idle width is not symmetric about the notch")
+    }
+
+    func testHoveredIdleWidthAccommodatesFourButtons() {
+        // 4 buttons × 22pt + 3 gaps × 4pt = 100pt toolbar; plus 13+8 count+gap
+        let toolbarMin: CGFloat = 4 * 22 + 3 * 4 + 13 + 8 + 6  // toolbar + count + padding
+        let nw: CGFloat = 185
+        let wing: CGFloat = 60
+        let hovered = NotchWidthMetrics.idlePanelWidth(notchWidth: nw, compactWingWidth: wing, hovered: true)
+        // Right side must be at least toolbarMin
+        XCTAssertGreaterThanOrEqual((hovered - nw) / 2, toolbarMin - 1)
+    }
+
+    func testHoveredIdleWidthAccommodatesArmedQuitPill() {
+        // When the QUIT? pill is armed the count is hidden; the pill (up to
+        // ~66pt for "BEENDEN?") replaces the 22pt power icon.  The hovered
+        // width must still fit: 3 icon buttons + pill + 3 gaps + padding.
+        let maxPill: CGFloat = 68   // matches idlePanelWidth default
+        let armedMin: CGFloat = 3 * 22 + 3 * 4 + maxPill + 6
+        let nw: CGFloat = 185
+        let wing: CGFloat = 60
+        let hovered = NotchWidthMetrics.idlePanelWidth(
+            notchWidth: nw, compactWingWidth: wing, hovered: true, maxQuitPillWidth: maxPill
+        )
+        XCTAssertGreaterThanOrEqual((hovered - nw) / 2, armedMin - 1,
+                                    "armed QUIT? pill clips in hovered idle bar")
+    }
+}
+
+// MARK: - Question inline summary
+
+final class QuestionInlineSummaryTests: XCTestCase {
+    func testPlainQuestionNoHeaderReturnsTrimmedText() {
+        let q = QuestionPayload(question: "  Which branch? ", options: nil)
+        XCTAssertEqual(questionInlineSummary(q), "Which branch?")
+    }
+
+    func testHeaderAndQuestionCombinedWhenDifferent() {
+        let q = QuestionPayload(question: "main or dev?", options: nil, header: "Branch")
+        XCTAssertEqual(questionInlineSummary(q), "Branch: main or dev?")
+    }
+
+    func testHeaderSuppressedWhenSameAsQuestion() {
+        let q = QuestionPayload(question: "Branch", options: nil, header: "Branch")
+        XCTAssertEqual(questionInlineSummary(q), "Branch")
+    }
+
+    func testEmptyQuestionReturnsNil() {
+        let q = QuestionPayload(question: "   ", options: nil)
+        XCTAssertNil(questionInlineSummary(q))
+    }
+
+    func testEmptyHeaderTreatedAsAbsent() {
+        let q = QuestionPayload(question: "Deploy now?", options: nil, header: "  ")
+        XCTAssertEqual(questionInlineSummary(q), "Deploy now?")
+    }
+}
+
+
 // MARK: - Hover phase state machine (PR #208)
 
 final class NotchHoverInteractionTests: XCTestCase {

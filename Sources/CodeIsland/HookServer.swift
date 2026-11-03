@@ -71,6 +71,7 @@ class HookServer {
         self.heldRequestCheckInterval = heldRequestCheckInterval
         self.limits = limits ?? .for(origin)
         self.parentPidLookup = parentPidLookup
+        appState.webhookForwarder = appState.webhookForwarder ?? WebhookForwarder(appState: appState)
     }
 
     /// Which machine this socket's requests come from.
@@ -255,58 +256,38 @@ class HookServer {
         return hostCwdFilter(hostId)
     }
 
-    /// Fire-and-forget POST of the hook event to a user-configured webhook URL.
-    /// Wraps the raw event in a small envelope (event/source/session/cwd/tool/raw)
-    /// so users on the receiving side don't need to dig through bridge-internal
-    /// fields. Optional event-name allow-list filters noisy event types. (#115)
-    private static func forwardEventToWebhook(_ event: HookEvent) {
-        let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: SettingsKey.webhookEnabled) else { return }
-        // Trim whitespace — users routinely paste URLs with leading/trailing space
-        // and URL(string:) silently rejects those (RFC 3986 forbids whitespace).
-        let urlString = (defaults.string(forKey: SettingsKey.webhookURL) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !urlString.isEmpty,
-              let endpoint = URL(string: urlString) else { return }
-
-        let normalizedName = EventNormalizer.normalize(event.eventName)
-
-        // Event filter: comma-separated allow-list. Empty = forward all.
-        // Match on either the normalized name (PreToolUse) or raw name (pre_tool_use).
-        if let filter = defaults.string(forKey: SettingsKey.webhookEventFilter),
-           !filter.trimmingCharacters(in: .whitespaces).isEmpty {
-            let allowed = filter.split(separator: ",")
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty }
-            guard allowed.contains(normalizedName) || allowed.contains(event.eventName) else { return }
+    nonisolated internal static func isSubsessionEvent(_ event: HookEvent) -> Bool {
+        let raw = event.rawJSON
+        if event.agentId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return true
         }
+        if (raw["_omp_subagent"] as? Bool) == true
+            || (raw["_cursor_subagent"] as? Bool) == true
+            || (raw["_codex_subagent"] as? Bool) == true
+            || (raw["_via_plugin"] as? Bool) == true {
+            return true
+        }
+        switch EventNormalizer.normalize(event.eventName) {
+        case "SubagentStart", "SubagentStop":
+            return true
+        default:
+            break
+        }
+        let declared = (raw["_source"] as? String) ?? (raw["source"] as? String)
+        let path = SubsessionRouter.transcriptPath(in: raw)
+        if CursorSubsessionRouter.shouldTreatAsCursorFamily(declaredSource: declared, transcriptPath: path),
+           let childSessionId = SubsessionRouter.sessionId(in: raw),
+           CursorSessionFolding.foldTarget(childSessionId: childSessionId, transcriptPath: path) != nil {
+            return true
+        }
+        return Self.codexSubagentMetadata(from: raw) != nil
+    }
 
-        let isoFormatter = ISO8601DateFormatter()
-        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-
-        let envelope: [String: Any] = [
-            "event": normalizedName,
-            "raw_event": event.eventName,
-            "session_id": event.sessionId ?? "",
-            "source": event.rawJSON["_source"] as? String ?? "",
-            "cwd": event.rawJSON["cwd"] as? String ?? "",
-            "tool_name": event.toolName ?? "",
-            "timestamp": isoFormatter.string(from: Date()),
-            "raw": event.rawJSON,
-        ]
-
-        guard let body = try? JSONSerialization.data(withJSONObject: envelope) else { return }
-
-        var request = URLRequest(url: endpoint, timeoutInterval: 5)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("CodeIsland-Webhook/1.0", forHTTPHeaderField: "User-Agent")
-        request.httpBody = body
-
-        URLSession.shared.dataTask(with: request) { _, _, _ in
-            // Fire-and-forget. Failures are intentionally swallowed: a flaky
-            // webhook should never break the hook event pipeline.
-        }.resume()
+    nonisolated internal static func webhookScopeAllows(
+        _ event: HookEvent,
+        mainSessionsOnly: Bool
+    ) -> Bool {
+        !mainSessionsOnly || !isSubsessionEvent(event)
     }
 
     nonisolated static func routeKind(for event: HookEvent) -> RouteKind {
@@ -834,10 +815,10 @@ class HookServer {
             return
         }
 
-        // User-configured webhook forwarding: fire-and-forget POST to an external URL.
-        // Runs *before* the route handlers so it doesn't add latency to user-facing
-        // permission/question UI. Disabled by default. (#115)
-        Self.forwardEventToWebhook(event)
+        // User-configured webhook forwarding via injected WebhookForwarder.
+        // Runs before the route handlers; delayed delivery waits for user inactivity
+        // and is cancelled via acknowledgeRequest once the user responds. (#115)
+        appState.webhookForwarder?.submit(event, routeKind: Self.routeKind(for: event))
 
         switch Self.routeKind(for: event) {
         case .permission:

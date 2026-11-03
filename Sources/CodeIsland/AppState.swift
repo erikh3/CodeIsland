@@ -108,6 +108,8 @@ final class AppState {
     @ObservationIgnored
     var questionTerminalFrontmostDetector: (SessionSnapshot) -> Bool =
         TerminalVisibilityDetector.isTerminalFrontmostForSession
+    @ObservationIgnored
+    var webhookForwarder: WebhookForwarder?
 
     func recordHookEvent(
         source: String?,
@@ -1770,6 +1772,9 @@ final class AppState {
             sessionId,
             evidence: .forHookEvent(event, normalizedEventName: normalizedEventName)
         ) else { return }
+        if normalizedEventName == "UserPromptSubmit" {
+            webhookForwarder?.acknowledgeSessionActivity(sessionId: sessionId)
+        }
 
         // Account chatter, not session activity. CodeBuddy fires
         // Notification(auth_success) as the CLI boots — before SessionStart and
@@ -2350,6 +2355,7 @@ final class AppState {
         let pending = permissionQueue.remove(at: index)
         let sessionId = pending.event.sessionId ?? "default"
         dismissedPermissionSessionIds.remove(sessionId)
+        webhookForwarder?.acknowledgeRequest(pending.event, kind: .permission)
         let responseData = always
             ? alwaysAllowAnswer(for: pending, sessionId: sessionId)
             : Self.plainAllowAnswer
@@ -2701,6 +2707,7 @@ final class AppState {
         let pending = permissionQueue.remove(at: index)
         let sessionId = pending.event.sessionId ?? "default"
         dismissedPermissionSessionIds.remove(sessionId)
+        webhookForwarder?.acknowledgeRequest(pending.event, kind: .permission)
         let response = #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}"#
         pending.continuation.resume(returning: Data(response.utf8))
         // Folded Task deny must not idle the whole parent chat card.
@@ -2962,6 +2969,7 @@ final class AppState {
                 ?? pending.question.header ?? "answer"
             pending.resolveCodexAppServer([answerKey: [answer]])
             let sessionId = pending.event.sessionId ?? "default"
+            webhookForwarder?.acknowledgeRequest(pending.event, kind: .question)
             sessions[sessionId]?.status = .processing
             showNextPending()
             refreshDerivedState()
@@ -2997,6 +3005,7 @@ final class AppState {
             responseData = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
         }
         pending.resolution.resumeHook(returning: responseData)
+        webhookForwarder?.acknowledgeRequest(pending.event, kind: .question)
         let sessionId = pending.event.sessionId ?? "default"
         resolveMergedSubagentAfterUI(
             sessionId: sessionId,
@@ -3064,6 +3073,7 @@ final class AppState {
             }
             pending.resolveCodexAppServer(answersByKey)
             let sessionId = pending.event.sessionId ?? "default"
+            webhookForwarder?.acknowledgeRequest(pending.event, kind: .question)
             sessions[sessionId]?.status = .processing
             showNextPending()
             refreshDerivedState()
@@ -3123,6 +3133,7 @@ final class AppState {
             responseData = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
         }
         pending.resolution.resumeHook(returning: responseData)
+        webhookForwarder?.acknowledgeRequest(pending.event, kind: .question)
         let sessionId = pending.event.sessionId ?? "default"
         resolveMergedSubagentAfterUI(
             sessionId: sessionId,
@@ -3216,6 +3227,7 @@ final class AppState {
             }
             pending.resolution.resumeHook(returning: responseData)
         }
+        webhookForwarder?.acknowledgeRequest(pending.event, kind: .question)
         let sessionId = pending.event.sessionId ?? "default"
         resolveMergedSubagentAfterUI(
             sessionId: sessionId,
