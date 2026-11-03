@@ -102,6 +102,13 @@ public struct SessionSnapshot: Sendable {
     /// leaves the running tool up (``finishesAnotherToolUse(_:)``).
     public var currentToolUseId: String?
     public var toolDescription: String?
+    /// The most recent tool's human-readable intent (the omp `i`/`intent`
+    /// argument). Unlike ``toolDescription``, this is NOT cleared on
+    /// `PostToolUse`, `Stop`, or `UserPromptSubmit` — it persists until the
+    /// next `PreToolUse` carrying an intent overwrites it. This lets the card
+    /// keep showing the last known intent through the model-generation gap
+    /// between turns instead of blanking back to bare "thinking".
+    public var lastToolIntent: String?
     public var lastActivity: Date = Date()
     public var cwd: String?
     public var model: String?
@@ -1352,6 +1359,10 @@ private func applyHookEvent(
         sessions[sessionId]?.status = .processing
         sessions[sessionId]?.currentTool = nil
         sessions[sessionId]?.toolDescription = nil
+        // `lastToolIntent` is intentionally NOT cleared here. omp keeps the last
+        // tool's intent visible through the model-generation gap at the start of
+        // a turn (it shows "Working…" beside the prior summary, never a blank).
+        // The first PreToolUse of the new turn overwrites it.
         // Separate-mode Cursor Task Stop self-tombstones; a new prompt means relaunch.
         if let source = sessions[sessionId]?.source,
            source == "cursor" || source == "cursor-cli" {
@@ -1384,6 +1395,9 @@ private func applyHookEvent(
             sessions[sessionId]?.currentTool = event.activityLabel
             sessions[sessionId]?.currentToolUseId = event.toolUseId
             sessions[sessionId]?.toolDescription = event.toolDescription
+            if let intent = event.toolIntent {
+                sessions[sessionId]?.lastToolIntent = intent
+            }
         }
     case "PostToolUse", "PostToolUseFailure":
         let success = eventName == "PostToolUse"

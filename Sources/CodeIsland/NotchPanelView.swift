@@ -1077,7 +1077,15 @@ private struct CompactToolStatus: View {
                 .truncationMode(.tail)
                 .help(liveOutput)
             } else if displayStatus == .processing {
-                TypingIndicator(fontSize: 11, label: L10n.shared["typing_thinking"], bright: true)
+                let thinkingLabel: String = {
+                    guard let intent = displaySession?.lastToolIntent, !intent.isEmpty else {
+                        return "🧠 \(L10n.shared["typing_thinking"])"
+                    }
+                    let maxLen = 48
+                    let clipped = intent.count > maxLen ? String(intent.prefix(maxLen)) + "…" : intent
+                    return "🧠 \(clipped)"
+                }()
+                TypingIndicator(fontSize: 11, label: thinkingLabel, bright: true)
                     .id("thinking-\(appState.rotatingSessionId ?? "")")
             }
         }
@@ -4439,18 +4447,24 @@ private struct SessionCard: View {
             HStack(alignment: .center, spacing: 6) {
                 SessionToolChip(tool: tool, color: cardStatus.color, fontSize: fontSize)
                 if let detail = session.toolDescription, !detail.isEmpty {
-                    MorphText(
-                        text: detail,
-                        font: .system(size: fontSize, design: .monospaced),
-                        color: .white.opacity(0.75),
-                        streamsRapidly: SessionSnapshot.rapidStreamingSources
-                            .contains(session.source)
-                    )
-                    .truncationMode(.tail)
+                    let toolLabel: String = {
+                        let maxLen = 60
+                        return detail.count > maxLen ? String(detail.prefix(maxLen)) + "…" : detail
+                    }()
+                    // Active-tool description shimmers across its rendered width.
+                    TypingIndicator(fontSize: fontSize, label: toolLabel)
                 }
             }
         case .thinking:
-            TypingIndicator(fontSize: fontSize, label: L10n.shared["typing_thinking"])
+            let thinkingLabel: String = {
+                guard let intent = session.lastToolIntent, !intent.isEmpty else {
+                    return "🧠 \(L10n.shared["typing_thinking"])"
+                }
+                let maxLen = 60
+                let clipped = intent.count > maxLen ? String(intent.prefix(maxLen)) + "…" : intent
+                return "🧠 \(clipped)"
+            }()
+            TypingIndicator(fontSize: fontSize, label: thinkingLabel)
         }
     }
 
