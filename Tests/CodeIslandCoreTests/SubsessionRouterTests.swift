@@ -239,6 +239,7 @@ final class SubsessionRouterTests: XCTestCase {
         XCTAssertEqual(try placement(codexThread(), .hide, codex), .hidden)
         XCTAssertEqual(try placement(codexThread(), .separate, codex), .ownCard(linkedTo: parent), "linked from now on")
 
+
         // A Cursor Task's Claude-format hook built a default card before its
         // IDE process named its chat.
         var chat = subsessionCard(source: "cursor", status: .running, transcriptPath: cursorTranscript, cliPid: 4242)
@@ -247,6 +248,48 @@ final class SubsessionRouterTests: XCTestCase {
         XCTAssertEqual(try placement(cursorByProcess(), .merge, cursor), .fold(into: cursorChat))
         XCTAssertEqual(try placement(cursorByProcess(), .hide, cursor), .hidden)
     }
+
+    func testDeclaredGrandchildUsesTerminalParentsTombstoneInMergeMode() throws {
+        let grandchild = "grandchild-session"
+        var root = subsessionCard(source: "pi", status: .processing)
+        root.recordClosedSubagentId(child)
+        let context = StubSubsessionContext(cards: [parent: root])
+        let raw: [String: Any] = [
+            "hook_event_name": "PreToolUse",
+            "session_id": grandchild,
+            "_source": "pi",
+            DeclaredSubsession.parentKey: child,
+        ]
+
+        XCTAssertEqual(
+            try placement(raw, .merge, context),
+            .fold(into: parent),
+            "A descendant keeps root attribution after its immediate parent settles"
+        )
+        XCTAssertEqual(
+            try placement(raw, .separate, context),
+            .ownCard(linkedTo: child),
+            "Separate mode retains the canonical immediate parent link"
+        )
+        XCTAssertEqual(
+            try placement(raw, .hide, context, blocking: true),
+            .ownCard(linkedTo: child),
+            "A blocked hidden descendant still reaches an actionable child card"
+        )
+    }
+
+    func testCodexGrandchildDoesNotUseDeclaredParentTombstones() {
+        var cli = subsessionCard(source: "codex", status: .idle)
+        cli.recordClosedSubagentId("shared-thread")
+        var desktop = subsessionCard(source: "codex", status: .idle)
+        desktop.recordClosedSubagentId("shared-thread")
+        let link = SubsessionLink(
+            kind: .codexThread, childCardId: "codexapp:grandchild", agentId: "grandchild",
+            parentCardId: "codexapp:shared-thread", parentAgentId: "shared-thread"
+        )
+        XCTAssertNil(SubsessionRouter.mergeHost(for: link, in: ["cli-root": cli, "codexapp:root": desktop]))
+    }
+
 
     func testFoldedChildFollowsItsRowWhateverTheModeOrEvidence() throws {
         var host = subsessionCard(source: "cursor", status: .running)

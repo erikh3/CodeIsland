@@ -416,3 +416,84 @@ final class PiAgentEventFlowTests: XCTestCase {
         XCTAssertFalse(effects.contains(.playSound("PostCompact")), "merged child PostCompact must not emit sound")
     }
 }
+
+extension PiAgentEventFlowTests {
+    func testRepeatedChildStartKeepsVisibleWorkUntilTerminalTeardown() throws {
+        let parentId = "pi-duplicate-child-start"
+        let childId = "pi-child-scout"
+        var sessions: [String: SessionSnapshot] = [:]
+
+        _ = try apply(["hook_event_name": "SessionStart", "session_id": parentId, "_source": "pi"], to: &sessions)
+        _ = try apply([
+            "hook_event_name": "SubagentStart", "session_id": parentId, "_source": "pi",
+            "agent_id": childId, "agent_type": "scout",
+        ], to: &sessions)
+        _ = try apply([
+            "hook_event_name": "PreToolUse", "session_id": parentId, "_source": "pi",
+            "agent_id": childId, "tool_name": "Read", "intent": "Inspect files",
+        ], to: &sessions)
+        _ = try apply([
+            "hook_event_name": "SubagentStart", "session_id": parentId, "_source": "pi",
+            "agent_id": childId, "agent_type": "scout",
+        ], to: &sessions)
+
+        XCTAssertEqual(sessions[parentId]?.subagents[childId]?.status, .running)
+        XCTAssertEqual(sessions[parentId]?.subagents[childId]?.currentTool, "Read")
+        XCTAssertEqual(sessions[parentId]?.subagents[childId]?.toolDescription, "Inspect files")
+
+        _ = try apply([
+            "hook_event_name": "Stop", "session_id": parentId, "_source": "pi", "agent_id": childId,
+        ], to: &sessions)
+        XCTAssertNil(sessions[parentId]?.subagents[childId])
+        XCTAssertTrue(sessions[parentId]?.hasClosedSubagentId(childId) == true)
+    }
+
+    func testFreshChildStartReopensAfterTerminalStopButNonterminalEndDoesNotStop() throws {
+        let parentId = "pi-revive-child"
+        let childId = "pi-child-reviewer"
+        var sessions: [String: SessionSnapshot] = [:]
+
+        _ = try apply(["hook_event_name": "SessionStart", "session_id": parentId, "_source": "pi"], to: &sessions)
+        _ = try apply([
+            "hook_event_name": "SubagentStart", "session_id": parentId, "_source": "pi",
+            "agent_id": childId, "agent_type": "reviewer",
+        ], to: &sessions)
+        _ = try apply([
+            "hook_event_name": "PostToolUse", "session_id": parentId, "_source": "pi",
+            "agent_id": childId, "tool_name": "Read",
+        ], to: &sessions)
+
+        XCTAssertNotNil(sessions[parentId]?.subagents[childId], "A continued run must not be treated as terminal")
+
+        _ = try apply([
+            "hook_event_name": "Stop", "session_id": parentId, "_source": "pi", "agent_id": childId,
+        ], to: &sessions)
+        XCTAssertTrue(sessions[parentId]?.hasClosedSubagentId(childId) == true)
+
+        _ = try apply([
+            "hook_event_name": "SubagentStart", "session_id": parentId, "_source": "pi",
+            "agent_id": childId, "agent_type": "reviewer",
+        ], to: &sessions)
+        XCTAssertNotNil(sessions[parentId]?.subagents[childId])
+        XCTAssertFalse(sessions[parentId]?.hasClosedSubagentId(childId) == true)
+    }
+}
+
+extension PiAgentEventFlowTests {
+    func testMergedChildKeepsItsOwnForwardedModelAndReasoningEffort() throws {
+        let parentId = "pi-child-model-parent"
+        let childId = "pi-child-model"
+        var sessions: [String: SessionSnapshot] = [:]
+
+        _ = try apply(["hook_event_name": "SessionStart", "session_id": parentId, "_source": "pi"], to: &sessions)
+        _ = try apply([
+            "hook_event_name": "SubagentStart", "session_id": parentId, "_source": "pi",
+            "agent_id": childId, "agent_type": "reviewer",
+            "model": "anthropic/claude-sonnet-5", "reasoning_effort": "high",
+        ], to: &sessions)
+
+        XCTAssertEqual(sessions[parentId]?.subagents[childId]?.model, "anthropic/claude-sonnet-5")
+        XCTAssertEqual(sessions[parentId]?.subagents[childId]?.reasoningEffort, "high")
+        XCTAssertNil(sessions[parentId]?.model, "Child metadata must not overwrite the root card")
+    }
+}

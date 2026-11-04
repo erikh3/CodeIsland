@@ -2327,20 +2327,24 @@ private func ensureSubagent(
     return true
 }
 
-/// Keep a child's own `model` (Codex child threads report it on their hooks)
-/// on its SubagentState. The parent's model is never used as a stand-in —
-/// `extractMetadata` is skipped for subagent events for the same reason.
+/// Keep a child's own model and reasoning effort on its SubagentState. The
+/// parent's metadata is never used as a stand-in — `extractMetadata` is
+/// skipped for subagent events for the same reason.
 private func recordSubagentModel(
     sessions: inout [String: SessionSnapshot],
     sessionId: String,
     agentId: String,
     event: HookEvent
 ) {
-    guard sessions[sessionId]?.subagents[agentId] != nil,
-          let model = (event.rawJSON["model"] as? String)?
-              .trimmingCharacters(in: .whitespacesAndNewlines),
-          !model.isEmpty else { return }
-    sessions[sessionId]?.subagents[agentId]?.model = model
+    guard sessions[sessionId]?.subagents[agentId] != nil else { return }
+    if let model = (event.rawJSON["model"] as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
+        sessions[sessionId]?.subagents[agentId]?.model = model
+    }
+    if let effort = (event.rawJSON["reasoning_effort"] as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines), !effort.isEmpty {
+        sessions[sessionId]?.subagents[agentId]?.reasoningEffort = effort
+    }
 }
 
 /// Mark the row of a child session Agent Sub-Sessions folded into this card
@@ -2370,6 +2374,12 @@ private func handleSubagentEvent(
 ) -> Bool {
     switch eventName {
     case "SubagentStart", "SessionStart":
+        // A registry can replay its start notification while the child is
+        // already working. That must not reset the row's tool/status, but a
+        // start after Stop/SessionEnd is a new run and reopens its tombstone.
+        if sessions[sessionId]?.subagents[agentId] != nil {
+            return true
+        }
         let agentType = subagentType(from: event)
         sessions[sessionId]?.clearClosedSubagentId(agentId)
         sessions[sessionId]?.subagents[agentId] = SubagentState(

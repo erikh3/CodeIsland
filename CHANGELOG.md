@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### English
+- OMP child observation now runs in the parent, so seance consults and other extension-free child sessions appear without weakening their isolation. Task, Eval agent/workpool, custom-agent and depth-zero clone lifecycles share canonical routing, preserve nested root attribution, reopen on a fresh run, and clear on completion/disposal. Duplicate starts preserve live tool state. Named advisor review backlog uses its own identity instead of overwriting the primary card; completion/judge handles are not subagents. The OMP extension is version 24; restart OMP or use `/reload` after installing the updated app.
 - OMP explicit children and nested processes now use upstream's shared subsession router and canonical parent metadata. Hide mode retains blocking questions and approvals instead of swallowing them.
 - The thinking and tool-intent sweep stays aligned with the label and travels across its full rendered width, without overlapping shifted text.
 - Webhook URL and event-filter placeholder text is now inside the editable field instead of appearing as an uneditable Form label.

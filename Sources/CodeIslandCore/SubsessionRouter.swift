@@ -185,7 +185,8 @@ public enum SubsessionRouter {
         guard let parent = link.parentCardId else { return nil }
         if cards[parent] != nil { return parent }
         if let parentAgentId = link.parentAgentId,
-           let host = SubsessionCards.cardHosting(foldedSubsession: parentAgentId, in: cards) {
+           let host = SubsessionCards.cardHosting(foldedSubsession: parentAgentId, in: cards)
+                ?? (link.kind == .declared ? SubsessionCards.cardHosting(closedFoldedSubsession: parentAgentId, in: cards) : nil) {
             return host
         }
         return link.kind.mayCreateParentCard ? parent : nil

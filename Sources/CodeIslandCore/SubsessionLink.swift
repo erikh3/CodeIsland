@@ -251,6 +251,17 @@ public enum SubsessionCards {
         cards.first { $0.value.subagents[agentId]?.subsessionKind != nil }?.key
     }
 
+    /// The card whose folded child has ended but may still name descendants.
+    /// A pi child can settle while one of the agents it spawned is still live;
+    /// its immediate parent id is then no longer a visible row, but its
+    /// tombstone still identifies the root card that owns the child tree.
+    public static func cardHosting(
+        closedFoldedSubsession agentId: String,
+        in cards: [String: SessionSnapshot]
+    ) -> String? {
+        cards.first { $0.value.hasClosedSubagentId(agentId) }?.key
+    }
+
     /// The card with a subagent row of this id, whoever made it: Codex files
     /// a spawned thread's hooks as a row of the session that spawned it.
     public static func cardHosting(

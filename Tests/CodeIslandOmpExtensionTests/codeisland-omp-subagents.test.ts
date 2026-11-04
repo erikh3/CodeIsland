@@ -192,22 +192,6 @@ describe("OMP subagent sessions (#378)", () => {
     }
   });
 
-  test("an advisor's tool calls stay the session's own", async () => {
-    const parent = session("main-4", main());
-    await parent("session_start");
-    // OMP reports an advisor working for this session as a subagent of it.
-    await parent(
-      "tool_execution_start",
-      { toolName: "grep", args: { pattern: "TODO" } },
-      { kind: "sub", id: "advisor", name: "advisor", depth: 0, parentId: "Main" },
-    );
-
-    const payloads = await payloadsFor("pi-main-4", 2);
-    expect(payloads.map((p) => p.hook_event_name)).toEqual(["SessionStart", "PreToolUse"]);
-    for (const payload of payloads) {
-      expect("_parent_session_id" in payload).toBe(false);
-    }
-  });
 
   test("a newer session keeps the registry id the old one gives up", async () => {
     const first = session("main-5a", main());

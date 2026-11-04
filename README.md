@@ -293,13 +293,15 @@ Antigravity's `PreToolUse` hook can refuse a tool call but can't approve one, so
 
 CodeIsland installs a TypeScript extension at `~/.omp/agent/extensions/codeisland.ts` (or `~/.pi/` for Pi). Oh My Pi loads extensions at startup, so restart any already-running OMP process after installing or updating CodeIsland.
 
-Upstream already provides OMP lifecycle events, child identity, the shadow Ask race, and Agent Sub-Sessions modes. This fork adds session-switch and rename handling, todo forwarding, persistent tool intent, nested-process inference, and the terminal Ask renderer.
+Upstream already provides OMP lifecycle events, child identity, the shadow Ask race, and Agent Sub-Sessions modes. This fork adds parent-side child observation, session-switch and rename handling, todo forwarding, persistent tool intent, nested-process inference, and the terminal Ask renderer.
 
 Session card lifecycle: `/new`, resume, fork, and startup identity changes each replace the existing card in place. `/fresh` keeps the same card when the root session ID is unchanged. `/rename` updates the card title live. Stale duplicate cards for the same Herdr pane are removed automatically.
 
 Per-tool thinking: the `i`/`intent` argument OMP passes on every tool call shows as the card's live status text. It persists through the model-generation gap between turns so the card does not blank back to bare "thinking".
 
-Task children use upstream's Agent Sub-Sessions setting (Settings → Behavior). Separate cards show the child's own name; merge folds child activity into the parent; hide suppresses ordinary child activity while preserving blocking requests. Only root-session completion triggers the completion indicator.
+Task agents, seance consults, Eval `agent()` and `workpool()` workers, custom agents, and depth-zero `/tan` clones use upstream's Agent Sub-Sessions setting (Settings → Behavior). The root observes real child sessions, including children that intentionally load no extensions. Separate cards show the child's own name; merge shows child icons and a `+N Sub` badge on the parent; hide suppresses ordinary child activity while preserving supported blocking requests. A finished run clears its merged row, a new run reopens it, and disposal removes its separate card. Nested children retain root attribution after their immediate parent finishes. Only root-session completion triggers the completion indicator.
+
+Named advisors are not child sessions. Their queued and in-flight review backlog is shown as an advisor child using the advisor's own provider identity; merely configuring an advisor does not show it as active. OMP does not expose per-advisor tool streams for the entire roster, so the display is review-state only. Advisor tool callbacks never overwrite the primary card. Eval `completion()`, `judge()`, and `judge_batch()` handles are model calls, not subagents, and create no child cards. Headless children retain OMP's native Ask behavior instead of opening an unsupported terminal dialog.
 
 Root session checklist: the `todo` tool's phased task list forwards as a segmented progress bar. Multi-phase lists prefix the phase name onto each item to preserve the grouping OMP shows; a single phase is left bare. Completed items fade in the bar; an explicit empty `todo` snapshot clears the bar entirely.
 

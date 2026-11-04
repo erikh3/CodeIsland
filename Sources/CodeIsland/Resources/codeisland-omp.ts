@@ -1,5 +1,5 @@
 // CodeIsland pi extension
-// version: v23
+// version: v24
 // OMP-compatible install
 
 /**
@@ -10,12 +10,11 @@
  * `CODEISLAND_SOCKET_PATH` overrides the socket path, as it does for the app.
  * Nothing is sent to a socket this user does not own (`socketIsOwnedByUser`).
  *
- * Subagent sessions (task tool, eval `agent()`, `/tan` clones):
- *   OMP runs them in-process and rebinds this extension to each one. A
- *   subagent's payloads carry `_parent_session_id` (the spawning session's
- *   CodeIsland session id) and `agent_type`, so CodeIsland can fold it into
- *   the parent's card or hide it (Agent Sub-Sessions), and never rings the
- *   completion sound for a subagent's turn — only the parent's (#378).
+ * Subagent sessions (task, seance, Eval agent/workpool, and depth-zero clones):
+ *   The root observes child sessions without loading extensions in them.
+ *   Canonical parent metadata keeps merge, separate and hide behavior consistent.
+ *   Named advisors show only queued/in-flight review work, not configured readiness.
+ *   Completion and judge handles are not child sessions.
  *
  * Turn end (#386):
  *   `agent_end` ends one run, not the turn: OMP 17.0.2+ marks a run it goes
@@ -176,6 +175,18 @@ const AGENT_CARDS_KEY = "__codeislandOmpAgentCards";
 export function ompAgentCards(): Map<string, string> {
   const g = globalThis as typeof globalThis & { [AGENT_CARDS_KEY]?: Map<string, string> };
   return (g[AGENT_CARDS_KEY] ??= new Map());
+}
+
+interface OmpChildObserver {
+  attach(ref: OmpAgentRef, agentType?: string): boolean;
+  finish(agentId: string): void;
+}
+
+const CHILD_OBSERVERS_KEY = "__codeislandOmpChildObservers";
+
+function ompChildObservers(): Map<string, OmpChildObserver> {
+  const g = globalThis as typeof globalThis & { [CHILD_OBSERVERS_KEY]?: Map<string, OmpChildObserver> };
+  return (g[CHILD_OBSERVERS_KEY] ??= new Map());
 }
 
 /** Fallback `agent_type` for a subagent whose agent name is unknown. */
@@ -508,13 +519,21 @@ interface OmpSessionManager {
 }
 
 interface OmpRegistrySession {
-  sessionManager: OmpSessionManager;
+  sessionManager: OmpSessionManager & { getCwd?(): string };
+  subscribe?(listener: (event: Record<string, unknown>) => void): () => void;
+  model?: { id: string; provider: string };
+  thinkingLevel?: string;
+  getAdvisorStats?(): { advisors?: { name: string; status: string; sessionId?: string; model?: { id: string; provider: string } }[] };
+  isStreaming?: boolean;
+  getAdvisorStatusOverview?(): { advisors: { name: string; status: string; yielded: boolean; backlog: number; isPaused: boolean }[] };
 }
 
 interface OmpAgentRef {
   id: string;
   kind: "main" | "sub" | "advisor";
   parentId?: string;
+  displayName?: string;
+  history?: { agent?: string };
   session: OmpRegistrySession | null;
   /** Lifecycle state: running | idle (live) | parked (disposed) | aborted (killed). */
   status?: "running" | "idle" | "parked" | "aborted";
@@ -528,8 +547,20 @@ interface OmpRegistryEvent {
 
 interface OmpAgentRegistry {
   get(id: string): OmpAgentRef | undefined;
+  list?(): OmpAgentRef[];
   /** Subscribe to lifecycle changes; returns an unsubscribe handle. Absent on older OMP. */
   onChange?(listener: (event: OmpRegistryEvent) => void): () => void;
+}
+
+interface ObservedOmpChild {
+  ref: OmpAgentRef;
+  session: OmpRegistrySession;
+  identity: OmpSessionIdentity & { kind: "subagent" };
+  parentSessionId: string;
+  cwd: string;
+  active: boolean;
+  tail: Promise<unknown>;
+  unsubscribe: () => void;
 }
 
 
@@ -722,6 +753,223 @@ export default function codeislandExtension(
   const stoppedAgentIds = new Set<string>();
   /** A turn's latest reply, per session, while OMP goes on with it (#386). */
   const continuedReplies = new Map<string, string>();
+  const observedChildren = new Map<string, ObservedOmpChild>();
+  const observedAdvisors = new Map<string, ObservedOmpChild>();
+  const observerSubscriptions: (() => void)[] = [];
+  let observerRootId: string | undefined;
+
+  function childPayload(child: ObservedOmpChild, extra: Record<string, unknown>) {
+    return {
+      ...buildEvent(child.identity, child.cwd, extra),
+      _parent_session_id: `pi-${child.parentSessionId}`,
+      ...(child.session.model ? { model: `${child.session.model.provider}/${child.session.model.id}` } : {}),
+      ...(child.session.thinkingLevel ? { reasoning_effort: child.session.thinkingLevel } : {}),
+    };
+  }
+
+  function enqueueChild(child: ObservedOmpChild, extra: Record<string, unknown>) {
+    child.tail = child.tail.then(() => sendFn(childPayload(child, extra)));
+  }
+
+  function startChildRun(child: ObservedOmpChild) {
+    if (child.active) return;
+    child.active = true;
+    enqueueChild(child, { hook_event_name: "SubagentStart" });
+  }
+
+  function finishChildRun(child: ObservedOmpChild, messages: readonly unknown[] = []) {
+    if (!child.active) return;
+    child.active = false;
+    enqueueChild(child, {
+      hook_event_name: "Stop",
+      last_assistant_message: extractLastAssistantText(messages) || undefined,
+      ...(interruptedByUser(messages) ? { stop_reason: "interrupted" } : {}),
+    });
+  }
+
+  function removeObservedChild(agentId: string) {
+    const child = observedChildren.get(agentId);
+    if (!child) return;
+    child.unsubscribe();
+    observedChildren.delete(agentId);
+    for (const [key, advisor] of observedAdvisors) {
+      if (advisor.ref.parentId !== agentId) continue;
+      finishChildRun(advisor);
+      enqueueChild(advisor, { hook_event_name: "SessionEnd" });
+      observedAdvisors.delete(key);
+    }
+    enqueueChild(child, { hook_event_name: "SubagentStop" });
+    enqueueChild(child, { hook_event_name: "SessionEnd" });
+  }
+
+  function observeChildEvent(child: ObservedOmpChild, event: Record<string, unknown>) {
+    if (observedChildren.get(child.ref.id) !== child) return;
+    switch (event.type) {
+      case "agent_start":
+        startChildRun(child);
+        enqueueChild(child, { hook_event_name: "UserPromptSubmit" });
+        break;
+      case "tool_execution_start": {
+        if (!child.active) return;
+        const name = typeof event.toolName === "string" ? event.toolName : "";
+        const input = event.args && typeof event.args === "object" ? { ...event.args } : {};
+        enqueueChild(child, {
+          hook_event_name: "PreToolUse",
+          tool_name: displayToolName(name),
+          tool_input: input,
+          tool_use_id: event.toolCallId,
+          ...(event.intent ? { intent: event.intent } : {}),
+        });
+        break;
+      }
+      case "tool_execution_end":
+        if (!child.active) return;
+        enqueueChild(child, {
+          hook_event_name: event.isError === true ? "PostToolUseFailure" : "PostToolUse",
+          tool_name: typeof event.toolName === "string" ? displayToolName(event.toolName) : undefined,
+          tool_use_id: event.toolCallId,
+          is_error: event.isError === true,
+        });
+        break;
+      case "agent_end":
+        if (event.isTerminal !== false) finishChildRun(child, Array.isArray(event.messages) ? event.messages : []);
+        break;
+      case "auto_compaction_start":
+      case "manual_compaction_start":
+        if (child.active) enqueueChild(child, { hook_event_name: "PreCompact" });
+        break;
+      case "auto_compaction_end":
+      case "manual_compaction_end":
+        if (child.active) enqueueChild(child, { hook_event_name: "PostCompact" });
+        break;
+    }
+    syncAdvisors(child.ref.id, child.session);
+  }
+
+  function attachObservedChild(ref: OmpAgentRef, agentType?: string): boolean {
+    if (!agentRegistry || !observerRootId || ref.kind === "main" || !ref.session?.subscribe) return false;
+    if (ref.status === "parked" || ref.status === "aborted") return false;
+    const root = resolveRootSessionId(ref.id, agentRegistry);
+    if (root !== activeRootSessionId) return false;
+    const existing = observedChildren.get(ref.id);
+    if (existing?.session === ref.session) {
+      if (agentType) existing.identity.agentType = agentType;
+      return true;
+    }
+    if (existing) removeObservedChild(ref.id);
+    const parentId = ref.parentId;
+    if (!parentId) return false;
+    const parentSessionId = agentRegistry.get(parentId)?.session?.sessionManager.getSessionId()
+      ?? ompAgentCards().get(parentId);
+    if (!parentSessionId) return false;
+    const session = ref.session;
+    const subscribe = session.subscribe;
+    if (!subscribe) return false;
+    const sessionId = session.sessionManager.getSessionId();
+    if (sessionId === parentSessionId) return false;
+    ompAgentCards().set(ref.id, sessionId);
+    const child = {
+      ref, session,
+      identity: { kind: "subagent" as const, sessionId, rootSessionId: root, agentId: ref.id,
+        agentType: agentType ?? ref.history?.agent ?? ref.displayName ?? DEFAULT_SUBAGENT_TYPE,
+        parentAgentId: parentId },
+      parentSessionId,
+      cwd: session.sessionManager.getCwd?.() ?? process.cwd(),
+      active: false,
+      tail: Promise.resolve() as Promise<unknown>,
+      unsubscribe: () => {},
+    };
+    observedChildren.set(ref.id, child);
+    child.unsubscribe = subscribe.call(session, event => observeChildEvent(child, event));
+    if (ref.status === "running") startChildRun(child);
+    return true;
+  }
+
+  function syncAdvisors(ownerId: string, owner: OmpRegistrySession) {
+    const overview = owner.getAdvisorStatusOverview?.();
+    if (!overview) return;
+    const present = new Set<string>();
+    for (const advisor of overview.advisors) {
+      const key = `${ownerId}/${advisor.name}`;
+      const reviewing = advisor.status === "running" && !advisor.isPaused && advisor.backlog > 0;
+      const existing = observedAdvisors.get(key);
+      present.add(key);
+      if (!reviewing) {
+        if (existing) finishChildRun(existing);
+        continue;
+      }
+      if (existing) {
+        startChildRun(existing);
+        continue;
+      }
+      const stats = owner.getAdvisorStats?.().advisors?.find(entry => entry.name === advisor.name);
+      if (!stats?.sessionId || !activeRootSessionId) continue;
+      const parentSessionId = owner.sessionManager.getSessionId();
+      const sessionId = stats.sessionId;
+      const child: ObservedOmpChild = {
+        ref: { id: key, kind: "advisor", parentId: ownerId, session: null },
+        session: { sessionManager: { getSessionId: () => sessionId }, model: stats.model },
+        identity: { kind: "subagent", sessionId, rootSessionId: activeRootSessionId,
+          agentId: key, agentType: `advisor: ${advisor.name}`, parentAgentId: ownerId },
+        parentSessionId, cwd: owner.sessionManager.getCwd?.() ?? process.cwd(),
+        active: false, tail: Promise.resolve(), unsubscribe: () => {},
+      };
+      observedAdvisors.set(key, child);
+      startChildRun(child);
+    }
+    for (const [key, child] of observedAdvisors) {
+      if (child.ref.parentId !== ownerId || present.has(key)) continue;
+      finishChildRun(child);
+      enqueueChild(child, { hook_event_name: "SessionEnd" });
+      observedAdvisors.delete(key);
+    }
+  }
+
+  function startChildObserver(agentId: string) {
+    if (!agentRegistry || observerRootId === agentId) return;
+    void stopChildObserver();
+    observerRootId = agentId;
+    ompChildObservers().set(agentId, {
+      attach: attachObservedChild,
+      finish(id) {
+        const child = observedChildren.get(id);
+        if (child && child.session.isStreaming !== true) finishChildRun(child);
+      },
+    });
+    observerSubscriptions.push(agentRegistry.onChange?.(event => {
+      if (event.type === "removed" || event.ref.status === "parked" || event.ref.status === "aborted") {
+        removeObservedChild(event.ref.id);
+      } else {
+        attachObservedChild(event.ref);
+      }
+    }) ?? (() => {}));
+    // Each parent extension forwards its own scoped task bus below; nested
+    // children do not publish to the root extension's session bus.
+    for (const ref of agentRegistry.list?.() ?? []) attachObservedChild(ref);
+    const root = agentRegistry.get(agentId)?.session;
+    if (root?.subscribe) {
+      observerSubscriptions.push(root.subscribe(event => {
+        if (["agent_start", "turn_end", "agent_end", "advisor_cost_changed", "advisor_yielded", "config_warnings_changed"].includes(String(event.type))) {
+          syncAdvisors(agentId, root);
+        }
+      }));
+      syncAdvisors(agentId, root);
+    }
+  }
+
+  async function stopChildObserver() {
+    for (const unsubscribe of observerSubscriptions.splice(0)) unsubscribe();
+    if (observerRootId) ompChildObservers().delete(observerRootId);
+    observerRootId = undefined;
+    const draining = [...observedChildren.values(), ...observedAdvisors.values()];
+    for (const id of observedChildren.keys()) removeObservedChild(id);
+    for (const child of observedAdvisors.values()) {
+      finishChildRun(child);
+      enqueueChild(child, { hook_event_name: "SessionEnd" });
+    }
+    observedAdvisors.clear();
+    await Promise.all(draining.map(child => child.tail));
+  }
 
   /**
    * Builds the complete event payload for CodeIsland.
@@ -790,6 +1038,9 @@ export default function codeislandExtension(
       // OMP version too old to report ctx.agent — treat as root, skip cards.
       return { kind: "root", sessionId };
     }
+    // Advisor tools use the primary runner, not a child session.
+    // Named advisor roster state is observed separately by the parent.
+    if (agent.id === "advisor" && agent.name === "advisor") return { kind: "unresolved" };
     // Always register in the shared cards map so sibling sessions can find us.
     ompAgentCards().set(agent.id, sessionId);
     const cached = identityCache.get(sessionId);
@@ -809,10 +1060,27 @@ export default function codeislandExtension(
    */
   async function resolveAndEnsureStart(
     ctx: { sessionManager: { getSessionId(): string }; agent?: OmpAgentContext; cwd: string },
+    blocking = false,
   ): Promise<{ identity: OmpSessionIdentity & { kind: "root" | "subagent" }; sid: string } | null> {
     const identity = resolveIdentityFromCtx(ctx);
     if (identity.kind === "unresolved") return null;
-    await ensureSessionStarted(identity, ctx.cwd);
+    if (identity.kind === "root") {
+      await ensureSessionStarted(identity, ctx.cwd);
+      if (ctx.agent) startChildObserver(ctx.agent.id);
+    } else {
+      const ref = agentRegistry?.get(identity.agentId);
+      let observer: OmpChildObserver | undefined;
+      if (ref) {
+        for (const owner of ompChildObservers().values()) {
+          if (owner.attach(ref, identity.agentType)) { observer = owner; break; }
+        }
+      }
+      if (observer) {
+        if (!blocking) return null;
+      } else {
+        await ensureSessionStarted(identity, ctx.cwd);
+      }
+    }
     const sid = `pi-${identity.sessionId}`;
     return { identity, sid };
   }
@@ -826,6 +1094,7 @@ export default function codeislandExtension(
     const sid = `pi-${rawId}`;
 
     if (identity.kind === "root" && activeRootSessionId !== null && activeRootSessionId !== rawId) {
+      await stopChildObserver();
       const previousIdentity: OmpSessionIdentity = {
         kind: "root",
         sessionId: activeRootSessionId,
@@ -877,6 +1146,7 @@ export default function codeislandExtension(
     stoppedAgentIds.add(agentId);
     const cwd = subagentCwd.get(agentId) ?? process.cwd();
     await sendFn(buildEvent(identity, cwd, { hook_event_name: "SubagentStop" }));
+    await sendFn(buildEvent(identity, cwd, { hook_event_name: "SessionEnd" }));
     subagentByAgentId.delete(agentId);
     subagentCwd.delete(agentId);
     identityCache.delete(identity.sessionId);
@@ -888,13 +1158,28 @@ export default function codeislandExtension(
   // or explicitly released (`removed`). `idle` is deliberately NOT a settle
   // signal: a between-turns live subagent must keep its card. This mirrors the
   // Agent Hub roster exactly, so the island and the roster can never disagree.
-  agentRegistry?.onChange?.((event) => {
+  const unsubscribeLegacyRegistry = agentRegistry?.onChange?.((event) => {
     const ref = event.ref;
     if (ref.kind !== "sub") return;
     const settled = event.type === "removed"
       || (event.type === "status_changed"
         && (ref.status === "parked" || ref.status === "aborted"));
     if (settled) void emitSubagentStop(ref.id);
+  });
+
+  const unsubscribeChildLifecycle = pi.events?.on("task:subagent:lifecycle", data => {
+    if (!data || typeof data !== "object" || !agentRegistry) return;
+    const { id, agent, status } = data as Record<string, unknown>;
+    if (typeof id !== "string") return;
+    if (status === "started") {
+      const ref = agentRegistry.get(id);
+      if (!ref) return;
+      for (const observer of ompChildObservers().values()) {
+        if (observer.attach(ref, typeof agent === "string" ? agent : undefined)) break;
+      }
+    } else if (status === "completed" || status === "failed" || status === "aborted") {
+      for (const observer of ompChildObservers().values()) observer.finish(id);
+    }
   });
 
   // ── Shadow "ask" tool (#244 v3: native rendering + parallel answering) ─────
@@ -924,6 +1209,7 @@ export default function codeislandExtension(
     const session: ToolSession = {
       cwd: ctx?.cwd ?? process.cwd(),
       hasUI: ctx?.hasUI ?? true,
+      advertiseHeadlessAsk: ctx?.agent?.kind === "sub",
       getSessionFile: () => ctx?.sessionManager.getSessionFile() ?? null,
       getSessionSpawns: () => null,
       settings: pi.pi.settings,
@@ -1160,11 +1446,11 @@ export default function codeislandExtension(
       const questions = params.questions;
 
       if (!ctx.hasUI) {
-        ctx.abort();
-        throw new ToolAbortError("Ask tool requires interactive mode");
+        return createNativeAskTool(ctx).execute(toolCallId, params, signal, onUpdate, createNativeAskContext(ctx, () => ctx.abort()));
       }
 
       const rawIdentity = resolveIdentityFromCtx(ctx);
+      if (rawIdentity.kind === "subagent") await resolveAndEnsureStart(ctx, true);
 
       // Unresolved lineage means the registry has not attached the full parent chain yet.
       // Emit nothing to CodeIsland; run native Ask directly so the TUI
@@ -1308,6 +1594,8 @@ export default function codeislandExtension(
     // against a newer session that has already claimed the same registry id.
     const agentCtx = (ctx as unknown as { agent?: OmpAgentContext }).agent;
     const agentId = agentCtx?.id;
+    unsubscribeChildLifecycle?.();
+    unsubscribeLegacyRegistry?.();
     if (agentId && ompAgentCards().get(agentId) === sessionId) {
       ompAgentCards().delete(agentId);
     }
@@ -1322,6 +1610,7 @@ export default function codeislandExtension(
       return;
     }
 
+    await stopChildObserver();
     const rootSessionId = activeRootSessionId ?? sessionId;
     const identity: OmpSessionIdentity = { kind: "root", sessionId: rootSessionId };
     await sendFn(
@@ -1334,8 +1623,7 @@ export default function codeislandExtension(
   });
 
   pi.on("session_switch", async (_event, ctx) => {
-    const identity = resolveIdentityFromCtx(ctx);
-    await ensureSessionStarted(identity, ctx.cwd);
+    await resolveAndEnsureStart(ctx);
   });
 
   pi.on("input", async (event, ctx) => {
@@ -1429,7 +1717,7 @@ export default function codeislandExtension(
   // ── Tool calls ─────────────────────────────────────────────────────────────
 
   pi.on("tool_call", async (event, ctx) => {
-    const resolved = await resolveAndEnsureStart(ctx);
+    const resolved = await resolveAndEnsureStart(ctx, true);
     if (!resolved) return;
     const { identity, sid } = resolved;
     const toolName = displayToolName(event.toolName);
